@@ -333,6 +333,28 @@ pub fn download_verified(
     Ok(())
 }
 
+/// Try each candidate URL in order until one downloads and verifies. Returns
+/// the URL that worked.
+pub fn download_first(
+    urls: &[String],
+    destination: &Path,
+    expected: &Checksum,
+    log: &Arc<Mutex<File>>,
+) -> Result<String> {
+    let mut last = None;
+    for url in urls {
+        match download_verified(url, destination, expected, log) {
+            Ok(()) => return Ok(url.clone()),
+            Err(error) if error.to_string().contains("cancelled") => return Err(error),
+            Err(error) => {
+                log_line(log, &format!("{url} failed: {error}"));
+                last = Some(error);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| crate::Error::Message("no download source".to_string())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,6 +476,31 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("checksum mismatch"));
         assert!(!destination.exists() && !dir.join("image.img.part").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn falls_back_to_the_next_source() {
+        let dir = std::env::temp_dir().join(format!("dl-fallback-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let body: Vec<u8> = (0..20_000u32).map(|i| (i % 97) as u8).collect();
+        // A dead port first, then a source with different content, then a good one.
+        let dead = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}/image.img", l.local_addr().unwrap())
+        };
+        let wrong = serve(vec![1; 100], None);
+        let good = serve(body.clone(), None);
+        let destination = dir.join("image.img");
+        let used = download_first(
+            &[dead, wrong, good.clone()],
+            &destination,
+            &sha(&body),
+            &log_file(&dir),
+        )
+        .unwrap();
+        assert_eq!(used, good);
+        assert_eq!(fs::read(&destination).unwrap(), body);
         let _ = fs::remove_dir_all(dir);
     }
 

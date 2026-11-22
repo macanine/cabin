@@ -7,6 +7,8 @@
 //! changes under an installed machine. The moving `release/` folder is never
 //! recorded.
 
+use std::time::{Duration, Instant};
+
 use regex::Regex;
 
 use crate::Result;
@@ -98,18 +100,30 @@ pub struct ResolvedImage {
 impl Os {
     /// The newest build that has this image in its checksum list. Builds
     /// still being published (no list yet, or no arm64 entry) are skipped.
+    /// The checksum list comes from the official host when it is reachable,
+    /// otherwise from a mirror.
     pub fn resolve(&self) -> Result<ResolvedImage> {
-        let listing = fetch_text(self.builds)?;
+        let mut last = None;
+        for base in image_candidates(self.builds) {
+            match self.resolve_at(&base) {
+                Ok(image) => return Ok(image),
+                Err(error) => last = Some(error),
+            }
+        }
+        Err(last.unwrap_or_else(|| {
+            crate::Error::Message(format!("could not find a {} image", self.name))
+        }))
+    }
+
+    fn resolve_at(&self, base: &str) -> Result<ResolvedImage> {
+        let listing = fetch_text(base)?;
         let builds = dated_builds(&listing, self.build_dir);
         if builds.is_empty() {
-            return message(format!(
-                "no {} builds are listed at {}",
-                self.name, self.builds
-            ));
+            return message(format!("no {} builds are listed at {base}", self.name));
         }
         let mut last_error = None;
         for build in builds.iter().rev().take(4) {
-            let folder = format!("{}{build}/", self.builds);
+            let folder = format!("{base}{build}/");
             let sums = match fetch_text(&format!("{folder}SHA256SUMS")) {
                 Ok(text) => text,
                 Err(error) => {
@@ -216,7 +230,7 @@ done
 
 /// Dated build folders in an index page, oldest first.
 fn dated_builds(listing: &str, pattern: &str) -> Vec<String> {
-    let Ok(href) = Regex::new(&format!(r#"href="({pattern})/""#)) else {
+    let Ok(href) = Regex::new(&format!(r#"href="(?:[^"]*/)?({pattern})/""#)) else {
         return Vec::new();
     };
     let mut builds: Vec<String> = href
@@ -226,6 +240,60 @@ fn dated_builds(listing: &str, pattern: &str) -> Vec<String> {
     builds.sort();
     builds.dedup();
     builds
+}
+
+/// Where Ubuntu publishes cloud images, then mirrors that serve the same
+/// `minimal/releases/<codename>/<build>/` layout (verified: USTC; Tsinghua
+/// only carries `daily/`, so it is not listed).
+const OFFICIAL_IMAGES: &str = "https://cloud-images.ubuntu.com/";
+const IMAGE_MIRRORS: &[&str] = &["https://mirrors.ustc.edu.cn/ubuntu-cloud-images/"];
+
+/// `url` on the official host and on each mirror, official first. A URL that
+/// is on none of them is returned alone.
+pub fn image_candidates(url: &str) -> Vec<String> {
+    let all = std::iter::once(OFFICIAL_IMAGES).chain(IMAGE_MIRRORS.iter().copied());
+    let Some(rest) = all
+        .clone()
+        .find_map(|prefix| url.strip_prefix(prefix))
+    else {
+        return vec![url.to_string()];
+    };
+    all.map(|prefix| format!("{prefix}{rest}")).collect()
+}
+
+/// Order candidates fastest first. Unreachable ones go last in their original
+/// order; probes run in parallel threads.
+pub fn order_by_latency<F>(candidates: Vec<String>, probe: F) -> Vec<String>
+where
+    F: Fn(&str) -> Option<Duration> + Sync,
+{
+    let timings: Vec<Option<Duration>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = candidates
+            .iter()
+            .map(|url| scope.spawn(|| probe(url)))
+            .collect();
+        handles.into_iter().map(|h| h.join().ok().flatten()).collect()
+    });
+    let mut ranked: Vec<(usize, Option<Duration>, String)> = candidates
+        .into_iter()
+        .zip(timings)
+        .enumerate()
+        .map(|(index, (url, time))| (index, time, url))
+        .collect();
+    ranked.sort_by_key(|(index, time, _)| (time.is_none(), *time, *index));
+    ranked.into_iter().map(|(_, _, url)| url).collect()
+}
+
+/// Time to the first response of a HEAD request (about 3 seconds at most).
+pub fn probe_latency(url: &str) -> Option<Duration> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(3))
+        .build();
+    let start = Instant::now();
+    match agent.head(url).call() {
+        Ok(_) => Some(start.elapsed()),
+        Err(_) => None,
+    }
 }
 
 fn fetch_text(url: &str) -> Result<String> {
@@ -241,6 +309,41 @@ fn fetch_text(url: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidates_cover_the_official_host_and_the_mirror() {
+        let url = "https://cloud-images.ubuntu.com/minimal/releases/noble/release-1/a.img";
+        let list = image_candidates(url);
+        assert_eq!(list[0], url);
+        assert_eq!(
+            list[1],
+            "https://mirrors.ustc.edu.cn/ubuntu-cloud-images/minimal/releases/noble/release-1/a.img"
+        );
+        // Rebasing from a mirror URL gives the same set.
+        assert_eq!(image_candidates(&list[1]), list);
+        assert_eq!(image_candidates("http://x/y"), vec!["http://x/y".to_string()]);
+    }
+
+    #[test]
+    fn latency_orders_fastest_first_and_unreachable_last() {
+        let urls: Vec<String> = ["a", "b", "c", "d"].map(String::from).to_vec();
+        let ordered = order_by_latency(urls, |url| match url {
+            "a" => None,
+            "b" => Some(Duration::from_millis(50)),
+            "c" => Some(Duration::from_millis(10)),
+            _ => None,
+        });
+        assert_eq!(ordered, ["c", "b", "a", "d"]);
+    }
+
+    #[test]
+    fn listings_with_absolute_links_are_parsed() {
+        let html = r#"<a href="/x/minimal/noble/release-20240423/">a</a><a href="release-20260101.1/">b</a>"#;
+        assert_eq!(
+            dated_builds(html, RELEASES[0].build_dir),
+            ["release-20240423", "release-20260101.1"]
+        );
+    }
 
     #[test]
     fn ids_are_unique_and_the_default_exists() {
