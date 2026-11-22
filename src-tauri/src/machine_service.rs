@@ -1,7 +1,7 @@
 //! Window subscription, guest forwarding and VM lifecycle commands.
 
 use agent_core::model::{
-    AppEvent, BrowserEnvironmentView, BrowserSettings, HostCheck, HostSnapshot, InstallPlan, InstallStep, MachineInstallOptions,
+    AppEvent, BrowserEnvironmentView, BrowserSettings, HostSnapshot, InstallPlan, InstallStep, MachineInstallOptions,
     MachineStatus, MirrorResult, SyncPreview, SyncProjectInput, SyncView,
 };
 use agent_core::sync::{SyncMode, SyncRules};
@@ -33,8 +33,21 @@ pub(crate) async fn guest_invoke(
 }
 
 #[tauri::command]
-pub(crate) async fn machine_checks(host: State<'_, Shared>) -> Result<Vec<HostCheck>, AppError> {
-    blocking(&host, |host| Ok(host.checks())).await
+pub(crate) async fn machine_checks(
+    host: State<'_, Shared>,
+    disk_gb: u32,
+    memory_mb: u32,
+) -> Result<vm_core::readiness::ReadinessReport, AppError> {
+    blocking(&host, move |host| Ok(host.checks(disk_gb, memory_mb))).await
+}
+
+/// Run a readiness fix (enable WHPX, restart, open a help page).
+#[tauri::command]
+pub(crate) async fn host_fix(
+    host: State<'_, Shared>,
+    fix: vm_core::readiness::Fix,
+) -> Result<vm_core::readiness::FixOutcome, AppError> {
+    blocking(&host, move |host| host.fix(fix)).await
 }
 
 #[tauri::command]

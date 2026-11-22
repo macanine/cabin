@@ -258,7 +258,6 @@ mod bindings {
             GuestConnection::decl(&config),
             MachineStatus::decl(&config),
             MachineInstallOptions::decl(&config),
-            HostCheck::decl(&config),
             StartFact::decl(&config),
             StartPhaseState::decl(&config),
             StartPhase::decl(&config),
