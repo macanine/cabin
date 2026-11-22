@@ -11,6 +11,8 @@
     "tauri": "tauri",
     "setup:mac": "node scripts/setup-macos.mjs",
     "tauri:mac": "sh scripts/tauri-macos.sh",
+    "tauri:win": "tauri --config src-tauri/tauri.windows.conf.json",
+    "vendor": "node scripts/fetch-vendor.mjs",
     "build:agentd": "node scripts/build-agentd.mjs",
     "test:ui": "node tests/ui/smoke.mjs"
   },
@@ -41,6 +43,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
+    "7z-wasm": "^1.2.0",
     "tailwindcss": "^4.3.5",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"
