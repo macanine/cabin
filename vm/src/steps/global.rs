@@ -10,16 +10,26 @@ use crate::Result;
 use crate::steps::base::{CheckResult, Step, StepContext, delete_artifacts};
 use crate::util::{capture, ensure_dir, format_bytes, message};
 
-/// The built-in QEMU (`qemu_engine`): the pinned macanine/qemu build with
-/// its firmware. Never PATH or Homebrew.
+/// Verifies the QEMU bundled with the app (`qemu_engine`, `vendor`): it runs
+/// `qemu-img` and the system binary. Only a macOS development build without a
+/// vendor directory downloads the pinned macanine/qemu build instead.
 pub struct QemuStep;
+
+/// A bundled engine that is present but does not run is a damaged install.
+fn damaged(detail: &str) -> String {
+    if crate::vendor::vendor().is_some() {
+        format!("{} ({detail})", crate::qemu_engine::BUNDLED_MISSING)
+    } else {
+        detail.to_string()
+    }
+}
 
 impl Step for QemuStep {
     fn id(&self) -> &str {
         "qemu"
     }
     fn title(&self) -> &str {
-        "Install the built-in QEMU and UEFI firmware"
+        "Verify the bundled QEMU and UEFI firmware"
     }
     fn scope(&self) -> &str {
         "global"
@@ -27,10 +37,18 @@ impl Step for QemuStep {
 
     fn check(&self, ctx: &mut StepContext) -> Result<CheckResult> {
         let Some(engine) = crate::qemu_engine::installed(&ctx.cfg.home) else {
-            return Ok(CheckResult::pending(format!(
-                "built-in QEMU {} is not installed",
-                crate::qemu_engine::RELEASE
-            )));
+            return Ok(CheckResult::pending(
+                crate::vendor::vendor_problem().unwrap_or_else(|| {
+                    if cfg!(target_os = "macos") && !cfg!(debug_assertions) {
+                        crate::qemu_engine::BUNDLED_MISSING.to_string()
+                    } else {
+                        format!(
+                            "QEMU is not available ({})",
+                            crate::qemu_engine::RELEASE
+                        )
+                    }
+                }),
+            ));
         };
         let (version, image) = std::thread::scope(|scope| {
             let version = scope.spawn(|| crate::qemu_engine::version(&engine));
@@ -46,10 +64,10 @@ impl Step for QemuStep {
         });
         let version = match version {
             Ok(version) => version,
-            Err(error) => return Ok(CheckResult::pending(error.to_string())),
+            Err(error) => return Ok(CheckResult::pending(damaged(&error.to_string()))),
         };
         if image.code != 0 {
-            return Ok(CheckResult::pending("qemu-img does not run"));
+            return Ok(CheckResult::pending(damaged("qemu-img does not run")));
         }
         Ok(CheckResult::ready(format!(
             "{version}; firmware + qemu-img present"
@@ -62,7 +80,8 @@ impl Step for QemuStep {
         for path in &created {
             ctx.track_file(path)?;
         }
-        let version = crate::qemu_engine::version(&engine)?;
+        let version = crate::qemu_engine::version(&engine)
+            .map_err(|error| crate::Error::Message(damaged(&error.to_string())))?;
         ctx.log(&version);
         ctx.log(&format!(
             "UEFI firmware: {}",
@@ -231,8 +250,13 @@ impl Step for ImageStep {
                 .and_then(|value| value.to_str())
                 .unwrap_or("image")
         ));
-        let result = crate::download::download_verified(
-            &cfg.image_url,
+        let candidates = crate::os::order_by_latency(
+            crate::os::image_candidates(&cfg.image_url),
+            crate::os::probe_latency,
+        );
+        ctx.log(&format!("download sources: {}", candidates.join(", ")));
+        let result = crate::download::download_first(
+            &candidates,
             &cfg.image_path(),
             &expected,
             &ctx.log_file,
@@ -240,10 +264,10 @@ impl Step for ImageStep {
         if result.is_err() && part.exists() {
             let _ = ctx.track(&part, "file", false);
         }
-        result?;
+        let used = result?;
         ctx.track_file(&cfg.image_path())?;
         ctx.set_meta("source", json!("download"));
-        ctx.set_meta("url", json!(cfg.image_url));
+        ctx.set_meta("url", json!(used));
         ctx.set_meta("checksum", json!(expected.hex()));
         ctx.set_meta(
             "size",

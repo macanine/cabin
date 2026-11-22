@@ -3,7 +3,7 @@
 //!
 //! The product targets macOS (HVF). Linux is supported for development and
 //! testing: KVM when `/dev/kvm` is usable, otherwise TCG emulation. Windows
-//! uses a native-architecture guest and QEMU from PATH or Program Files.
+//! uses a native-architecture guest and the bundled QEMU and OpenSSH.
 //! It builds the seed ISO in-process (`iso`).
 
 use std::path::{Path, PathBuf};
@@ -136,57 +136,11 @@ pub fn distro_firmware_pairs() -> Vec<(PathBuf, PathBuf)> {
     GuestArch::current().distro_firmware_paths()
 }
 
-/// Windows firmware pairs: the qemu.org installer ships the EDK2 images next
-/// to the binaries (`share\edk2-*.fd` on current installs; older layouts
-/// kept a `share\qemu` subfolder).
-#[cfg(windows)]
-pub fn distro_firmware_pairs() -> Vec<(PathBuf, PathBuf)> {
-    let (code_name, vars_name) = GuestArch::current().firmware_names();
-    let mut roots = Vec::new();
-    if let Some(qemu) = windows_qemu_tool(qemu_system())
-        && let Some(parent) = qemu.parent()
-    {
-        roots.push(parent.to_path_buf());
-        roots.extend(parent.parent().map(Path::to_path_buf));
-    }
-    for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
-        if let Some(value) = std::env::var_os(variable) {
-            let mut path = PathBuf::from(value);
-            path.push("QEMU");
-            roots.push(path);
-        }
-    }
-    // Newer Windows installs put the firmware directly in share/; older
-    // layouts kept a share/qemu/ subfolder.
-    roots
-        .into_iter()
-        .flat_map(|root| {
-            [
-                root.join("share"),
-                root.join("share").join("qemu"),
-            ]
-        })
-        .map(|share| (share.join(code_name), share.join(vars_name)))
-        .collect()
-}
-
-#[cfg(windows)]
-fn windows_qemu_tool(name: &str) -> Option<PathBuf> {
-    which(name).or_else(|| {
-        ["ProgramFiles", "ProgramFiles(x86)"]
-            .into_iter()
-            .filter_map(std::env::var_os)
-            .map(|dir| PathBuf::from(dir).join("qemu").join(format!("{name}.exe")))
-            .find(|path| path.is_file())
-    })
-}
-
-/// The distribution's QEMU on a Linux or Windows development host (macOS
-/// always uses the built-in engine, see `qemu_engine`).
+/// The distribution's QEMU on a Linux development host. macOS uses the
+/// bundled or downloaded engine and Windows only the bundled one (see
+/// `qemu_engine`), so this is `None` there and never searches PATH.
+#[cfg(target_os = "linux")]
 pub fn distro_qemu() -> Option<crate::qemu_engine::Engine> {
-    #[cfg(windows)]
-    let (qemu, qemu_img) = (windows_qemu_tool(qemu_system())?, windows_qemu_tool("qemu-img")?);
-    #[cfg(not(windows))]
     let (qemu, qemu_img) = (which(qemu_system())?, which("qemu-img")?);
     let (code, vars) = distro_firmware_pairs()
         .into_iter()
@@ -200,14 +154,41 @@ pub fn distro_qemu() -> Option<crate::qemu_engine::Engine> {
     })
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn distro_qemu() -> Option<crate::qemu_engine::Engine> {
+    None
+}
+
+/// `ssh`, `ssh-keygen` or another OpenSSH tool: the bundled one on Windows,
+/// otherwise the first on PATH.
+pub fn ssh_tool(name: &str) -> Option<PathBuf> {
+    if cfg!(windows)
+        && let Some(path) = crate::vendor::vendor().and_then(|vendor| vendor.ssh_tool(name))
+    {
+        return Some(path);
+    }
+    which(name)
+}
+
+/// `argv` with a leading `ssh` or `ssh-keygen` replaced by its resolved path.
+pub fn resolve_ssh_argv(mut argv: Vec<String>) -> Vec<String> {
+    if let Some(first) = argv.first_mut()
+        && matches!(first.as_str(), "ssh" | "ssh-keygen")
+        && let Some(path) = ssh_tool(first)
+    {
+        *first = path.display().to_string();
+    }
+    argv
+}
+
 /// Tools the VM pipeline needs on this host.
 pub fn required_tools() -> &'static [&'static str] {
     if cfg!(target_os = "macos") {
         &["ssh", "ssh-keygen", "hdiutil", "openssl"]
     } else if cfg!(windows) {
-        // The seed ISO is built in-process and the password hash in Rust, so
-        // Windows needs only the SSH tools (curl is in System32).
-        &["ssh", "ssh-keygen"]
+        // OpenSSH ships in the bundle, the seed ISO is built in-process and
+        // the password hash in Rust: nothing else is required.
+        &[]
     } else {
         &["ssh", "ssh-keygen", "xorriso", "openssl"]
     }
