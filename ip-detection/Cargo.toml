@@ -1,0 +1,13 @@
+[package]
+name = "cabin-ip-detection"
+version = "0.1.0"
+edition = "2024"
+description = "IP geolocation and provider detection using FlClash-compatible public services"
+license = "MIT"
+
+[dependencies]
+fastrand = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2.12", default-features = false, features = ["tls", "native-certs", "proxy-from-env", "socks-proxy"] }
+url = "2"

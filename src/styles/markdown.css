@@ -1,0 +1,50 @@
+/* Streamdown parts use the app's tokens. */
+
+.markdown > :first-child,
+[data-agent-markdown] > :first-child { margin-top: 0; }
+.markdown > :last-child,
+[data-agent-markdown] > :last-child { margin-bottom: 0; }
+.markdown code { font-family: var(--mono); font-size: 0.9em; }
+.markdown a, .markdown [data-streamdown="link"] { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.markdown [data-streamdown="link"][data-incomplete] { text-decoration-style: dotted; }
+
+/* Lists, quotes, rules. */
+.markdown :is([data-streamdown="unordered-list"], [data-streamdown="ordered-list"]) { padding-left: 1.4em; }
+.markdown [data-streamdown="list-item"] { margin: 0.2em 0; }
+.markdown [data-streamdown="list-item"] > :is(p, [data-streamdown="unordered-list"], [data-streamdown="ordered-list"]) { margin: 0.2em 0; }
+.markdown [data-streamdown="blockquote"] { margin: 0.8em 0; padding: 0 0 0 12px; border-left: 3px solid var(--border); color: var(--muted); }
+.markdown [data-streamdown="horizontal-rule"] { margin: 1.2em 0; border: 0; border-top: 1px solid var(--border); }
+.markdown [data-streamdown="strong"] { font-weight: 600; }
+
+/* Inline code. */
+.markdown [data-streamdown="inline-code"] { padding: 1px 4px; border-radius: 5px; background: var(--hover); font-size: 0.88em; overflow-wrap: anywhere; }
+
+/* Fenced code: a header with the language, copy at the top right, Shiki
+   colours (light in --sdm-c, dark in --shiki-dark). */
+.markdown [data-streamdown="code-block"] { position: relative; min-width: 0; max-width: 100%; margin: 0.8em 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--hover); }
+.markdown [data-streamdown="code-block-header"] { display: flex; align-items: center; min-height: 32px; padding: 0 40px 0 12px; border-bottom: 1px solid var(--border); color: var(--muted); font: var(--text-xs) var(--mono); }
+.markdown [data-streamdown="code-block-header"] > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.markdown [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) { position: absolute; top: 4px; right: 5px; z-index: 1; }
+.markdown [data-streamdown="code-block-copy-button"] { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; }
+.markdown [data-streamdown="code-block-copy-button"] svg { width: 14px; height: 14px; }
+.markdown [data-streamdown="code-block-copy-button"]:hover { background: var(--hover); color: var(--text); }
+.markdown [data-streamdown="code-block-copy-button"]:disabled { opacity: 0.4; cursor: default; }
+.markdown [data-streamdown="code-block-body"] { overflow: auto; padding: 10px 12px; }
+.markdown [data-streamdown="code-block-body"] pre { margin: 0; font: var(--text-sm)/1.55 var(--mono); white-space: pre; tab-size: 2; }
+.markdown [data-streamdown="code-block-body"] code { font-size: inherit; }
+.markdown [data-streamdown="code-block-body"] code > span { display: block; min-height: 1.55em; }
+.markdown [data-streamdown="code-block-body"] code > span > span { color: var(--sdm-c, inherit); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .markdown [data-streamdown="code-block-body"] code > span > span { color: var(--shiki-dark, var(--sdm-c, inherit)); }
+}
+:root[data-theme="dark"] .markdown [data-streamdown="code-block-body"] code > span > span { color: var(--shiki-dark, var(--sdm-c, inherit)); }
+
+/* Tables. */
+.markdown [data-streamdown="table-wrapper"] { margin: 0.8em 0; max-width: 100%; overflow: auto; }
+.markdown [data-streamdown="table"] { border-collapse: collapse; font-size: 0.95em; }
+.markdown :is([data-streamdown="table-header-cell"], [data-streamdown="table-cell"]) { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; overflow-wrap: break-word; }
+.markdown [data-streamdown="table-header-cell"] { white-space: nowrap; }
+.markdown [data-streamdown="table-header-cell"] { background: var(--hover); font-weight: 600; }
+
+/* Images. */
+.markdown [data-streamdown="image"] { max-width: 100%; border-radius: 6px; }

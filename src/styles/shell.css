@@ -1,0 +1,164 @@
+/* The window: a draggable strip across the top, the sidebar on the window
+   background below it, and the content as a rounded card beside it. */
+.shell {
+  height: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: var(--strip-h) minmax(0, 1fr);
+  background: var(--sidebar);
+}
+
+.window-strip {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+/* Pinned right after the traffic lights, on their measured centre line;
+   independent of the strip height and of the sidebar's state. */
+.window-toolbar {
+  position: fixed;
+  z-index: 20;
+  top: calc(var(--controls-center) - 14px);
+  left: var(--controls-inset);
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.main {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0 8px 8px 0;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--card-radius);
+}
+
+/* Full-window views (the installer): the card spans the whole window. */
+.shell.focus .main {
+  grid-column: 1 / -1;
+  margin-left: 8px;
+}
+
+.page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 36px 48px;
+}
+
+.page-inner {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+/* The title block wraps; only header actions (after it) keep their size. */
+.page-header > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.page-header > :last-child:not(:first-child) {
+  flex: 0 0 auto;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.page-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.page-subtitle {
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.section {
+  border-top: 1px solid var(--border);
+  padding: 20px 0;
+}
+
+.section:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.section-hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+
+.field-reason {
+  color: var(--faint);
+  font-size: 12px;
+  margin-top: 4px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.row.wrap {
+  flex-wrap: wrap;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.faint {
+  color: var(--faint);
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.fs-12 {
+  font-size: 12px;
+}
+
+.fs-13 {
+  font-size: 13px;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Vibrancy (macOS): the window chrome is transparent over the system material. */
+:root[data-vibrancy] .shell { background: transparent; }

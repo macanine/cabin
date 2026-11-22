@@ -1,0 +1,18 @@
+{
+  "name": "dev",
+  "username": "dev",
+  "hostname": "dev-vm",
+  "ssh_port": 2222,
+  "cpus": 4,
+  "memory_mb": 4096,
+  "disk_size": "20G",
+  "network_mode": "user",
+  "bridge_if": "en0",
+  "vmnet_gateway": "192.168.105.1",
+  "socket_vmnet_socket": "/opt/homebrew/var/run/socket_vmnet",
+  "socket_vmnet_client": "/opt/homebrew/opt/socket_vmnet/bin/socket_vmnet_client",
+  "socket_vmnet_mode": "shared",
+  "proxy": null,
+  "os": "ubuntu-24.04",
+  "provision_timeout": 900
+}

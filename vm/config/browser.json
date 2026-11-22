@@ -1,0 +1,133 @@
+{
+  "enabled": false,
+  "seed": null,
+  "start_url": "https://www.google.com/",
+  "remote_debugging_port": 9222,
+  "user_data_dir": null,
+  "navigator": {
+    "user_agent": "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+    "app_version": "5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+    "platform": "Linux aarch64",
+    "vendor": "Google Inc.",
+    "languages": [
+      "en-US",
+      "en"
+    ],
+    "language": "en-US",
+    "hardware_concurrency": 4,
+    "device_memory": 4,
+    "max_touch_points": 0,
+    "webdriver": false,
+    "do_not_track": null,
+    "plugins": null,
+    "mime_types": null,
+    "connection": {
+      "effective_type": "4g",
+      "rtt": 50,
+      "downlink": 10,
+      "save_data": false
+    }
+  },
+  "ua_data": {
+    "brands": [
+      {
+        "brand": "Chromium",
+        "version": "157"
+      },
+      {
+        "brand": "Google Chrome",
+        "version": "157"
+      },
+      {
+        "brand": "Not_A Brand",
+        "version": "24"
+      }
+    ],
+    "full_version_list": [
+      {
+        "brand": "Chromium",
+        "version": "157.0.8103.78"
+      },
+      {
+        "brand": "Google Chrome",
+        "version": "157.0.8103.78"
+      },
+      {
+        "brand": "Not_A Brand",
+        "version": "24.0.0.0"
+      }
+    ],
+    "full_version": "157.0.8103.78",
+    "platform": "Linux",
+    "platform_version": "",
+    "architecture": "arm",
+    "model": "",
+    "mobile": false,
+    "bitness": "64",
+    "wow64": false
+  },
+  "screen": {
+    "width": 1600,
+    "height": 900,
+    "avail_width": 1600,
+    "avail_height": 900,
+    "color_depth": 24,
+    "pixel_depth": 24,
+    "device_pixel_ratio": 1
+  },
+  "timezone": null,
+  "locale": null,
+  "webgl": {
+    "vendor": "Google Inc. (Mesa)",
+    "renderer": "ANGLE (Mesa, llvmpipe (LLVM 17.0.6, 256 bits), OpenGL 4.5)",
+    "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+    "shading_language_version": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+    "extensions": null,
+    "parameters": {},
+    "read_pixels_noise": 0
+  },
+  "canvas": {
+    "noise": 1,
+    "seed": null
+  },
+  "audio": {
+    "noise": 1e-07,
+    "sample_rate": null
+  },
+  "fonts": {
+    "check": null,
+    "list": [],
+    "measure_noise": 0.0
+  },
+  "rects": {
+    "noise": 0.0
+  },
+  "webrtc": {
+    "policy": "disable_non_proxied_udp",
+    "js_filter": false
+  },
+  "permissions": {
+    "geolocation": "deny",
+    "notifications": "deny"
+  },
+  "media_devices": null,
+  "battery": null,
+  "chrome": {
+    "flags": [
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-dev-shm-usage",
+      "--ignore-gpu-blocklist"
+    ],
+    "window_size": "1600,872",
+    "force_device_scale_factor": null,
+    "lang": "en-US"
+  },
+  "policy": {
+    "WebRtcIPHandlingPolicy": "disable_non_proxied_udp",
+    "DefaultGeolocationSetting": 2,
+    "NotificationDefaultSetting": 2
+  },
+  "extra_js": "",
+  "sync_with_system": true
+}

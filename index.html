@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Cabin</title>
+    <script>
+      (() => {
+        const showBootFailure = (reason) => {
+          const root = document.getElementById("root");
+          if (!root || root.childElementCount) return;
+          const panel = document.createElement("div");
+          panel.setAttribute("role", "alert");
+          panel.style.cssText = "margin:max(20vh,96px) auto;max-width:680px;padding:24px;border:1px solid #d9dde4;border-radius:16px;background:#fff;color:#25282d;font:14px/1.5 -apple-system,BlinkMacSystemFont,sans-serif";
+          const title = document.createElement("strong");
+          title.textContent = "The app could not start";
+          const detail = document.createElement("p");
+          detail.style.margin = "8px 0 0";
+          detail.textContent = reason || "The interface did not load. Quit and reopen the app.";
+          panel.append(title, detail);
+          root.append(panel);
+        };
+        window.addEventListener("error", (event) => {
+          const target = event.target;
+          const detail =
+            target instanceof HTMLScriptElement || target instanceof HTMLLinkElement
+              ? "A required interface file could not be loaded."
+              : event.error instanceof Error ? event.error.message : event.message;
+          showBootFailure(detail);
+        }, true);
+        window.addEventListener("unhandledrejection", (event) => {
+          const reason = event.reason;
+          showBootFailure(reason instanceof Error ? reason.message : String(reason));
+        });
+        window.addEventListener("DOMContentLoaded", () => {
+          window.setTimeout(() => showBootFailure("The interface did not finish loading."), 5000);
+        });
+      })();
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

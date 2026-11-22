@@ -1,0 +1,262 @@
+/* Agent selector and the selected agent's account and versions. */
+
+.agents-section { border: 1px solid var(--glass-edge); border-radius: var(--card-radius); background: var(--glass); padding: var(--space-4); min-width: 0; }
+.agents-section-head h3 { margin: 0; font-size: var(--text-md); font-weight: 600; }
+.agents-section-head p, .agents-hint { margin: 4px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.agents-section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+.agents-section > .runtime-panel { margin-top: 4px; }
+.account-limits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px; margin-top: 14px; }
+.account-limit { display: grid; gap: 8px; padding: 13px; border-radius: 10px; background: var(--hover); }
+.account-limit-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12px; }
+.account-limit-heading > span { color: var(--muted); white-space: nowrap; }
+.account-limit-heading b { color: var(--text); font-size: 16px; font-variant-numeric: tabular-nums; }
+.account-limit-reset { font-size: 11px; color: var(--muted); }
+
+/* Legacy expanded agent cards. */
+
+.chevron {
+  transition: transform 120ms ease;
+}
+
+.chevron.open {
+  transform: rotate(180deg);
+}
+
+/* Storage */
+.storage-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 215px), 1fr));
+  gap: var(--mantine-spacing-md);
+  margin-bottom: var(--mantine-spacing-md);
+}
+
+.storage-summary > div,
+.storage-breakdown {
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+}
+
+.storage-summary > div {
+  display: grid;
+  align-content: start;
+  gap: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-md);
+}
+
+.storage-summary strong { font-size: var(--mantine-font-size-xl); }
+.storage-summary span, .storage-row span { color: var(--muted); font-size: var(--mantine-font-size-sm); }
+.storage-breakdown { margin: var(--mantine-spacing-sm) 0 0; }
+.storage-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-md);
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+}
+.storage-row + .storage-row { border-top: 1px solid var(--border); }
+.storage-row dd { margin: 0; max-width: 75%; text-align: right; overflow-wrap: anywhere; }
+.storage-row dt > span, .storage-row dd > span, .storage-row > div > span { display: block; }
+.storage-clean-action { display: flex; align-items: center; gap: var(--mantine-spacing-xs); flex-wrap: wrap; justify-content: flex-end; text-align: right; }
+.storage-blocked, .storage-notice { margin: var(--mantine-spacing-xs) 0; }
+
+/* Machine overview and the configured/observed facts beneath it. */
+.machine-overview {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-md);
+  padding: var(--mantine-spacing-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+}
+
+.machine-overview-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  padding: var(--mantine-spacing-sm);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  border-radius: var(--radius);
+}
+
+.machine-overview-name { min-width: 0; }
+.machine-overview-name h3 { margin: 0 0 4px; overflow-wrap: anywhere; }
+.machine-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 0 var(--mantine-spacing-md);
+  align-items: start;
+  margin-top: var(--mantine-spacing-md);
+}
+
+.machine-columns > .section:first-of-type {
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+
+.machine-facts {
+  margin: var(--mantine-spacing-xs) 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius);
+}
+
+.machine-facts > div {
+  display: grid;
+  grid-template-columns: minmax(8em, 1fr) minmax(0, 1.4fr);
+  align-items: baseline;
+  gap: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  font-size: var(--mantine-font-size-sm);
+}
+
+.machine-facts > div + div { border-top: 1px solid var(--border); }
+.machine-facts dt { color: var(--muted); }
+.machine-facts dd { margin: 0; overflow-wrap: anywhere; }
+.machine-note { margin: var(--mantine-spacing-xs) 0; }
+.machine-device-state { margin-top: var(--mantine-spacing-xs); }
+.machine-expander {
+  margin-top: var(--mantine-spacing-xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+}
+
+.machine-expander summary { cursor: pointer; font-weight: 500; }
+.machine-expander summary > span { margin-inline-start: var(--mantine-spacing-xs); font-weight: normal; }
+.machine-findings { margin: var(--mantine-spacing-xs) 0 0; padding: 0; list-style: none; }
+.machine-findings li { display: flex; align-items: baseline; gap: var(--mantine-spacing-xs); padding-block: 4px; overflow-wrap: anywhere; }
+.machine-findings svg { align-self: flex-start; margin-top: 2px; }
+
+.danger-zone {
+  border: 1px solid color-mix(in srgb, var(--bad) 30%, var(--border));
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--bad) 4%, transparent);
+}
+
+.codex-accounts {
+  display: grid;
+  gap: 4px;
+}
+
+.codex-accounts .mantine-Group-root {
+  flex-wrap: wrap;
+}
+
+.codex-quota,
+.codex-reset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 86%, var(--hover));
+  padding: 14px;
+}
+
+.codex-reset {
+  margin-top: 12px;
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  width: 100%;
+  background: transparent;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  color: var(--text);
+  text-align: left;
+}
+
+.list-row:first-child {
+  border-top: none;
+}
+
+button.list-row:hover {
+  background: var(--hover);
+}
+
+.empty {
+  text-align: center;
+  padding: 72px 24px;
+  max-width: 460px;
+  margin: 0 auto;
+}
+
+.empty h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 12px 0 6px;
+}
+
+.empty p {
+  color: var(--muted);
+  margin: 0 0 20px;
+}
+
+.empty-icon {
+  color: var(--faint);
+}
+
+.apply-bar {
+  position: sticky;
+  bottom: -48px;
+  margin: 8px -36px -48px;
+  padding: 14px 36px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  z-index: 2;
+}
+
+.changes {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.callout {
+  border: 1px solid var(--glass-edge);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+
+.callout.bad {
+  border-color: color-mix(in srgb, var(--bad) 35%, var(--border));
+  background: color-mix(in srgb, var(--bad) 8%, transparent);
+  color: var(--bad);
+}
+
+.callout.warn {
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--border));
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 20px 16px 40px;
+  }
+  .apply-bar {
+    margin: 8px -16px -40px;
+    padding: 12px 16px;
+  }
+}
+
+/* ACP runtime of an agent: versions on disk and the one new chats use. */
+.runtime-panel { display: flex; flex-direction: column; gap: 10px; }
+.runtime-head { display: flex; align-items: flex-start; gap: 12px; }
+.runtime-installed { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.runtime-installed > .faint { padding: 8px 10px; }
+.runtime-version { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 3px 8px 3px 10px; font-size: 12.5px; }
+.runtime-version + .runtime-version { border-top: 1px solid var(--border); }
+.runtime-version.selected { background: var(--accent-soft); }
+.runtime-check { flex: none; width: 14px; color: var(--accent); }
+.runtime-install { gap: 8px; align-items: center; }

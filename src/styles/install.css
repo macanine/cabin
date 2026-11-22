@@ -1,0 +1,118 @@
+
+
+.hint {
+  margin: 0 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Bounded log: scrolls inside itself, never stretches the page. */
+.log-view {
+  position: relative;
+  margin-top: 6px;
+}
+
+.log-view-body {
+  margin: 0;
+  max-height: min(320px, 42vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-view.terminal .log-view-body {
+  min-height: 120px;
+  max-height: 260px;
+  padding: 10px 12px;
+  background: var(--terminal-bg);
+  color: var(--terminal-fg);
+}
+
+.log-view-body:focus-visible {
+  outline-offset: -2px;
+}
+
+.log-view-latest {
+  position: absolute;
+  right: 18px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.log-view-latest:hover {
+  background: color-mix(in srgb, var(--text) 6%, var(--surface));
+}
+
+.log-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 0 0 20px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--faint);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.log-toggle:hover {
+  background: var(--hover);
+  color: var(--muted);
+}
+
+.mirror-row {
+  cursor: pointer;
+}
+
+.mirror-row.disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ----------------------------------------------------- small wizards */
+
+.review {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: var(--surface);
+}
+
+.review > div:nth-child(odd) {
+  color: var(--muted);
+}
+
+.review > div:nth-child(even) {
+  overflow-wrap: anywhere;
+}
+

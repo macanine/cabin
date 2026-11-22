@@ -1,0 +1,46 @@
+[package]
+name = "cabin-core"
+version = "0.2.0"
+edition = "2024"
+description = "Product logic for the Cabin desktop app: workspaces, agent sessions, environment and embedded proxy"
+license = "MIT"
+
+[lib]
+name = "agent_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cabind"
+path = "src/bin/cabind.rs"
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+chrono-tz = "0.10"
+flate2 = "1"
+ignore = "0.4"
+notify = "8"
+libc = "0.2"
+portable-pty = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+sha2 = "0.10"
+shoes = { path = "../third_party/shoes" }
+tar = { version = "0.4", default-features = false }
+tempfile = "3"
+sysinfo = { version = "0.33", default-features = false, features = ["system", "network", "disk"] }
+thiserror = "2"
+toml_edit = "0.22"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+ureq = { version = "2.12", features = ["socks-proxy"] }
+url = "2"
+percent-encoding = "2"
+uuid = { version = "1", features = ["v4"] }
+zip = { version = "9.8.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+cabin-usage = { path = "../usage" }
+
+[dev-dependencies]
+ts-rs = "12"
+cabin-usage = { path = "../usage", features = ["bindings"] }

@@ -1,0 +1,60 @@
+@layer overrides {
+
+/* Mantine controls use the same colours as the rest of the app. */
+:root {
+  --mantine-color-body: var(--surface);
+  --mantine-color-text: var(--text);
+  --mantine-color-dimmed: var(--muted);
+  --mantine-color-placeholder: var(--faint);
+  --mantine-color-default: var(--surface);
+  --mantine-color-default-hover: var(--hover);
+  --mantine-color-default-color: var(--text);
+  --mantine-color-default-border: var(--border);
+  --mantine-color-anchor: var(--accent);
+}
+
+.mantine-Menu-dropdown,
+.mantine-Popover-dropdown,
+.mantine-Combobox-dropdown {
+  --popover-border-color: var(--glass-edge);
+  background-color: var(--glass-strong);
+  backdrop-filter: blur(18px);
+}
+.mantine-Menu-dropdown { padding: var(--space-1); }
+.mantine-Modal-content,
+.mantine-Drawer-content {
+  background-color: var(--glass-strong);
+  border: 1px solid var(--glass-edge);
+  backdrop-filter: blur(18px);
+}
+.mantine-Modal-header,
+.mantine-Drawer-header { background-color: transparent; }
+
+/* Keep local hover, selection and keyboard focus legible. */
+.mantine-Menu-item,
+.mantine-Combobox-option,
+.mantine-Button-root,
+.mantine-ActionIcon-root {
+  transition: background-color 110ms ease-out, color 110ms ease-out, border-color 110ms ease-out;
+}
+.mantine-Menu-item[data-hovered],
+.mantine-Combobox-option[data-combobox-selected]:not([data-checked]),
+.mantine-Combobox-option:hover { background-color: var(--hover); }
+.mantine-Combobox-option[data-combobox-selected][data-checked] { background-color: var(--accent-soft); color: var(--accent); }
+
+/* Unstyled inputs sit in containers with their own focus indicator. */
+.mantine-Input-input:not([data-variant="unstyled"]) {
+  border-color: var(--border);
+  transition: border-color 110ms ease-out;
+}
+.mantine-Input-input:not([data-variant="unstyled"]):focus,
+.mantine-Input-input:not([data-variant="unstyled"]):focus-within { border-color: var(--accent); }
+.mantine-Input-input[data-variant="unstyled"],
+.mantine-Input-input[data-variant="unstyled"]:focus { box-shadow: none; outline: none; }
+
+.mantine-Badge-root { text-transform: none; font-weight: 600; letter-spacing: 0; }
+.mantine-SegmentedControl-root { background: var(--hover); }
+.mantine-SegmentedControl-indicator { background: var(--surface); }
+.mantine-Tooltip-tooltip { background-color: var(--text); color: var(--bg); }
+
+}

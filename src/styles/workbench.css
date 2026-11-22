@@ -1,0 +1,397 @@
+/* ----------------------------------------------------------- side panel
+   Files, Changes and Browser beside a session (components/workbench). */
+.session-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+.session-body > .chat-view,
+.session-body > .terminal-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Title-bar toggles: one quiet segmented group. */
+.wb-toggles {
+  display: flex;
+  gap: 1px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--hover);
+}
+.wb-toggle {
+  all: unset;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 120ms, background 120ms;
+}
+.wb-toggle:hover { color: var(--text); }
+.wb-toggle.active {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+.wb-badge {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-panel {
+  position: relative;
+  flex: none;
+  min-width: 300px;
+  max-width: 70%;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  animation: fade var(--motion-enter) var(--ease-out);
+  font-size: 12.5px;
+}
+.wb-resize {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+}
+.wb-resize:hover,
+.wb-panel.dragging .wb-resize {
+  background: linear-gradient(to right, transparent 2px, var(--accent) 2px, var(--accent) 4px, transparent 4px);
+}
+.wb-panel.dragging { user-select: none; }
+.wb-panel.dragging .wb-frame { pointer-events: none; }
+
+.wb-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 38px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.wb-tab {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.wb-tab:hover { background: var(--hover); color: var(--text); }
+.wb-tab.active { background: var(--selected); color: var(--text); }
+.wb-count {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.wb-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.wb-body[hidden] { display: none; }
+.wb-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0 12px;
+}
+.wb-explorer, .wb-git, .wb-viewer, .wb-browser {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.wb-icon-btn {
+  all: unset;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.wb-icon-btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.wb-icon-btn:disabled { opacity: 0.35; cursor: default; }
+.wb-chip {
+  all: unset;
+  flex: none;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.wb-chip:hover { background: var(--hover); }
+.wb-meta { flex: none; color: var(--faint); font-size: 11px; }
+.mono { font-family: var(--mono); }
+
+.wb-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 36px 24px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.5;
+}
+.wb-empty strong { color: var(--text); font-weight: 600; }
+.wb-empty code { font-family: var(--mono); font-size: 11.5px; padding: 1px 5px; border-radius: 5px; background: var(--hover); }
+.wb-ok { color: var(--ok); }
+
+/* Search / address fields */
+.wb-search, .wb-address {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 4px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.wb-search { margin: 8px 8px 4px; }
+.wb-search:focus-within, .wb-address:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.wb-search input, .wb-address input {
+  all: unset;
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+/* Tree */
+.wb-tree-row, .wb-change {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 26px;
+  padding-right: 8px;
+  color: var(--text);
+  cursor: pointer;
+}
+.wb-tree-row:hover, .wb-change:hover { background: var(--hover); }
+.wb-tree-row:focus-visible, .wb-change:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+.wb-tree-dir { min-width: 0; flex-shrink: 1; color: var(--faint); font-size: 11.5px; }
+.wb-chevron { flex: none; color: var(--faint); transition: transform 120ms; }
+.wb-chevron.open { transform: rotate(90deg); }
+
+.git-conflict .wb-tree-name, .wb-deco.git-conflict, .wb-dot.git-conflict, .wb-letter.s-\! { color: var(--bad); }
+
+/* Viewer (file and diff) */
+.wb-viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.wb-viewer-title { flex: 1; min-width: 0; }
+.wb-viewer-title strong { font-weight: 600; }
+.wb-viewer-body { padding: 0; }
+.wb-image {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  padding: 20px;
+  background: repeating-conic-gradient(var(--hover) 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
+.wb-image img { max-width: 100%; height: auto; box-shadow: var(--shadow); }
+.wb-markdown { padding: 16px 20px; user-select: text; }
+
+.wb-code {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.wb-code pre {
+  margin: 0;
+  padding: 8px 0 24px;
+  background: transparent !important;
+  counter-reset: wb-line;
+  tab-size: 4;
+}
+.wb-code code { display: block; min-width: max-content; }
+.wb-code .line { display: inline-block; width: 100%; padding-right: 16px; }
+.wb-code .line::before {
+  counter-increment: wb-line;
+  content: counter(wb-line);
+  display: inline-block;
+  width: var(--wb-gutter, 4ch);
+  margin-right: 16px;
+  padding-left: 8px;
+  color: var(--faint);
+  text-align: right;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.wb-code .line:hover { background: var(--hover); }
+.wb-code-shiki span { color: var(--shiki-light); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .wb-code-shiki span { color: var(--shiki-dark); }
+}
+:root[data-theme="dark"] .wb-code-shiki span { color: var(--shiki-dark); }
+
+/* Git */
+.wb-branch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 8px 0 12px;
+  color: var(--muted);
+}
+.wb-branch strong { color: var(--text); font-weight: 600; }
+.wb-ab { display: inline-flex; align-items: center; gap: 1px; font-size: 11px; color: var(--info); font-variant-numeric: tabular-nums; }
+.wb-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.wb-commit textarea {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  resize: none;
+}
+.wb-commit textarea:focus { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 0 0 3px var(--accent-soft); }
+.wb-commit-btn {
+  all: unset;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 120ms, opacity 120ms;
+}
+.wb-commit-btn:hover:not(:disabled) { filter: brightness(1.06); }
+.wb-commit-btn:disabled { opacity: 0.4; cursor: default; }
+.wb-group { margin-top: 4px; }
+.wb-group-head { display: flex; align-items: center; padding-right: 8px; }
+.wb-group-head:not(:hover) .wb-row-actions { visibility: hidden; }
+.wb-group-toggle {
+  all: unset;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.wb-change { padding-left: 24px; }
+.wb-change-name.deleted { text-decoration: line-through; opacity: 0.7; }
+.wb-row-actions { display: flex; gap: 1px; }
+.wb-change:not(:hover):not(:focus-within) .wb-row-actions { display: none; }
+.wb-letter { flex: none; width: 14px; text-align: center; font-family: var(--mono); font-size: 11px; font-weight: 600; }
+
+/* Browser */
+.wb-urlbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.wb-address { flex: 1; min-width: 0; margin: 0 4px; overflow: hidden; }
+.wb-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+.wb-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--bad) 10%, var(--surface));
+  color: var(--bad);
+  border-bottom: 1px solid color-mix(in srgb, var(--bad) 25%, var(--border));
+}
+.wb-ports { padding: 12px 10px; }
+.wb-ports-head { display: flex; align-items: center; gap: 7px; padding: 0 4px 10px; color: var(--muted); }
+.wb-ports-head strong { color: var(--text); font-weight: 600; }
+.wb-port {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  cursor: pointer;
+  transition: border-color 120ms, background 120ms;
+}
+.wb-port:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--surface); }
+.wb-port-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
+.wb-port-num { flex: none; font-weight: 600; }
+.wb-port-proc { flex: none; max-width: 30%; color: var(--muted); }
+.wb-port .wb-tree-dir { flex: 1; }
+.wb-hint { padding: 8px 4px; font-size: 11.5px; line-height: 1.5; }

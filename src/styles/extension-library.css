@@ -1,0 +1,136 @@
+.extension-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-5) 40px;
+}
+
+.extension-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.extension-toolbar > .mantine-TextInput-root {
+  flex: 1 1 16rem;
+  max-width: 26rem;
+}
+
+.extension-toolbar .mantine-InputBase-root {
+  min-width: 8rem;
+}
+
+.extension-install-to { margin-inline-start: auto; }
+.extension-install-to > span, .extension-target-hint, .extension-page-count { color: var(--muted); font-size: var(--text-sm); }
+
+.extension-table-wrap, .extension-discovery-list, .extension-picker {
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--card-radius);
+  background: var(--glass);
+  overflow: auto;
+}
+
+.extension-table-wrap { flex: 0 0 auto; }
+.extension-table { table-layout: fixed; min-width: 34rem; }
+.extension-table th { color: var(--faint); font-size: var(--text-xs); font-weight: 600; }
+.extension-table tbody tr { transition: background-color 140ms ease; }
+.extension-table tbody tr:hover { background: var(--hover); }
+.extension-table tbody tr:last-child { border-bottom: 0; }
+.extension-matrix-cell { width: 3.5rem; text-align: center; }
+.extension-row-actions, .extension-select-cell { width: 2.75rem; text-align: center; }
+.extension-select-cell .mantine-Checkbox-root { display: inline-flex; vertical-align: middle; }
+.extension-agent-column, .extension-switch { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; }
+.extension-switch { position: relative; }
+.extension-switch .mantine-Switch-input { z-index: 1; cursor: pointer; }
+.extension-switch .mantine-Switch-input:disabled { cursor: default; }
+.extension-drift { position: absolute; top: 0; right: calc(-1 * var(--space-2)); width: var(--space-1); height: var(--space-1); border-radius: 50%; background: var(--accent); }
+.extension-unavailable { display: inline-flex; color: var(--muted); font-size: var(--text-xs); }
+
+.extension-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  text-align: left;
+}
+
+.extension-row-info strong, .extension-row-info > span {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.extension-row-info strong { font-size: var(--text-md); }
+.extension-row-info > span { color: var(--muted); font-size: var(--text-xs); }
+.extension-row-button {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.extension-row-button:hover strong { color: var(--accent); }
+.extension-path { color: var(--muted); font: var(--text-xs) var(--mono); overflow-wrap: anywhere; }
+.extension-skill-markdown { margin-block-start: var(--space-3); }
+.extension-bulk { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-2) var(--space-3); }
+
+.extension-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.extension-discovery-list { flex: 0 0 auto; }
+.extension-discovery-row, .extension-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.extension-discovery-row:last-child, .extension-option:last-child { border-bottom: 0; }
+.extension-discovery-row .extension-row-info { flex: 1; }
+.extension-picker { max-height: 15rem; }
+.extension-option { width: 100%; border-width: 0 0 1px; background: none; color: inherit; cursor: pointer; }
+.extension-option:hover, .extension-option[aria-pressed="true"] { background: var(--accent-soft); }
+.extension-option .extension-row-info { flex: 1; }
+.extension-repo-form { display: grid; gap: var(--space-3); }
+.extension-config-input textarea { font: var(--text-sm) var(--mono); }
+.extension-import-preview { margin: 0; padding: 0; list-style: none; max-height: 12rem; overflow: auto; }
+.extension-import-preview li { display: flex; justify-content: space-between; gap: var(--space-2); padding-block: var(--space-1); }
+.extension-import-preview li span { color: var(--muted); }
+
+.extension-targets {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.extension-targets legend { padding-inline: var(--space-2); font-size: var(--text-sm); }
+.extension-agent-name { display: inline-flex; align-items: center; gap: var(--space-1); }
+.extension-target-hint { width: 100%; }
+
+.extension-project-details { margin-block-start: var(--space-3); }
+.extension-project-details > summary { cursor: pointer; margin-block-end: var(--space-2); color: var(--muted); }
+
+.extension-editor-header { background: var(--surface); border-bottom: 1px solid var(--border); }

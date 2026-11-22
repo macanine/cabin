@@ -1,0 +1,32 @@
+/* Layers, lowest to highest: Tailwind's theme, base tokens, Mantine, our
+   Mantine overrides, the area sheets that remain, then Tailwind utilities —
+   so a utility class in a component always wins over an area sheet. */
+@layer theme, base, mantine, vendor, overrides, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@source not "../node_modules";
+@import "@mantine/core/styles.layer.css";
+@import "./styles/base.css";
+@import "@git-diff-view/react/styles/diff-view-pure.css" layer(vendor);
+@import "./styles/mantine.css";
+@import "./styles/shell.css" layer(components);
+@import "./styles/sidebar.css" layer(components);
+@import "./styles/session.css" layer(components);
+@import "./styles/controls.css" layer(components);
+@import "./styles/settings.css" layer(components);
+@import "./styles/extensions.css" layer(components);
+@import "./styles/extension-library.css" layer(components);
+@import "./styles/start-page.css" layer(components);
+@import "./styles/install.css" layer(components);
+@import "./styles/celebration.css" layer(components);
+@import "./styles/network.css" layer(components);
+@import "./styles/usage.css" layer(components);
+@import "./styles/agents.css" layer(components);
+@import "./styles/sync.css" layer(components);
+@import "./styles/markdown.css" layer(components);
+@import "./styles/chat.css" layer(components);
+@import "./styles/chat-activity.css" layer(components);
+@import "./styles/diff.css" layer(components);
+@import "./styles/chat-composer.css" layer(components);
+@import "./styles/chrome.css" layer(components);
+@import "./styles/workbench.css" layer(components);
+@import "tailwindcss/utilities.css" layer(utilities);

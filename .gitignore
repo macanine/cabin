@@ -1,0 +1,13 @@
+.DS_Store
+.cabin/
+.zcode/plans/
+__pycache__/
+*.py[cod]
+node_modules/
+dist/
+*.log
+core/target/
+usage/target/
+src-tauri/target/
+vm/target/
+src-tauri/gen/

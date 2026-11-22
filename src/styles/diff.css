@@ -1,0 +1,29 @@
+/* @git-diff-view/react on the app's tokens. Its own sheet is imported into the
+   `vendor` layer (App.css); this one only re-points its colour variables. */
+.diff-card { overflow-x: auto; font-family: var(--mono); }
+.diff-card .diff-tailwindcss-wrapper { background: transparent; }
+.diff-card .diff-tailwindcss-wrapper .diff-style-root {
+  --diff-border--: var(--glass-edge);
+  --diff-plain-content--: transparent;
+  --diff-empty-content--: color-mix(in srgb, var(--text) 3%, transparent);
+  --diff-expand-content--: var(--hover);
+  --diff-plain-lineNumber--: color-mix(in srgb, var(--text) 3%, transparent);
+  --diff-expand-lineNumber--: var(--hover);
+  --diff-plain-lineNumber-color--: var(--faint);
+  --diff-expand-lineNumber-color--: var(--faint);
+  --diff-add-content--: color-mix(in srgb, var(--ok) 12%, transparent);
+  --diff-del-content--: color-mix(in srgb, var(--bad) 11%, transparent);
+  --diff-add-lineNumber--: color-mix(in srgb, var(--ok) 22%, transparent);
+  --diff-del-lineNumber--: color-mix(in srgb, var(--bad) 20%, transparent);
+  --diff-add-content-highlight--: color-mix(in srgb, var(--ok) 30%, transparent);
+  --diff-del-content-highlight--: color-mix(in srgb, var(--bad) 28%, transparent);
+  --diff-hunk-content--: color-mix(in srgb, var(--info) 9%, transparent);
+  --diff-hunk-lineNumber--: color-mix(in srgb, var(--info) 18%, transparent);
+  --diff-hunk-content-color--: var(--muted);
+  --diff-hunk-lineNumber-hover--: var(--accent);
+  --diff-add-widget--: var(--accent);
+}
+.diff-card .diff-tailwindcss-wrapper[data-theme] [data-state="diff"],
+.diff-card .diff-tailwindcss-wrapper[data-theme] [data-state="plain"],
+.diff-card .diff-tailwindcss-wrapper[data-theme] [data-state="hunk"] { color: var(--text); }
+.diff-card .diff-line-num { font-variant-numeric: tabular-nums; }

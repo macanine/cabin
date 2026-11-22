@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Cabin needs access to the project folder you chose on your Desktop to sync it with your virtual machine.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Cabin needs access to the project folder you chose in Documents to sync it with your virtual machine.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Cabin needs access to the project folder you chose in Downloads to sync it with your virtual machine.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Cabin needs access to the project folder you chose on this drive to sync it with your virtual machine.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Cabin needs access to the project folder you chose on this network volume to sync it with your virtual machine.</string>
+</dict>
+</plist>

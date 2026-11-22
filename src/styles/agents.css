@@ -1,0 +1,3 @@
+/* views/AgentsView.tsx: one row per agent (logo, name and state, version,
+   plan limits on the right, its one action), then one agent's Account or
+   Setup. Built only from the base tokens (--space-*, --text-*, colours). */

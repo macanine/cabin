@@ -1,0 +1,21 @@
+[package]
+name = "cabin-usage"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+description = "Guest-side agent usage collection and reporting"
+
+[features]
+bindings = ["dep:ts-rs"]
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = "0.10"
+ts-rs = { version = "12", optional = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

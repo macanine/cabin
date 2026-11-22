@@ -1,0 +1,51 @@
+[package]
+name = "cabin-desktop"
+version = "0.2.0"
+description = "Desktop app for CLI agent workspaces on Ubuntu"
+edition = "2024"
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name.
+name = "cabin_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+url = "2"
+percent-encoding = "2"
+cabin-core = { path = "../core" }
+cabin-vm = { path = "../vm" }
+cabin-ip-detection = { path = "../ip-detection" }
+ureq = "2"
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+dispatch2 = "0.3"
+# Already in the tree via tao; used to read the traffic lights' frames.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
+# Frame-change observers keep the traffic lights in place during live resize.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSNotification", "NSObject", "NSOperation", "NSString"] }
+
+[dev-dependencies]
+ts-rs = "12"
+cabin-vm = { path = "../vm", features = ["bindings"] }
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

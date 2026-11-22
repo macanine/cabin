@@ -1,0 +1,26 @@
+/* Controls on the new task composer. */
+
+.composer-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+/* A blocking request or plan rehearsal: one card whose bottom edge is the
+ * composer's top edge. */
+
+/* One control height across the composer row. */
+.composer-bar .mantine-Button-root {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.composer-bar .mantine-ActionIcon-root {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+}
+

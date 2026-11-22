@@ -1,0 +1,50 @@
+shoes 0.3.2 from crates.io (https://github.com/cfal/shoes), MIT licensed.
+
+Local changes (keep this list exact when upgrading):
+- src/embed.rs added: `validate` and `run` entry points for in-process listeners, and
+  `run_tun` (one TUN config on a host-owned packet fd, used by the VM network gateway).
+- src/embed.rs: `run_tun_controlled` accepts a host pause barrier, and `HttpRelay`
+  exposes the existing HTTP handler for caller-owned TCP sockets and cancellation.
+  Embedded listeners and TUN use the IPv4-only resolver policy and reject
+  custom DNS groups that could bypass it.
+- src/resolver.rs, src/client_proxy_selector.rs, src/tcp/socket_connector_impl.rs
+  and src/client_proxy_chain.rs: filter IPv6 and require IPv4 literals at each
+  embedded proxy-chain hop.
+- src/tun/relay_gate.rs added: pauses packet and relay I/O with a shared barrier
+  and invalidates generation-sensitive operations on every suspension.
+- src/tun/{mod,tcp_conn,tcp_stack_direct}.rs: track guest and upstream TCP setup,
+  retain established TCP through suspension, discard incomplete setup, check
+  for shutdown after draining wake notifications, and report unexpected TUN
+  thread exit to the embedder.
+- src/tun/{packet,udp_handler,udp_manager}.rs: reset UDP sessions on suspension
+  and tag queued packets to prevent a rapid resume from reviving old datagrams.
+- src/socket_util.rs, src/config/validate.rs: macOS interface binding for IPv4 and
+  IPv6 TCP/UDP with if_nametoindex and IP_BOUND_IF/IPV6_BOUND_IF; invalid names,
+  unsupported platforms and socket errors are returned without an unbound retry.
+- src/tcp/socket_connector_impl.rs: initialize QUIC endpoints on connect, return
+  setup errors, and retry failed initialization on subsequent connections; successful
+  endpoints are shared by concurrent connections.
+- src/embed.rs, src/address.rs, src/dns/{mod,builder,hickory_resolver}.rs:
+  opt-in `BoundDns::new(interface, servers)` plus `validate_with_bound_dns`,
+  `run_with_bound_dns`, `HttpRelay::new_with_bound_dns` and
+  `run_tun_controlled_with_bound_dns`. All selectable first hops must bind the
+  same interface; old embedded entry points reject bind_interface without this
+  policy. DNS tries supplied IP-literal servers in order over cleartext UDP, with
+  a two-second timeout per server and no system resolver or hosts file fallback;
+  embedded targets remain IPv4-only.
+  Bound listener mode supports HTTP, SOCKS and mixed TCP listeners with IP-literal
+  bind addresses, and rejects custom DNS configuration.
+- src/lib.rs: `pub mod embed;`
+- Cargo.toml: library builds as rlib only; bin and test targets removed.
+- Removed from the published crate: android/, examples/, scripts/, include/, tests/.
+- src/main.rs and the tikv-jemallocator dependency removed (binary only).
+- src/embed.rs parses YAML itself because upstream gates load_config_str behind the ffi feature.
+- src/obfs.rs added: client-side simple-obfs for Shadowsocks (`plugin: obfs`), the
+  fake HTTP request / TLS ClientHello written below the Shadowsocks stream.
+  Upstream has no plugin support at all.
+- src/config/types/client.rs: `ObfsClientConfig`/`ObfsMode`, and
+  `ClientProxyConfig::Shadowsocks` gained an optional `plugin` field (the custom
+  deserializer/serializer carry it).
+- src/tcp/tcp_client_handler_factory.rs: wraps the Shadowsocks handler with
+  `ObfsClientHandler` when `plugin` is set.
+- src/lib.rs: `mod obfs;` (and the client type re-exports in config/types/mod.rs).

@@ -1,0 +1,35 @@
+[package]
+name = "cabin-vm"
+version = "0.1.0"
+edition = "2024"
+description = "Mac-side VM lifecycle for cabin: QEMU/HVF, cloud-init, provisioning, SPICE, guest browser, device"
+license = "MIT"
+
+[lib]
+name = "vm_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vmctl"
+path = "src/bin/vmctl.rs"
+
+[features]
+bindings = ["dep:ts-rs"]
+
+[dependencies]
+base64 = "0.21"
+libc = "0.2"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+sha2 = "0.10"
+sha1 = "0.10"
+shoes = { path = "../third_party/shoes" }
+smoltcp = { version = "0.14.0", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "socket-tcp"] }
+socket2 = "0.6"
+thiserror = "2"
+ts-rs = { version = "12", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+ureq = { version = "2.12", default-features = false, features = ["tls", "socks-proxy", "native-certs", "proxy-from-env"] }
+url = "2"

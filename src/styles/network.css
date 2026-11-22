@@ -1,0 +1,1087 @@
+/* The network dashboard (components/network/): one card with a control bar,
+   a map | exit grid and the chain. App tokens throughout; the map adds its
+   own colours for dots, night, arcs and the exit's night glow. No caps
+   labels: details live in tooltips. Secondary text is 11–12px. */
+
+.net-card {
+  --map-dot: color-mix(in srgb, var(--muted) 55%, transparent);
+  --map-dot-night: color-mix(in srgb, var(--muted) 45%, transparent);
+  /* Full night (a cool blue in light mode); twilight fades from it. */
+  --map-shade: rgba(52, 72, 140, 0.16);
+  --map-sun: rgba(255, 196, 92, 0.2);
+  --map-arc: var(--accent);
+  --map-arc-idle: color-mix(in srgb, var(--accent) 50%, transparent);
+  --map-arc-unknown: color-mix(in srgb, var(--faint) 70%, transparent);
+  --map-node: var(--text);
+  --map-halo: var(--surface);
+  --map-glow: #d98a19;
+  --map-light-halo: 0.1;
+  container-type: inline-size;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .net-card {
+    --map-dot: color-mix(in srgb, var(--muted) 60%, transparent);
+    --map-dot-night: color-mix(in srgb, var(--muted) 40%, transparent);
+    --map-shade: rgba(0, 0, 8, 0.5);
+    --map-sun: rgba(255, 210, 140, 0.1);
+    --map-glow: #ffbe55;
+    --map-light-halo: 0.3;
+  }
+}
+:root[data-theme="dark"] .net-card {
+  --map-dot: color-mix(in srgb, var(--muted) 60%, transparent);
+  --map-dot-night: color-mix(in srgb, var(--muted) 40%, transparent);
+  --map-shade: rgba(0, 0, 8, 0.5);
+  --map-sun: rgba(255, 210, 140, 0.1);
+  --map-glow: #ffbe55;
+  --map-light-halo: 0.3;
+}
+
+/* Stage: the map edge to edge, with controls above and the exit below. */
+.net-stage {
+  position: relative;
+  background: color-mix(in srgb, var(--bg) 55%, var(--surface));
+}
+
+.net-map-canvas {
+  position: relative;
+  padding: 0;
+  cursor: default;
+}
+
+.net-map-canvas canvas {
+  display: block;
+}
+
+.net-float {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.net-float-controls,
+.net-float-button,
+.net-float-exit .net-exit,
+.net-map-popover {
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 20px -8px rgba(0, 0, 0, 0.18);
+}
+
+.net-float-controls {
+  top: 12px;
+  left: 12px;
+  height: 36px;
+  padding: 0 12px 0 10px;
+  border-radius: 999px;
+}
+
+.net-float-actions {
+  top: 12px;
+  right: 12px;
+  gap: 6px;
+}
+
+.net-float-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.net-float-button:hover {
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+}
+
+.net-float-button.text {
+  padding: 0 14px 0 11px;
+}
+
+.net-switch .mantine-Switch-label {
+  font-size: 13px;
+  font-weight: 500;
+  padding-left: 8px;
+}
+
+.net-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex-shrink: 0;
+}
+
+.net-dot.ok {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent);
+}
+
+.net-dot.bad {
+  background: var(--bad);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 20%, transparent);
+}
+
+.net-float-exit {
+  padding: 0 12px 12px;
+}
+
+.net-float-exit .net-exit {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 8px 12px;
+}
+
+.net-float-exit .net-exit-place {
+  flex: 1 1 180px;
+  padding-bottom: 0;
+}
+
+.net-float-exit .net-exit-line {
+  flex: 0 1 auto;
+  border-top: 0;
+}
+
+.net-float-exit .net-ip {
+  flex: 1 1 145px;
+}
+
+.net-float-exit .net-exit-error {
+  flex-basis: 100%;
+}
+
+.net-alert {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* Exit panel */
+.net-exit {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 10px 6px 12px;
+  border-radius: 12px;
+}
+
+.net-exit-place {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding-bottom: 8px;
+}
+
+.net-flag {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--hover);
+  font-size: 18px;
+  line-height: 1;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.net-exit-title {
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: default;
+}
+
+/* The place may take two lines rather than lose the country. */
+.net-exit-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.3;
+}
+
+.net-exit-sub {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.net-exit.failed .net-flag {
+  color: var(--bad);
+}
+
+.net-exit-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bad) 8%, transparent);
+  color: var(--bad);
+  font-size: 12px;
+}
+
+.net-exit-error svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.net-exit-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  min-width: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  font-size: 12.5px;
+}
+
+.net-line-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  color: var(--faint);
+  flex-shrink: 0;
+}
+
+.net-ip-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.net-ip-classification { justify-content: space-between; }
+.net-ip-classification > :first-child { flex-shrink: 0; color: var(--text); }
+
+.net-exit-line.bad {
+  color: var(--bad);
+}
+
+.net-daylight-text {
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.net-daylight-text strong {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.net-line-icon.sun {
+  color: var(--warn);
+}
+
+.net-line-icon.moon {
+  color: var(--info);
+}
+
+.net-map-marker {
+  position: absolute;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+}
+
+.net-map-marker:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.net-map-popover {
+  padding: 0;
+  border-radius: 12px;
+}
+
+.net-map-popover .net-exit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 6px;
+  padding: 8px 10px 6px;
+}
+
+.net-map-popover .net-exit-place {
+  grid-column: 1 / -1;
+  padding-bottom: 4px;
+}
+
+.net-map-popover .net-ip,
+.net-map-popover .net-exit-error {
+  grid-column: 1 / -1;
+}
+
+.net-map-popover .net-exit-line {
+  min-height: 24px;
+}
+
+.net-map-popover .net-line-icon {
+  width: 20px;
+}
+
+.net-ip-value .net-blur {
+  filter: blur(4.5px);
+  user-select: none;
+}
+
+.net-ip-value > span {
+  transition: filter 160ms ease;
+}
+
+.net-icon-button {
+  display: inline-grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.net-icon-button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.net-icon-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The route: one track of segments divided by chevrons. */
+.net-route {
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.net-route-current {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 9px;
+  padding-inline: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.net-interface {
+  margin: 10px 4px 14px;
+}
+
+.net-interface-note,
+.net-interface-error {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.net-interface-error {
+  color: var(--bad);
+}
+
+.net-route-current strong,
+.net-draft-title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.net-draft-title {
+  margin: 8px 4px 5px;
+  font-size: 12px;
+}
+
+.net-map-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.net-map-status:empty {
+  display: none;
+}
+
+.net-map-status span {
+  padding: 3px 8px;
+  border-radius: 99px;
+  background: var(--surface);
+}
+
+.net-track {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 0;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--hover);
+}
+
+.net-track.off .net-seg.hop,
+.net-track.off .net-joint {
+  opacity: 0.62;
+}
+
+.net-track.off .net-seg.hop:focus-within {
+  opacity: 1;
+}
+
+.net-seg-slot {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.net-seg {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  min-width: 0;
+  max-width: 230px;
+  padding: 0 10px 0 6px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  color: var(--text);
+  font: inherit;
+  cursor: grab;
+  transition: border-color 140ms ease, background-color 140ms ease, opacity 140ms ease;
+}
+
+.net-seg:hover {
+  border-color: color-mix(in srgb, var(--text) 16%, transparent);
+}
+
+/* The ends of the route: this Mac and the exit (selectable, not draggable). */
+.net-seg.nic,
+.net-seg.exit {
+  gap: 6px;
+  padding: 0 11px 0 9px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.net-seg.nic .net-seg-name,
+.net-seg.exit .net-seg-name {
+  color: var(--muted);
+}
+
+.net-seg.nic:hover,
+.net-seg.exit:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+
+/* The point shown in the info panel. */
+.net-seg.selected,
+.net-seg.nic.selected,
+.net-seg.exit.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.net-seg.nic.selected,
+.net-seg.exit.selected {
+  background: var(--surface);
+}
+
+.net-seg.nic.selected .net-seg-name,
+.net-seg.exit.selected .net-seg-name {
+  color: var(--text);
+}
+
+.net-seg.bad {
+  border-color: color-mix(in srgb, var(--bad) 55%, transparent);
+  background: color-mix(in srgb, var(--bad) 7%, var(--surface));
+}
+
+.net-seg.untested {
+  opacity: 0.5;
+}
+
+.net-seg.missing .net-seg-name {
+  color: var(--bad);
+}
+
+.net-seg.dragging {
+  opacity: 0.35;
+}
+
+.net-seg.add {
+  justify-content: center;
+  width: 34px;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.net-seg.add.wide {
+  width: auto;
+  gap: 6px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+
+.net-seg.add:hover,
+.net-seg.add[aria-expanded="true"] {
+  border-color: transparent;
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.net-seg-grip {
+  color: var(--faint);
+  opacity: 0;
+  flex-shrink: 0;
+  margin-right: -5px;
+  transition: opacity 120ms ease;
+}
+
+.net-seg:hover .net-seg-grip,
+.net-seg:focus-within .net-seg-grip {
+  opacity: 1;
+}
+
+.net-seg.hop {
+  padding: 0;
+}
+
+.net-seg-select {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 10px 0 6px;
+  border: 0;
+  border-radius: inherit;
+  color: inherit;
+  background: none;
+  font: inherit;
+  cursor: grab;
+}
+
+.net-seg-select:focus-visible,
+.net-seg:focus-visible,
+.net-joint-add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.net-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.net-flag-sm {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  line-height: 1;
+  flex-shrink: 0;
+  color: var(--faint);
+}
+
+.net-seg-name {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.net-seg-ms {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.net-seg-ms small {
+  margin-left: 1px;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.net-seg-ms.bad {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.net-seg-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.net-seg:hover .net-seg-remove,
+.net-seg-remove:focus-visible {
+  opacity: 1;
+}
+
+.net-seg-remove:hover {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.net-hop-tip {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.net-hop-tip span {
+  opacity: 0.8;
+}
+
+/* Joints between segments */
+.net-joint {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 34px;
+  flex-shrink: 0;
+  color: var(--faint);
+}
+
+.net-joint-mark {
+  width: 10px;
+  height: 20px;
+}
+
+.net-joint-mark path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.net-seg-slot.end .net-joint-mark {
+  margin: 0 6px;
+  color: color-mix(in srgb, var(--faint) 60%, transparent);
+}
+
+.net-joint.ok {
+  color: var(--ok);
+}
+
+.net-joint.bad {
+  color: var(--bad);
+}
+
+.net-joint.unknown {
+  color: color-mix(in srgb, var(--faint) 60%, transparent);
+}
+
+.net-joint.over {
+  color: var(--accent);
+}
+
+.net-joint-break {
+  position: absolute;
+  top: 1px;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 50%;
+  background: var(--bad);
+  color: #fff;
+}
+
+.net-joint-add {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: -10px 0 0 -10px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--accent);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.net-joint:hover .net-joint-add,
+.net-joint-add:focus-visible,
+.net-joint-add[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.net-joint:focus-within .net-joint-break,
+.net-joint:hover .net-joint-break {
+  opacity: 0;
+}
+
+.net-chain-error,
+.net-chain-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 8px 4px 0;
+  font-size: 12px;
+}
+
+.net-chain-error {
+  color: var(--bad);
+}
+
+.net-chain-error svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.net-chain-note {
+  color: var(--muted);
+}
+
+.net-picker {
+  padding: 8px;
+}
+
+.net-picker-list {
+  max-height: 260px;
+  margin-top: 6px;
+  overflow-y: auto;
+}
+
+.net-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.net-picker-item:hover {
+  background: var(--hover);
+}
+
+.net-picker-empty {
+  padding: 10px 8px;
+}
+
+/* Node drawer */
+.net-drawer .mantine-Drawer-content {
+  border-left: 1px solid var(--border);
+}
+
+.net-drawer .mantine-Drawer-title {
+  font-weight: 600;
+}
+
+.net-drawer-tools {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0 8px;
+}
+
+.net-group-editor {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.net-node-progress {
+  padding: 2px 6px 6px;
+}
+
+.net-drawer-empty {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 16px 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.net-node-list {
+  display: grid;
+  gap: 2px;
+}
+
+.net-node-more {
+  padding: 10px 8px;
+  text-align: center;
+}
+
+.net-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  cursor: grab;
+}
+
+.net-node:hover {
+  background: var(--hover);
+}
+
+.net-node.in-route {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.net-node-member {
+  cursor: pointer;
+}
+
+.net-node-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.net-ms-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.net-ms-button:disabled {
+  cursor: progress;
+}
+
+.net-ms-button:hover {
+  background: var(--hover);
+}
+
+.net-ms {
+  color: var(--ok);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.net-ms.slow {
+  color: var(--warn);
+}
+
+.net-ms.bad {
+  color: var(--bad);
+}
+
+.net-sources {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.net-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 46px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.net-source-add {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.net-apply {
+  margin-top: 12px;
+}
+
+/* Region below the card */
+.network-region {
+  scroll-margin-top: 24px;
+  outline: none;
+}
+
+.net-region-title {
+  margin: 30px 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.net-region-select {
+  max-width: 420px;
+}
+
+.region-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.region-info {
+  color: var(--faint);
+  cursor: help;
+}
+
+.region-differs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 4px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+  font-size: 12.5px;
+}
+
+.region-differs > svg {
+  color: var(--warn);
+  flex-shrink: 0;
+}
+
+/* Recovery tips (components/Recovery.tsx) */
+
+.recovery {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--bad) 35%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bad) 5%, var(--surface));
+  font-size: 13px;
+}
+
+.recovery-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--bad);
+}
+
+.recovery-head strong {
+  color: var(--text);
+}
+
+.recovery-message {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.recovery-tips {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.recovery-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.recovery.compact {
+  padding: 10px 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .net-ip-value > span {
+    transition: none;
+  }
+}
+

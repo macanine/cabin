@@ -1,0 +1,282 @@
+{
+  "version": 1,
+  "enabled": false,
+  "preset": "ampere-altra-mtjade",
+  "cpu": {
+    "enabled": true,
+    "model": "neoverse-n1",
+    "midr": "0x413fd0c1",
+    "vendor": "ARM",
+    "model_name": "Neoverse-N1",
+    "sockets": 1,
+    "cores_per_socket": null,
+    "threads_per_core": 1,
+    "qemu_features": {
+      "pauth": false
+    },
+    "dmesg_restrict": true
+  },
+  "smbios": {
+    "enabled": true,
+    "bios": {
+      "vendor": "American Megatrends International LLC.",
+      "version": "2.19",
+      "release_date": "06/15/2023",
+      "rom_size": 255,
+      "major": 2,
+      "minor": 19,
+      "ec_major": 255,
+      "ec_minor": 255,
+      "characteristics": [
+        "pci",
+        "upgradeable",
+        "cd_boot",
+        "selectable_boot",
+        "edd"
+      ],
+      "extension1": [
+        "acpi",
+        "usb_legacy"
+      ],
+      "extension2": [
+        "bios_boot_spec",
+        "targeted_content",
+        "uefi"
+      ]
+    },
+    "system": {
+      "manufacturer": "Ampere Computing",
+      "product": "Mt. Jade",
+      "version": "1.0",
+      "serial": null,
+      "uuid": null,
+      "sku": "ALTRA-MJ-01",
+      "family": "Altra",
+      "wakeup_type": 6
+    },
+    "baseboard": {
+      "manufacturer": "Ampere Computing",
+      "product": "Mt. Jade",
+      "version": "A01",
+      "serial": null,
+      "asset": null,
+      "location": "Motherboard",
+      "board_type": 10,
+      "feature_flags": 1
+    },
+    "chassis": {
+      "manufacturer": "Ampere Computing",
+      "type": 17,
+      "version": "1.0",
+      "serial": null,
+      "asset": null,
+      "sku": "ALTRA-MJ-01",
+      "height_u": 2,
+      "power_cords": 2,
+      "security_status": 2,
+      "oem_defined": 0
+    },
+    "processor": {
+      "socket": "CPU 0",
+      "type": 3,
+      "family": 257,
+      "manufacturer": "Ampere Computing",
+      "version": "Ampere(R) Altra(R) Processor",
+      "voltage": 139,
+      "external_clock_mhz": 100,
+      "max_speed_mhz": 3000,
+      "current_speed_mhz": 3000,
+      "status": 65,
+      "upgrade": 1,
+      "serial": null,
+      "asset": null,
+      "part": "ALTRA-Q80-30",
+      "characteristics": [
+        "64bit",
+        "multicore"
+      ],
+      "cache": {
+        "l1_kb": 64,
+        "l2_kb": 1024,
+        "l3_kb": 32768,
+        "l1_assoc": 7,
+        "l2_assoc": 7,
+        "l3_assoc": 8
+      }
+    },
+    "memory": {
+      "dimm_count": 1,
+      "form_factor": 9,
+      "memory_type": 26,
+      "type_detail": 128,
+      "speed_mts": 3200,
+      "configured_speed_mts": 3200,
+      "manufacturer": "Samsung",
+      "serial": null,
+      "asset": null,
+      "part": "M393A2K43DB3-CWE",
+      "locator_prefix": "DIMM_A",
+      "bank_prefix": "BANK ",
+      "total_width": 64,
+      "data_width": 64,
+      "rank": 2,
+      "min_voltage_mv": 1200,
+      "max_voltage_mv": 1200,
+      "configured_voltage_mv": 1200,
+      "error_correction": 6,
+      "maximum_capacity_kb": null
+    },
+    "oem": {
+      "acpi_oem_id": "Ampere",
+      "acpi_oem_table_id": "MtJade"
+    },
+    "extra_structures": []
+  },
+  "devices": {
+    "enabled": true,
+    "storage": {
+      "controller": "nvme",
+      "model": "INTEL SSDPED1D480GA",
+      "serial": null,
+      "firmware_version": "E2010435",
+      "use_intel_id": true,
+      "bootindex": 0
+    },
+    "optical": {
+      "enabled": true,
+      "controller": "lsi53c895a",
+      "bus": "scsi.0",
+      "scsi_id": 0,
+      "lun": 0,
+      "model": "HL-DT-ST DVDRAM GU90N",
+      "vendor": "HL-DT-ST",
+      "product": "DVDRAM GU90N",
+      "ver": "1.00",
+      "serial": null,
+      "bootindex": 2
+    },
+    "usb": {
+      "enabled": true,
+      "controller": "nec-usb-xhci",
+      "devices": []
+    },
+    "sound": {
+      "enabled": true,
+      "controller": "ich9-intel-hda",
+      "codec": "hda-duplex",
+      "codec_cad": 0,
+      "audiodev": "none",
+      "driver_package": "linux-modules-extra"
+    },
+    "qga": false,
+    "rng": false,
+    "extra_qemu_args": []
+  },
+  "network": {
+    "enabled": true,
+    "mode": "user",
+    "require_bridged": true,
+    "interface": "enp0s2",
+    "nic_model": "e1000e",
+    "mac_oui": "00:1b:21",
+    "mac": null,
+    "address": null,
+    "gateway": null,
+    "dns": [],
+    "dhcp_hostname": true,
+    "ipv6_privacy": true,
+    "ssh_host": null,
+    "ssh_port": 22,
+    "dhcp_overrides": {},
+    "extra_qemu_args": []
+  },
+  "guest": {
+    "enabled": true,
+    "timezone": "Etc/UTC",
+    "locale": "en_US.UTF-8",
+    "locale_fallback": "C.UTF-8",
+    "keyboard_layout": "us",
+    "keyboard_variant": "",
+    "ntp": {
+      "enabled": true,
+      "servers": [],
+      "fallback_servers": []
+    },
+    "rtc": "utc",
+    "packages": [
+      "python3",
+      "netplan.io",
+      "iproute2",
+      "systemd-resolved",
+      "dmidecode",
+      "pciutils",
+      "usbutils",
+      "ethtool",
+      "alsa-utils",
+      "locales",
+      "initramfs-tools",
+      "virt-what",
+      "efibootmgr"
+    ],
+    "extra_packages": [],
+    "purge_packages": [
+      "cloud-init",
+      "qemu-guest-agent"
+    ],
+    "remove_users": [
+      "ubuntu"
+    ],
+    "regenerate_machine_id": true,
+    "regenerate_ssh_host_keys": true,
+    "ssh": {
+      "permit_root_login": "no",
+      "password_authentication": true
+    },
+    "sysctl": {
+      "kernel.dmesg_restrict": 1,
+      "kernel.kptr_restrict": 2,
+      "kernel.unprivileged_bpf_disabled": 1
+    },
+    "remove_paths": [
+      "/etc/cloud",
+      "/var/lib/cloud",
+      "/etc/vmctl-instance",
+      "/etc/vmctl-proxy",
+      "/etc/apt/apt.conf.d/90vmctl-proxy",
+      "/etc/environment.d/90-vmctl-proxy.conf",
+      "/var/log/vmctl-network.txt",
+      "/var/log/vmctl-cloud-init-status.txt",
+      "/var/log/cloud-init.log",
+      "/var/log/cloud-init-output.log"
+    ],
+    "clean_logs": true,
+    "install_sound_modules": true,
+    "create_efi_boot_entry": true,
+    "extra_commands": [],
+    "extra_files": {}
+  },
+  "verify": {
+    "enabled": true,
+    "fail_on": "error",
+    "allow_user_network": false,
+    "forbidden_strings": [
+      "QEMU",
+      "KVM",
+      "Bochs",
+      "VirtualBox",
+      "VMware",
+      "Xen",
+      "innotek",
+      "OpenStack",
+      "Amazon EC2",
+      "Google Compute",
+      "Microsoft Corporation",
+      "Hyper-V"
+    ]
+  },
+  "extra": {
+    "qemu_args": [],
+    "guest_commands": [],
+    "guest_files": {}
+  }
+}

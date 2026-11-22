@@ -1,0 +1,30 @@
+.success-check {
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+}
+
+.success-check svg {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.success-check-circle {
+  stroke: var(--ok);
+  stroke-width: 2.5;
+  fill: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.success-check-mark {
+  stroke: var(--ok);
+  stroke-width: 4;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-perf="lite"]) .success-check { animation: success-check-in var(--motion-fast) var(--ease-out); }
+}
+
+@keyframes success-check-in {
+  from { opacity: 0.65; }
+}

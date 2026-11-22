@@ -1,0 +1,96 @@
+/* Conversation surface: centered column, user bubbles, one turn capsule over
+ * a left-rail activity timeline, and the answer below its steps.
+ *
+ * Rail geometry (rem): a 2rem marker column; a 1.25rem ring starts at its
+ * left edge, so ring centre, dot centre and the 1px rail all sit at 0.625rem.
+ * Row text starts 2rem in, 0.75rem past the ring. */
+.chat-view {
+  --act-rail: color-mix(in srgb, var(--text) 12%, transparent);
+  --act-surface: color-mix(in srgb, var(--text) 4%, var(--bg));
+}
+.chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  /* Reserve the scrollbar on both sides so the transcript stays on the same
+   * centre line as the composer when it appears. */
+  scrollbar-gutter: stable both-edges;
+  scroll-padding-bottom: 24px;
+}
+.chat-scroll::-webkit-scrollbar { width: 10px; }
+.chat-scroll::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--text) 16%, transparent);
+}
+.chat-scroll::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text) 26%, transparent); }
+
+/* Transcript and composer share one width, so their edges line up. */
+.chat-timeline,
+.chat-composer-wrap {
+  width: min(100%, 768px);
+  margin: 0 auto;
+}
+.chat-timeline {
+  padding: 26px 24px 20px;
+  display: flex;
+  flex-direction: column;
+  overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .chat-timeline,
+  .chat-composer-wrap {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+}
+@media (max-width: 600px) {
+  .chat-timeline,
+  .chat-composer-wrap {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  
+}
+
+/* Floating Copy / Quote for a transcript selection, replacing the native
+ * context menu for selected text. */
+.selection-bubble {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: 0 10px 28px -10px color-mix(in srgb, #000 30%, transparent);
+  backdrop-filter: blur(14px);
+  transform: translate(-50%, -100%);
+  animation: fade var(--motion-fast) var(--ease-out);
+}
+.selection-bubble.below {
+  transform: translate(-50%, 0);
+}
+.selection-bubble button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.selection-bubble button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
