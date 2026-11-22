@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::Result;
+use crate::arch::GuestArch;
 use crate::util::{capture, message, which};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,17 +21,6 @@ pub struct Accel {
     pub cpu: &'static str,
     /// Software emulation: much slower; timeouts should be generous.
     pub emulated: bool,
-}
-
-/// The architecture of the Ubuntu guest this host runs. The macOS product
-/// keeps its Apple Silicon guest; other hosts run their native architecture
-/// so hardware acceleration (KVM/WHPX) stays possible.
-pub fn guest_arch() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "aarch64"
-    } else {
-        std::env::consts::ARCH
-    }
 }
 
 /// Whether the Windows Hypervisor Platform feature is enabled (WHPX needs it).
@@ -46,6 +36,20 @@ fn whpx_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether WHPX can be tried: the feature's DLL is present, no WHPX start
+/// failed in this process and no probe rejected it.
+#[cfg(windows)]
+pub fn whpx_available() -> bool {
+    whpx_enabled()
+        && crate::accel::fallback_reason().is_none()
+        && crate::accel::cached_whpx_problem().is_none()
+}
+
+#[cfg(not(windows))]
+pub fn whpx_available() -> bool {
+    false
+}
+
 pub fn accel() -> Accel {
     if cfg!(target_os = "macos") {
         return Accel {
@@ -54,10 +58,19 @@ pub fn accel() -> Accel {
             emulated: false,
         };
     }
-    let arm = guest_arch() == "aarch64";
-    #[cfg(windows)]
-    {
-        if !arm && whpx_enabled() {
+    let arch = GuestArch::current();
+    // `pauth-impdef` replaces QARMA pointer authentication with a cheap
+    // implementation-defined algorithm: a large speed-up under TCG.
+    let tcg = Accel {
+        accel: "tcg",
+        cpu: match arch {
+            GuestArch::Arm64 => "max,pauth-impdef=on",
+            GuestArch::Amd64 => "max",
+        },
+        emulated: true,
+    };
+    if cfg!(windows) {
+        if arch == GuestArch::Amd64 && whpx_available() {
             return Accel {
                 accel: "whpx",
                 // WHPX has no host CPU passthrough model; QEMU's default is
@@ -67,42 +80,43 @@ pub fn accel() -> Accel {
                 emulated: false,
             };
         }
-        return Accel {
-            accel: "tcg",
-            cpu: if arm {
-                "max,pauth-impdef=on"
-            } else {
-                "max"
-            },
-            emulated: true,
-        };
+        return tcg;
     }
-    #[cfg(not(windows))]
-    {
-        let kvm = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/kvm")
-            .is_ok();
-        if kvm {
-            Accel {
-                accel: "kvm",
-                cpu: "host",
-                emulated: false,
-            }
-        } else {
-            // `pauth-impdef` replaces QARMA pointer authentication with a cheap
-            // implementation-defined algorithm: a large speed-up under TCG.
-            Accel {
-                accel: "tcg",
-                cpu: if arm {
-                    "max,pauth-impdef=on"
-                } else {
-                    "max"
-                },
-                emulated: true,
-            }
+    let kvm = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kvm")
+        .is_ok();
+    if kvm {
+        Accel {
+            accel: "kvm",
+            cpu: "host",
+            emulated: false,
         }
+    } else {
+        tcg
+    }
+}
+
+impl Accel {
+    /// The QEMU arguments selecting this accelerator and CPU for `-machine`.
+    /// WHPX uses `-accel` with the irqchip off (QEMU's in-kernel irqchip is not
+    /// available there); the others use `-machine …,accel=`.
+    pub fn qemu_args(&self, arch: GuestArch) -> Vec<String> {
+        let mut args = Vec::new();
+        if self.accel == "whpx" {
+            args.extend(["-accel".to_string(), "whpx,kernel-irqchip=off".to_string()]);
+            args.extend(["-machine".to_string(), arch.machine_type().to_string()]);
+        } else {
+            args.extend([
+                "-machine".to_string(),
+                format!("{},accel={}", arch.machine_type(), self.accel),
+            ]);
+        }
+        if !self.cpu.is_empty() {
+            args.extend(["-cpu".to_string(), self.cpu.to_string()]);
+        }
+        args
     }
 }
 
@@ -113,45 +127,13 @@ pub fn slowdown() -> u32 {
 
 /// The QEMU binary name for this host's guest architecture.
 pub fn qemu_system() -> &'static str {
-    if guest_arch() == "x86_64" {
-        "qemu-system-x86_64"
-    } else {
-        "qemu-system-aarch64"
-    }
+    GuestArch::current().qemu_system_binary()
 }
 
 /// Linux distribution firmware pairs (code, writable variables template).
 #[cfg(unix)]
 pub fn distro_firmware_pairs() -> Vec<(PathBuf, PathBuf)> {
-    let pairs: [(&str, &str); 3] = if guest_arch() == "x86_64" {
-        [
-            ("/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_VARS.fd"),
-            (
-                "/usr/share/qemu/edk2-x86_64-code.fd",
-                "/usr/share/qemu/edk2-i386-vars.fd",
-            ),
-            (
-                "/usr/share/OVMF/OVMF_CODE_4M.fd",
-                "/usr/share/OVMF/OVMF_VARS_4M.fd",
-            ),
-        ]
-    } else {
-        [
-            ("/usr/share/AAVMF/AAVMF_CODE.fd", "/usr/share/AAVMF/AAVMF_VARS.fd"),
-            (
-                "/usr/share/qemu/edk2-aarch64-code.fd",
-                "/usr/share/qemu/edk2-arm-vars.fd",
-            ),
-            (
-                "/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw",
-                "/usr/share/edk2/aarch64/vars-template-pflash.raw",
-            ),
-        ]
-    };
-    pairs
-        .iter()
-        .map(|(code, vars)| (PathBuf::from(code), PathBuf::from(vars)))
-        .collect()
+    GuestArch::current().distro_firmware_paths()
 }
 
 /// Windows firmware pairs: the qemu.org installer ships the EDK2 images next
@@ -159,11 +141,7 @@ pub fn distro_firmware_pairs() -> Vec<(PathBuf, PathBuf)> {
 /// kept a `share\qemu` subfolder).
 #[cfg(windows)]
 pub fn distro_firmware_pairs() -> Vec<(PathBuf, PathBuf)> {
-    let (code_name, vars_name) = if guest_arch() == "x86_64" {
-        ("edk2-x86_64-code.fd", "edk2-i386-vars.fd")
-    } else {
-        ("edk2-aarch64-code.fd", "edk2-arm-vars.fd")
-    };
+    let (code_name, vars_name) = GuestArch::current().firmware_names();
     let mut roots = Vec::new();
     if let Some(qemu) = windows_qemu_tool(qemu_system())
         && let Some(parent) = qemu.parent()
@@ -292,7 +270,6 @@ pub fn seed_iso_argv(stage: &Path, output: &Path, files: &[&str]) -> Vec<String>
 }
 
 /// Linux: check the ISO's volume label and extract it (no mount needed).
-#[cfg(not(target_os = "macos"))]
 pub fn linux_extract_iso(iso: &Path, into: &Path) -> Result<String> {
     if which("xorriso").is_none() {
         return message("xorriso is required to verify the seed ISO");

@@ -150,7 +150,7 @@ fn process_command_line(pid: u32) -> Option<String> {
             .output()
             .ok()
             .filter(|out| out.status.success())?;
-        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+        Some(String::from_utf8_lossy(&output.stdout).into_owned())
     }
     #[cfg(windows)]
     {

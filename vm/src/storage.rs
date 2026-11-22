@@ -291,14 +291,13 @@ pub struct CleanupResult {
 pub const LOG_RETENTION_DAYS: u64 = 30;
 
 fn image_partial(path: &Path) -> bool {
-    let arch = if crate::platform::guest_arch() == "x86_64" {
-        "amd64"
-    } else {
-        "arm64"
-    };
+    let suffix = format!("-minimal-cloudimg-{}.img.part", crate::arch::GuestArch::current().cloud_image_suffix());
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
-        name == format!("ubuntu-24.04-minimal-cloudimg-{arch}.img.part")
-            || name == format!("ubuntu-26.04-minimal-cloudimg-{arch}.img.part")
+        name.strip_suffix(&suffix).is_some_and(|release| {
+            release
+                .strip_prefix("ubuntu-")
+                .is_some_and(|version| !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        })
     })
 }
 
@@ -524,7 +523,7 @@ mod tests {
         ] {
             fs::create_dir_all(dir).unwrap();
         }
-        let arch = if crate::platform::guest_arch() == "x86_64" { "amd64" } else { "arm64" };
+        let arch = crate::arch::GuestArch::current().debian();
         let image = paths.image(&format!("ubuntu-26.04-minimal-cloudimg-{arch}.img"));
         let partial = crate::download::partial_path(&image);
         let recent = logs.join("start-recent.log");
@@ -586,12 +585,7 @@ mod tests {
         );
         if cfg!(target_os = "macos") {
             let engine = crate::qemu_engine::root(&home);
-            for name in [
-                "bin/qemu-system-aarch64",
-                "bin/qemu-img",
-                "share/qemu/edk2-aarch64-code.fd",
-                "share/qemu/edk2-aarch64-vars.fd",
-            ] {
+            for name in crate::arch::GuestArch::current().engine_files() {
                 let path = engine.join(name);
                 fs::create_dir_all(path.parent().unwrap()).unwrap();
                 fs::write(path, [42]).unwrap();
@@ -617,7 +611,10 @@ mod tests {
         fs::create_dir(&home).unwrap();
         let shared = scratch.0.join("shared");
         fs::create_dir(&shared).unwrap();
-        let partial = shared.join(format!("ubuntu-26.04-minimal-cloudimg-{arch}.img.part"));
+        let partial = shared.join(format!(
+            "ubuntu-26.04-minimal-cloudimg-{}.img.part",
+            crate::arch::GuestArch::current().debian()
+        ));
         fs::write(&partial, "keep").unwrap();
         symlink(&shared, paths.images()).unwrap();
         symlink(&shared, paths.logs()).unwrap();

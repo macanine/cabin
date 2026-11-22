@@ -2,6 +2,8 @@
 //! polling, entropy, storage and time. Unix keeps the existing libc paths;
 //! Windows maps each helper onto the native API with matching behavior.
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::io;
 use std::path::Path;
 use std::process::Command;

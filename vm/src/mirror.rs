@@ -90,11 +90,8 @@ pub fn test_one(os: &crate::os::Os, uri: &str) -> MirrorResult {
         }
         other => return result("unreachable", latency, None, format!("HTTP {other}")),
     }
-    let arch = if crate::platform::guest_arch() == "x86_64" {
-        "amd64"
-    } else {
-        "arm64"
-    };
+    let guest = crate::arch::GuestArch::current();
+    let arch = guest.debian();
     let index = format!(
         "{uri}/dists/{}/main/binary-{arch}/Packages.gz",
         os.mirror_index_suite()
@@ -110,11 +107,7 @@ pub fn test_one(os: &crate::os::Os, uri: &str) -> MirrorResult {
                 speed,
                 format!(
                     "{} packages available{}",
-                    if crate::platform::guest_arch() == "x86_64" {
-                        "x86_64"
-                    } else {
-                        "ARM64"
-                    },
+                    guest.label(),
                     speed.map(|s| format!(", {s} KB/s")).unwrap_or_default()
                 ),
             )

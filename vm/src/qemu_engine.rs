@@ -115,10 +115,8 @@ pub fn require(home: &Path) -> Result<Engine> {
                 "Install QEMU for Windows with {}, qemu-img and EDK2 firmware. Add QEMU to PATH if installed outside Program Files.",
                 crate::platform::qemu_system()
             )
-        } else if crate::platform::guest_arch() == "x86_64" {
-            "Install qemu-system-x86, qemu-utils and ovmf on this Linux host".to_string()
         } else {
-            "Install qemu-system-arm, qemu-utils and qemu-efi-aarch64 on this Linux host".to_string()
+            crate::arch::GuestArch::current().linux_install_hint().to_string()
         })
     })
 }

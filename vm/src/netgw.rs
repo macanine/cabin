@@ -622,7 +622,10 @@ pub fn shoes_config(upstream: &Upstream) -> Result<String> {
 #[cfg(unix)]
 fn shoes_config_blocking(fd: i32, upstream: &Upstream, blocked_masks: &[&str]) -> Result<String> {
     let mut tun = shoes_tun_mapping(upstream, blocked_masks)?;
-    tun.insert(string("device_fd"), Value::Number(fd.into()));
+    tun.insert(
+        serde_yaml::Value::String("device_fd".into()),
+        serde_yaml::Value::Number(fd.into()),
+    );
     finish_tun_config(tun)
 }
 
@@ -1352,7 +1355,7 @@ impl GatewayStacks {
 
 #[cfg(unix)]
 fn datagram_pair() -> Result<(std::os::unix::net::UnixDatagram, std::os::unix::net::UnixDatagram)> {
-    let (ours, theirs) = UnixDatagram::pair()?;
+    let (ours, theirs) = std::os::unix::net::UnixDatagram::pair()?;
     for socket in [&ours, &theirs] {
         // macOS defaults to tiny Unix datagram buffers.
         let size: libc::c_int = 4 * 1024 * 1024;
@@ -2134,7 +2137,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("netgw-taken-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let gateway = Gateway::start(
-            &dir.join("net.sock"),
+            &Endpoint::Unix(dir.join("net.sock")),
             Vec::new(),
             &Upstream::Direct,
             (Ipv4Addr::LOCALHOST, port).into(),
@@ -2314,7 +2317,7 @@ mod tests {
     }
 
     impl GuestTcp {
-        fn start(link: &mut UnixStream, port: u16) -> Self {
+        fn start(link: &mut DuplexStream, port: u16) -> Self {
             write_frame(
                 link,
                 &frame(
@@ -2339,7 +2342,7 @@ mod tests {
             guest
         }
 
-        fn send(&self, link: &mut UnixStream, data: &[u8]) {
+        fn send(&self, link: &mut DuplexStream, data: &[u8]) {
             let packet = tcp_segment(
                 (GUEST_IP, self.port),
                 (PUBLIC_PROBE_V4, 443),
@@ -2351,7 +2354,7 @@ mod tests {
             write_frame(link, &frame(GATEWAY_MAC, ETH_IPV4, &packet)).unwrap();
         }
 
-        fn receive(&mut self, link: &mut UnixStream, expected: &[u8]) {
+        fn receive(&mut self, link: &mut DuplexStream, expected: &[u8]) {
             let mut reply = Vec::new();
             loop {
                 read_frame(link, &mut reply).unwrap();
@@ -2381,7 +2384,7 @@ mod tests {
         );
     }
 
-    fn exchange_dhcp(link: &mut UnixStream) {
+    fn exchange_dhcp(link: &mut DuplexStream) {
         write_frame(link, &frame([0xff; 6], ETH_IPV4, &dhcp(1))).unwrap();
         let mut reply = Vec::new();
         read_frame(link, &mut reply).unwrap();
@@ -2394,8 +2397,8 @@ mod tests {
         upstream.set_nonblocking(true).unwrap();
         let hop = serde_yaml::from_str(&format!("{{address: '{}', protocol: {{type: http}}}}", upstream.local_addr().unwrap())).unwrap();
         let dir = std::env::temp_dir().join(format!("netgw-aaaa-{}", std::process::id()));
-        let gateway = Gateway::start(&dir.join("net.sock"), vec![], &Upstream::Chain(vec![hop]), (Ipv4Addr::LOCALHOST, 0).into()).unwrap();
-        let mut link = UnixStream::connect(dir.join("net.sock")).unwrap();
+        let gateway = Gateway::start(&Endpoint::Unix(dir.join("net.sock")), vec![], &Upstream::Chain(vec![hop]), (Ipv4Addr::LOCALHOST, 0).into()).unwrap();
+        let mut link = Endpoint::Unix(dir.join("net.sock").into()).connect(Duration::from_secs(2)).unwrap();
         link.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
         exchange_dhcp(&mut link);
         let mut query = vec![0u8; 12];
@@ -2460,10 +2463,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("netgw-hold-{}", std::process::id()));
         let socket = dir.join("net.sock");
         let gateway = Gateway::start_closed(
-            &socket, vec![], Some(&Upstream::Chain(vec![hop])), (Ipv4Addr::LOCALHOST, 0).into(),
+            &Endpoint::Unix(socket.clone()), vec![], Some(&Upstream::Chain(vec![hop])), (Ipv4Addr::LOCALHOST, 0).into(),
         ).unwrap();
         gateway.set_egress_mode(EgressMode::Suspended);
-        let mut link = UnixStream::connect(&socket).unwrap();
+        let mut link = Endpoint::Unix(socket.clone()).connect(Duration::from_secs(2)).unwrap();
         link.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let syn = tcp_syn(GUEST_IP, 40001, PUBLIC_PROBE_V4, 443);
         write_frame(&mut link, &frame(GATEWAY_MAC, ETH_IPV4, &syn)).unwrap();
@@ -2544,9 +2547,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("netgw-discard-{}", std::process::id()));
         let socket = dir.join("net.sock");
         let gateway = Gateway::start_closed(
-            &socket, vec![], Some(&Upstream::Chain(vec![hop])), (Ipv4Addr::LOCALHOST, 0).into(),
+            &Endpoint::Unix(socket.clone()), vec![], Some(&Upstream::Chain(vec![hop])), (Ipv4Addr::LOCALHOST, 0).into(),
         ).unwrap();
-        let mut link = UnixStream::connect(&socket).unwrap();
+        let mut link = Endpoint::Unix(socket.clone()).connect(Duration::from_secs(2)).unwrap();
         link.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut query = vec![0u8; 12];
         query[5] = 1;
@@ -2570,7 +2573,7 @@ mod tests {
                 "upstream" => gateway.set_upstream(&Upstream::Direct).unwrap(),
                 "disconnect" => {
                     drop(link);
-                    link = UnixStream::connect(&socket).unwrap();
+                    link = Endpoint::Unix(socket.clone()).connect(Duration::from_secs(2)).unwrap();
                     link.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                     exchange_dhcp(&mut link);
                 }
@@ -2596,7 +2599,7 @@ mod tests {
         let thread = std::thread::spawn(move || {
             let dir = std::env::temp_dir().join(format!("netgw-wake-{}", std::process::id()));
             let gateway = Gateway::start(
-                &dir.join("net.sock"),
+                &Endpoint::Unix(dir.join("net.sock")),
                 Vec::new(),
                 &Upstream::Direct,
                 (Ipv4Addr::LOCALHOST, 0).into(),
@@ -2629,13 +2632,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("netgw-modes-{}", std::process::id()));
         let socket = dir.join("net.sock");
         let gateway = Gateway::start(
-            &socket,
+            &Endpoint::Unix(socket.clone()),
             Vec::new(),
             &upstream,
             (Ipv4Addr::LOCALHOST, 0).into(),
         )
         .unwrap();
-        let mut link = UnixStream::connect(&socket).unwrap();
+        let mut link = Endpoint::Unix(socket.clone()).connect(Duration::from_secs(2)).unwrap();
         let normal_timeout = Some(Duration::from_secs(5));
         let quiet_timeout = Some(Duration::from_millis(150));
         link.set_read_timeout(normal_timeout).unwrap();
@@ -2762,13 +2765,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("netgw-{}", std::process::id()));
         let socket = dir.join("net.sock");
         let gateway = Gateway::start(
-            &socket,
+            &Endpoint::Unix(socket.clone()),
             vec![Ipv4Addr::new(9, 9, 9, 9)],
             &Upstream::Direct,
             (Ipv4Addr::LOCALHOST, 0).into(),
         )
         .unwrap();
-        let mut qemu = UnixStream::connect(&socket).unwrap();
+        let mut qemu = Endpoint::Unix(socket.clone()).connect(Duration::from_secs(2)).unwrap();
         qemu.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         write_frame(&mut qemu, &frame([0xff; 6], ETH_IPV4, &dhcp(1))).unwrap();
         let mut reply = Vec::new();
