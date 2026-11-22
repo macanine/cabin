@@ -94,15 +94,6 @@ jobs:
       - run: npm ci
       - run: npm test
 
-      # Host-side crates. core is covered by the guest job. On Windows some
-      # Unix-only tests may not apply, so that run reports without failing.
-      - name: cargo test (vm, src-tauri)
-        shell: bash
-        continue-on-error: ${{ matrix.name == 'windows-x64' }}
-        run: |
-          cargo test --manifest-path vm/Cargo.toml
-          cargo test --manifest-path src-tauri/Cargo.toml
-
       - name: Restore vendored binaries
         id: vendor-cache
         uses: actions/cache@v4
@@ -119,6 +110,16 @@ jobs:
       - name: Mark cabind executable
         shell: bash
         run: chmod +x core/target/${{ matrix.guest_triple }}/release/cabind
+
+      # Host-side crates, after the bundle resources exist (the src-tauri
+      # build script checks them). core is covered by the guest job. On Windows some
+      # Unix-only tests may not apply, so that run reports without failing.
+      - name: cargo test (vm, src-tauri)
+        shell: bash
+        continue-on-error: ${{ matrix.name == 'windows-x64' }}
+        run: |
+          cargo test --manifest-path vm/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Build the app
         shell: bash
