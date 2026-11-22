@@ -919,8 +919,11 @@ impl Runtime {
             ));
         }
         let (host, port) = self.ssh_target()?;
+        let ssh = crate::platform::ssh_tool("ssh")
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "ssh".to_string());
         let mut argv = vec![
-            "ssh".to_string(),
+            ssh,
             "-i".to_string(),
             self.cfg.ssh_key_path().display().to_string(),
             "-p".to_string(),
@@ -1061,7 +1064,12 @@ pub fn preflight(cfg: &Config) -> Vec<String> {
         ));
     }
     for &tool in crate::platform::required_tools() {
-        if which(tool).is_none() {
+        let found = if matches!(tool, "ssh" | "ssh-keygen") {
+            crate::platform::ssh_tool(tool)
+        } else {
+            which(tool)
+        };
+        if found.is_none() {
             issues.push(format!("required tool missing: {tool}"));
         }
     }

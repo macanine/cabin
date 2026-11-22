@@ -681,7 +681,7 @@ impl Step for SeedStep {
         let result = (|| -> Result<(Map<String, Value>, Value)> {
             ctx.log("generating ed25519 SSH key for the guest");
             ctx.run(
-                &[
+                &crate::platform::resolve_ssh_argv(vec![
                     "ssh-keygen".to_string(),
                     "-q".to_string(),
                     "-t".to_string(),
@@ -692,7 +692,7 @@ impl Step for SeedStep {
                     format!("vmctl:{}", cfg.name),
                     "-f".to_string(),
                     stage.join("id_ed25519").display().to_string(),
-                ],
+                ]),
                 std::time::Duration::from_secs(60),
                 true,
             )?;

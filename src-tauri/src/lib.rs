@@ -119,6 +119,24 @@ fn data_dir() -> PathBuf {
     }
 }
 
+/// The bundled QEMU and OpenSSH: the app's `vendor/` resource folder, or
+/// `build/vendor/<platform>/` when running from the repository.
+fn vendor_dir(resources: Option<&std::path::Path>) -> Option<PathBuf> {
+    let platform = if cfg!(target_os = "windows") {
+        "windows-x64"
+    } else {
+        "macos-arm64"
+    };
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../build/vendor")
+        .join(platform);
+    resources
+        .map(|dir| dir.join("vendor"))
+        .into_iter()
+        .chain([dev])
+        .find(|dir| dir.join("manifest.json").is_file())
+}
+
 /// The native Linux `cabind` copied into the VM.
 fn agentd_binary(resources: Option<PathBuf>) -> PathBuf {
     if let Some(path) = std::env::var_os("CABIND_BIN") {
@@ -158,6 +176,9 @@ pub fn run() {
                 .filter(|dir| dir.join("config").is_dir())
             {
                 vm_core::paths::set_project_root(dir);
+            }
+            if let Some(dir) = vendor_dir(resources.as_deref()) {
+                vm_core::vendor::set_vendor_dir(dir);
             }
             let agentd = agentd_binary(resources);
             let machine = vm_core::machine::Machine::new(
