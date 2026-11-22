@@ -37,6 +37,7 @@
 use std::net::IpAddr;
 
 use log::info;
+#[cfg(unix)]
 use tun::{Configuration as TunConfiguration, Device};
 
 /// Configuration for the TUN server.
@@ -211,7 +212,9 @@ impl TunServerConfig {
     /// Create a synchronous TUN device from this configuration.
     ///
     /// This is used by the direct mode stack which reads/writes directly
-    /// from the TUN fd using select() for event-driven I/O.
+    /// from the TUN fd using select() for event-driven I/O. Unix only:
+    /// Windows supplies the packet device as a socket instead.
+    #[cfg(unix)]
     pub fn create_sync_device(&self) -> std::io::Result<Device> {
         let mut config = TunConfiguration::default();
         config.mtu(self.mtu);

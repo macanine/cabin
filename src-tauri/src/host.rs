@@ -87,9 +87,10 @@ fn start_gateway(
     cfg: &vm_core::config::Config,
     route: Option<&NetworkRoute>,
 ) -> Result<(), AppError> {
+    let socket = vm_core::sockets::net_endpoint(cfg);
     match route {
-        Some(route) => network.start_with(&cfg.net_socket(), cfg.ssh_port, route)?,
-        None => network.start(&cfg.net_socket(), cfg.ssh_port)?,
+        Some(route) => network.start_with(&socket, cfg.ssh_port, route)?,
+        None => network.start(&socket, cfg.ssh_port)?,
     }
     if let Err(error) = cfg.set_ssh_relay_port(network.ssh_port()) {
         eprintln!("cabin: could not record the SSH relay port: {error}");
@@ -877,25 +878,22 @@ impl Host {
         Ok(self.snapshot().machine)
     }
 
-    /// Mac-side prerequisites for running the VM.
+    /// Host prerequisites for running the VM.
     pub fn checks(&self) -> Vec<HostCheck> {
         let mut checks = Vec::new();
         // The built-in QEMU is downloaded by the install itself.
-        let engine = vm_core::qemu_engine::installed(self.machine.home());
+        let engine = vm_core::qemu_engine::require(self.machine.home());
         checks.push(HostCheck {
             id: "qemu".into(),
-            label: "Built-in QEMU".into(),
-            ok: engine.is_some() || cfg!(target_os = "macos"),
-            detail: match &engine {
-                Some(engine) => engine.qemu.display().to_string(),
-                None if cfg!(target_os = "macos") => format!(
+            label: "QEMU".into(),
+            ok: engine.is_ok() || cfg!(target_os = "macos"),
+            detail: match engine {
+                Ok(engine) => engine.qemu.display().to_string(),
+                Err(_) if cfg!(target_os = "macos") => format!(
                     "{} is downloaded during the install",
                     vm_core::qemu_engine::RELEASE
                 ),
-                None => {
-                    "Install qemu-system-arm, qemu-utils and qemu-efi-aarch64 on this Linux host"
-                        .into()
-                }
+                Err(error) => error.to_string(),
             },
         });
 
@@ -1885,7 +1883,7 @@ impl Host {
     /// (another build, an older daemon without fingerprints, or no daemon at
     /// all) deploys the bundled binary once and reconnects.
     fn session(self: &Arc<Self>, attempt: Option<Arc<Attempt>>) -> Result<(), String> {
-        use agent_core::rpc::{Handshake, check_hello, short_build};
+        use agent_core::hello::{Handshake, check_hello, short_build};
         let generation = self.generation.load(Ordering::SeqCst);
         let runtime = self.machine.runtime().map_err(|error| error.to_string())?;
         let expected = self.bundled_build()?;
@@ -2134,7 +2132,7 @@ mod tests {
             machine.install_config(&InstallOptions::default()).unwrap().save_instance_meta().unwrap();
             let host = Host::new(machine, PathBuf::from("/missing/agentd")).unwrap();
             if running {
-                host.network.start(&home.path().join("gateway.sock"), 0).unwrap();
+                host.network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
                 host.network.set_paused(paused).unwrap();
                 host.update(|status| {
                     status.state = MachineState::Running;
@@ -2166,7 +2164,7 @@ mod tests {
         let machine = Machine::new(home.path(), concat!(env!("CARGO_MANIFEST_DIR"), "/../vm"));
         let host = Host::new(machine, PathBuf::from("/missing/agentd")).unwrap();
         let route = NetworkRoute::default();
-        host.network.start(&home.path().join("test-gateway.sock"), 0).unwrap();
+        host.network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         host.network.begin_check(route_revision(&route), false).unwrap();
         assert_eq!(host.network.status(true).unwrap().gate, NetworkGateMode::Checking);
         host.sync_environment_revision();

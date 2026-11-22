@@ -249,7 +249,7 @@ pub fn build_udp_packet(
     Ok(packet)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

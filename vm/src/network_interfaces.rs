@@ -1,6 +1,7 @@
 //! Host network interfaces usable as an explicitly selected IPv4 egress.
 
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::ffi::CStr;
 use std::net::Ipv4Addr;
 
@@ -36,6 +37,42 @@ fn hardware_ports(text: &str) -> BTreeMap<String, String> {
     ports
 }
 
+#[cfg(windows)]
+const IFF_UP: u32 = 0x1;
+#[cfg(windows)]
+const IFF_RUNNING: u32 = 0x40;
+#[cfg(windows)]
+const IF_TYPE_IEEE80211: u32 = 71;
+#[cfg(windows)]
+const IF_TYPE_PPP: u32 = 23;
+#[cfg(windows)]
+const IF_TYPE_TUNNEL: u32 = 53;
+#[cfg(windows)]
+const IF_TYPE_PROPVIRTUAL: u32 = 131;
+
+/// Windows interface kind from the adapter type plus tunnel-ish names
+/// (friendly names are localized, so the numeric type decides).
+#[cfg(windows)]
+fn windows_kind(if_type: u32, name: &str) -> &'static str {
+    let lowered = name.to_ascii_lowercase();
+    if lowered.contains("tap")
+        || lowered.contains("wireguard")
+        || lowered.contains("vpn")
+        || lowered.contains("tunnel")
+        || if_type == IF_TYPE_PPP
+        || if_type == IF_TYPE_TUNNEL
+        || if_type == IF_TYPE_PROPVIRTUAL
+    {
+        return "vpn";
+    }
+    match if_type {
+        IF_TYPE_IEEE80211 => "wifi",
+        6 => "ethernet",
+        _ => "other",
+    }
+}
+
+#[cfg(not(windows))]
 fn kind(name: &str, hardware: Option<&str>) -> &'static str {
     if let Some(label) = hardware {
         let label = label.to_ascii_lowercase();
@@ -78,11 +115,15 @@ struct InterfaceAddresses {
 
 impl InterfaceAddresses {
     fn usable(&self) -> bool {
+        #[cfg(unix)]
         let required = (libc::IFF_UP | libc::IFF_RUNNING) as u32;
+        #[cfg(windows)]
+        let required = IFF_UP | IFF_RUNNING;
         self.flags & required == required && self.ipv4.iter().any(|(ip, _)| !ip.is_link_local())
     }
 }
 
+#[cfg(unix)]
 fn ipv4(address: *const libc::sockaddr) -> Option<Ipv4Addr> {
     if address.is_null() || unsafe { (*address).sa_family as i32 } != libc::AF_INET {
         return None;
@@ -91,6 +132,7 @@ fn ipv4(address: *const libc::sockaddr) -> Option<Ipv4Addr> {
     Some(Ipv4Addr::from(address.sin_addr.s_addr.to_ne_bytes()))
 }
 
+#[cfg(unix)]
 fn addresses() -> Result<BTreeMap<String, InterfaceAddresses>> {
     let mut raw = std::ptr::null_mut();
     if unsafe { libc::getifaddrs(&mut raw) } != 0 {
@@ -127,6 +169,26 @@ fn addresses() -> Result<BTreeMap<String, InterfaceAddresses>> {
     Ok(found)
 }
 
+/// Windows: adapters from `GetAdaptersAddresses` (via `compat`), keyed by
+/// their localized friendly name, up and running only.
+#[cfg(windows)]
+fn addresses() -> Result<BTreeMap<String, InterfaceAddresses>> {
+    let adapters = crate::compat::adapters().map_err(|error| {
+        Error::Message(format!("Cannot enumerate network interfaces: {error}"))
+    })?;
+    let mut found: BTreeMap<String, InterfaceAddresses> = BTreeMap::new();
+    for adapter in adapters {
+        let item = found.entry(adapter.label.clone()).or_default();
+        if adapter.oper_up {
+            item.flags |= IFF_UP | IFF_RUNNING;
+        }
+        item.ipv4.extend(adapter.ipv4);
+        item.ipv4.sort_unstable();
+        item.ipv4.dedup();
+    }
+    Ok(found)
+}
+
 /// Enumerate interfaces with their display labels and current IPv4 addresses.
 pub fn list() -> Result<Vec<NetworkInterface>> {
     #[cfg(target_os = "macos")]
@@ -156,6 +218,18 @@ pub fn list() -> Result<Vec<NetworkInterface>> {
             ips.sort_unstable();
             ips.dedup();
             NetworkInterface {
+                #[cfg(windows)]
+                kind: windows_kind(
+                    crate::compat::adapters()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|adapter| adapter.label == name)
+                        .map(|adapter| adapter.if_type)
+                        .unwrap_or(0),
+                    &name,
+                )
+                .into(),
+                #[cfg(not(windows))]
                 kind: kind(&name, hardware.map(String::as_str)).into(),
                 name,
                 label,
@@ -174,19 +248,49 @@ pub struct InterfacePath {
 
 /// A snapshot of usable links for detecting changes on adapters outside the default path.
 pub fn paths() -> Result<BTreeMap<String, InterfacePath>> {
-    let mut paths = BTreeMap::new();
-    for (name, mut item) in addresses()?.into_iter().filter(|(_, item)| item.usable()) {
-        let Ok(c_name) = std::ffi::CString::new(name.as_str()) else { continue };
-        let index = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
-        if index == 0 {
-            continue;
+    #[cfg(unix)]
+    {
+        let mut paths = BTreeMap::new();
+        for (name, mut item) in addresses()?.into_iter().filter(|(_, item)| item.usable()) {
+            let Ok(c_name) = std::ffi::CString::new(name.as_str()) else { continue };
+            let index = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
+            if index == 0 {
+                continue;
+            }
+            item.ipv4.retain(|(ip, _)| !ip.is_link_local());
+            item.ipv4.sort_unstable();
+            item.ipv4.dedup();
+            paths.insert(name, InterfacePath { index, ipv4: item.ipv4 });
         }
-        item.ipv4.retain(|(ip, _)| !ip.is_link_local());
-        item.ipv4.sort_unstable();
-        item.ipv4.dedup();
-        paths.insert(name, InterfacePath { index, ipv4: item.ipv4 });
+        Ok(paths)
     }
-    Ok(paths)
+    #[cfg(windows)]
+    {
+        let mut paths = BTreeMap::new();
+        for adapter in crate::compat::adapters().unwrap_or_default() {
+            if !adapter.oper_up {
+                continue;
+            }
+            let mut ipv4: Vec<_> = adapter
+                .ipv4
+                .into_iter()
+                .filter(|(ip, _)| !ip.is_link_local())
+                .collect();
+            ipv4.sort_unstable();
+            ipv4.dedup();
+            if ipv4.is_empty() {
+                continue;
+            }
+            paths.insert(
+                adapter.label.clone(),
+                InterfacePath {
+                    index: adapter.if_index,
+                    ipv4,
+                },
+            );
+        }
+        Ok(paths)
+    }
 }
 
 /// Refuse a missing or inactive interface instead of falling back to the OS route.
@@ -207,6 +311,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn hardware_labels_classify_ports_without_guessing_en_numbers() {
         let ports = hardware_ports(
             "Hardware Port: Ethernet\nDevice: en0\nEthernet Address: aa\n\nHardware Port: Wi-Fi\nDevice: en8\n",
@@ -220,6 +325,16 @@ mod tests {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert_eq!(kind("en9", None), "hardware");
         assert_eq!(kind("utun3", None), "vpn");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_kinds_classify_by_adapter_type() {
+        assert_eq!(windows_kind(6, "Ethernet"), "ethernet");
+        assert_eq!(windows_kind(71, "WLAN"), "wifi");
+        assert_eq!(windows_kind(23, "Something"), "vpn");
+        assert_eq!(windows_kind(6, "WireGuard Tunnel"), "vpn");
+        assert_eq!(windows_kind(1, "Other"), "other");
     }
 
     #[test]

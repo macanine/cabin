@@ -50,16 +50,15 @@ const Heading = ({ children, hint }: { children: ReactNode; hint?: ReactNode }) 
   </div>
 );
 
-/** The Mac's readiness as one line: blocked (red), emulated (amber) or ready. */
-function MacReadiness({ checks, plan }: { checks: HostCheck[] | null; plan: InstallPlan | null }) {
+function HostReadiness({ checks, plan }: { checks: HostCheck[] | null; plan: InstallPlan | null }) {
   const missing = (checks ?? []).filter((c) => !isOptionalCheck(c.id) && !c.ok);
   const emulated = plan?.accel.startsWith("tcg") ?? false;
-  if (checks == null) return <Note>Checking this Mac…</Note>;
+  if (checks == null) return <Note>Checking host requirements…</Note>;
   if (missing.length) {
     return (
       <Note tone="bad" role="alert">
         <div className="flex gap-2"><IconAlertTriangle size={15} className="mt-0.5 shrink-0" />
-          <div className="grid gap-0.5"><strong>This Mac needs something first</strong>
+          <div className="grid gap-0.5"><strong>Host requirements missing</strong>
             {missing.map((c) => <span key={c.id} className="text-fg">{c.label}: <span className="font-mono text-xs">{c.detail}</span></span>)}
           </div>
         </div>
@@ -70,7 +69,7 @@ function MacReadiness({ checks, plan }: { checks: HostCheck[] | null; plan: Inst
     <Note tone={emulated ? "warn" : "ok"}>
       <span className="flex items-center gap-2">
         {emulated ? <IconAlertTriangle size={15} /> : <IconCheck size={15} />}
-        {emulated ? "No hardware virtualization: the machine runs emulated, and installing takes 20–60 minutes." : "This Mac is ready. Installing usually takes a few minutes."}
+        {emulated ? "QEMU is using software emulation. Installation may take longer." : "This computer is ready. Installing usually takes a few minutes."}
       </span>
     </Note>
   );
@@ -125,7 +124,7 @@ export function InstallSetup({ options, set, plan, choices, checks, planError, o
       <header className="grid justify-items-center gap-1.5 text-center">
         <span className="glass mb-1 grid size-14 place-items-center rounded-2xl text-accent"><IconBrandUbuntu size={30} /></span>
         <h1 className="m-0 text-2xl font-semibold tracking-tight">Set up your agent machine</h1>
-        <p className="m-0 max-w-[480px] text-md text-muted">One Ubuntu VM on this Mac, where Claude Code, Codex, OpenCode, Pi and Antigravity run.</p>
+        <p className="m-0 max-w-[480px] text-md text-muted">Run Claude Code, Codex, OpenCode, Pi and Antigravity in one local Ubuntu VM.</p>
         <Button variant="subtle" size="compact-sm" onClick={() => uiActions.navigate({ kind: "settings", tab: "machine" })}>
           Machine settings
         </Button>
@@ -136,7 +135,7 @@ export function InstallSetup({ options, set, plan, choices, checks, planError, o
       <section key={step} className="view-enter grid min-w-0 gap-5">
         {step === 0 && (
           <>
-            <MacReadiness checks={checks} plan={plan} />
+            <HostReadiness checks={checks} plan={plan} />
             <div>
               <Heading>Ubuntu</Heading>
               <div role="radiogroup" aria-label="Ubuntu release" className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5">

@@ -89,34 +89,54 @@ macro_rules! names {
     };
 }
 
-/// Mutable state for the Mac app (the VM, its disk, logs).
+/// Mutable state for the desktop app (the VM, its disk, logs).
 fn data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("CABIN_HOME") {
         return PathBuf::from(dir);
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| "/tmp".into());
-    if cfg!(target_os = "macos") {
-        home.join("Library/Application Support/cabin")
-    } else {
-        home.join(".local/share/cabin-host")
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let mut home = PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default());
+                home.push("AppData");
+                home.push("Roaming");
+                home
+            });
+        return base.join("cabin");
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| "/tmp".into());
+        if cfg!(target_os = "macos") {
+            home.join("Library/Application Support/cabin")
+        } else {
+            home.join(".local/share/cabin-host")
+        }
     }
 }
 
-/// The aarch64 Linux `cabind` copied into the VM.
+/// The native Linux `cabind` copied into the VM.
 fn agentd_binary(resources: Option<PathBuf>) -> PathBuf {
     if let Some(path) = std::env::var_os("CABIND_BIN") {
         return PathBuf::from(path);
     }
     let core = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/target");
+    // The guest architecture follows the host (aarch64 on the macOS product).
+    let guest = if cfg!(target_os = "macos") || cfg!(target_arch = "aarch64") {
+        "aarch64-unknown-linux-musl"
+    } else {
+        "x86_64-unknown-linux-musl"
+    };
     let mut candidates: Vec<PathBuf> = resources
         .into_iter()
         .map(|dir| dir.join("cabind"))
         .collect();
     // A static musl build runs on any Ubuntu release regardless of glibc.
-    candidates.push(core.join("aarch64-unknown-linux-musl/release/cabind"));
-    candidates.push(core.join("aarch64-unknown-linux-gnu/release/cabind"));
+    candidates.push(core.join(format!("{guest}/release/cabind")));
     candidates
         .iter()
         .find(|path| path.is_file())
@@ -197,7 +217,7 @@ mod tests {
             Ok(serde_json::from_str(&std::fs::read_to_string(root.join(path))?)?)
         };
         let app = env!("CARGO_PKG_VERSION");
-        assert_eq!(agent_core::rpc::VERSION, app, "core/Cargo.toml");
+        assert_eq!(agent_core::hello::VERSION, app, "core/Cargo.toml");
         assert_eq!(read("package.json")?["version"], app, "package.json");
         assert_eq!(read("src-tauri/tauri.conf.json")?["version"], app, "tauri.conf.json");
         Ok(())
@@ -247,8 +267,11 @@ mod tests {
         if std::env::var("CABIN_UPDATE_IPC_BINDINGS").as_deref() == Ok("1") {
             std::fs::write(path, &generated)?;
         }
+        // Checkouts may carry CRLF line endings; compare content only.
         assert_eq!(
-            std::fs::read_to_string(path).unwrap_or_default(),
+            std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .replace('\r', ""),
             generated,
             "IPC bindings are stale; run CABIN_UPDATE_IPC_BINDINGS=1 cargo test ipc_bindings"
         );

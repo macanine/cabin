@@ -1,9 +1,10 @@
 # Cabin
 
-Cabin runs coding agents inside one Ubuntu ARM64 virtual machine on an Apple Silicon
-Mac. Manage workspaces, chats, terminals, and a Linux desktop from a Tauri 2 app. The guest
-service, `cabind`, supervises sessions so they can keep running when the desktop app
-closes.
+Cabin runs coding agents inside one Ubuntu virtual machine. Manage workspaces, chats,
+terminals, and a Linux desktop from a Tauri 2 app. The guest service, `cabind`, supervises
+sessions so they can keep running when the desktop app closes. The desktop shell runs on
+Apple Silicon macOS and on Windows and Linux development hosts. The guest runs ARM64 on
+Apple Silicon and follows the host architecture on Windows and Linux.
 
 ## Quick start
 
@@ -119,6 +120,7 @@ QEMU archives, and diagnostic logs older than 30 days.
 |---|---|
 | Run the desktop app on macOS | `npm run tauri:mac -- dev` |
 | Build a debug macOS `.app` | `npm run tauri:mac -- build --debug` |
+| Run the desktop app on Windows | `npm run tauri dev -- --config src-tauri/tauri.windows.conf.json` |
 | Run frontend tests | `npm test` |
 | Type-check and bundle the frontend | `npm run build` |
 | Run Chromium smoke tests with mocked IPC | `npm run test:ui` |
@@ -134,6 +136,26 @@ Linux development uses the distribution's QEMU with KVM or TCG. Use `npm run tau
 the Linux development shell or `npm run tauri build` for Linux packages. Tauri builds the
 guest daemon before running or packaging the app. The macOS bundle includes the daemon, VM
 configuration, and assets. The app downloads the pinned QEMU build during setup.
+
+### Windows host
+
+On Windows x64, Cabin runs the amd64 Ubuntu guest. TCG software emulation uses longer
+startup and provisioning timeouts. Requirements:
+
+- QEMU for Windows (`qemu-system-x86_64`, `qemu-img`, and EDK2 firmware) from the qemu.org
+  installer. Add QEMU to `PATH` if you install it outside Program Files.
+- Microsoft C++ Build Tools, WebView2, and the Windows OpenSSH client
+  (`ssh`, `ssh-keygen`).
+- Zig, `cargo-zigbuild`, and `rustup target add x86_64-unknown-linux-musl` to build the
+  guest daemon (`npm run build:agentd`).
+
+Windows specifics: QEMU control channels use loopback TCP ports recorded per instance in
+`sockets.json`, the seed ISO is written in-process (no ISO tooling required), gateway
+networking runs through a loopback TCP datapath with the same shoes proxy stack, and the
+seed ISO password hash uses the same `$6$` SHA-512 format. Adapter-scoped routes
+(`bind_interface`) and SPICE are not available on Windows; guest networking otherwise
+behaves the same. `tauri.windows.conf.json` builds the NSIS installer with the daemon and
+VM resources bundled.
 
 ### Opt-in verification
 

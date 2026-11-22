@@ -400,17 +400,17 @@ impl GlobalNetwork {
 
     /// Start the VM's gateway on `socket`; it also serves the VM's SSH on
     /// `127.0.0.1:ssh_port`.
-    pub fn start(&self, socket: &Path, ssh_port: u16) -> Result<(), AppError> {
+    pub fn start(&self, socket: &vm_core::sockets::Endpoint, ssh_port: u16) -> Result<(), AppError> {
         self.start_gateway(socket, ssh_port, &self.route()?, true)
     }
 
-    pub fn start_with(&self, socket: &Path, ssh_port: u16, route: &NetworkRoute) -> Result<(), AppError> {
+    pub fn start_with(&self, socket: &vm_core::sockets::Endpoint, ssh_port: u16, route: &NetworkRoute) -> Result<(), AppError> {
         self.start_gateway(socket, ssh_port, route, false)
     }
 
     fn start_gateway(
         &self,
-        socket: &Path,
+        socket: &vm_core::sockets::Endpoint,
         ssh_port: u16,
         route: &NetworkRoute,
         saved_route: bool,
@@ -1744,7 +1744,7 @@ mod tests {
     fn connectivity_suspends_retries_and_rejects_stale_results() {
         let dir = temp("health");
         let network = GlobalNetwork::open(&dir).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         open_gate(&network, &NetworkRoute::default());
         let point = network.rollback_point();
         let target = || network.health_target().unwrap();
@@ -1798,7 +1798,7 @@ mod tests {
     fn changed_mac_path_without_an_exit_identity_requires_a_fresh_grant() {
         let dir = temp("path-change");
         let network = GlobalNetwork::open(&dir).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         open_gate(&network, &NetworkRoute::default());
         assert!(network.path_changed());
         let target = network.health_target().unwrap();
@@ -1816,7 +1816,7 @@ mod tests {
     fn mac_path_change_can_resume_only_the_verified_exit() {
         let dir = temp("path-identity");
         let network = GlobalNetwork::open(&dir).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         open_gate(&network, &NetworkRoute::default());
         let exit = Ipv4Addr::new(203, 0, 113, 7);
         network.runtime().verified_exit = Some(exit);
@@ -1841,7 +1841,7 @@ mod tests {
     fn any_of_three_rechecks_can_resume_the_verified_route() {
         let dir = temp("connectivity-recovery");
         let network = GlobalNetwork::open(&dir).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         open_gate(&network, &NetworkRoute::default());
         let exit = Ipv4Addr::new(203, 0, 113, 7);
         network.runtime().verified_exit = Some(exit);
@@ -1866,7 +1866,7 @@ mod tests {
     fn guest_dns_hold_ignores_mac_https_success_and_releases_only_after_guest_passes() {
         let dir = temp("guest-network-hold");
         let network = GlobalNetwork::open(&dir).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         let route = NetworkRoute::default();
         open_gate(&network, &route);
         let exit = Ipv4Addr::new(203, 0, 113, 7);
@@ -1890,7 +1890,7 @@ mod tests {
     fn stalled_hold_closes_access_and_rejects_late_success() {
         let dir = tempfile::tempdir().unwrap();
         let network = GlobalNetwork::open(dir.path()).unwrap();
-        network.start(&dir.path().join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         let route = NetworkRoute::default();
         open_gate(&network, &route);
         let revision = route_revision(&route);
@@ -1910,7 +1910,7 @@ mod tests {
     fn a_failed_renewal_requires_its_own_verification_to_resume() {
         let dir = temp("verification-hold");
         let network = GlobalNetwork::open(&dir).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         let route = NetworkRoute::default();
         open_gate(&network, &route);
         let exit = Ipv4Addr::new(203, 0, 113, 7);
@@ -2004,7 +2004,7 @@ mod tests {
         let network = GlobalNetwork::open(&dir).unwrap();
         let bound = NetworkRoute { bind_interface: Some("en-missing".into()), ..NetworkRoute::default() };
         network.save(&bound).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         let ssh = network.ssh_port().unwrap();
         assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, ssh)).is_ok());
         assert!(network.runtime().gateway.as_ref().unwrap().proxy_url().is_none());
@@ -2028,7 +2028,7 @@ mod tests {
         let dir = temp("non-default-adapter");
         let network = GlobalNetwork::open(&dir).unwrap();
         let system = NetworkRoute::default();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         let ssh = network.ssh_port().unwrap();
         // Model a selected adapter without changing the host network configuration.
         let name = "en-test";
@@ -2065,7 +2065,7 @@ mod tests {
     fn path_change_during_system_candidate_prevents_restoring_bound_grant() {
         let dir = temp("br");
         let network = GlobalNetwork::open(&dir).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         let bound = NetworkRoute { bind_interface: Some("en-test".into()), ..NetworkRoute::default() };
         network.save(&bound).unwrap();
         network.runtime().active_route = Some(bound.clone());
@@ -2095,7 +2095,7 @@ mod tests {
     fn interface_path_change_invalidates_inflight_check_and_rollback() {
         let dir = temp("interface-path-change");
         let network = GlobalNetwork::open(&dir).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         let route = NetworkRoute { bind_interface: Some("en-test".into()), ..NetworkRoute::default() };
         network.save(&route).unwrap();
         network.runtime().active_route = Some(route.clone());
@@ -2142,7 +2142,7 @@ mod tests {
     fn a_failed_apply_keeps_the_previous_gateway_saved_route_and_grant() {
         let dir = temp("switch");
         let network = GlobalNetwork::open(&dir).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         open_gate(&network, &NetworkRoute::default());
         let invalid = NetworkRoute {
             enabled: true,
@@ -2167,7 +2167,7 @@ mod tests {
         let network = GlobalNetwork::open(&dir).unwrap();
         let route = NetworkRoute::default();
         let revision = route_revision(&route);
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         open_gate(&network, &route);
         network.path_changed();
         let before_sleep = network.health_target().unwrap();
@@ -2195,7 +2195,7 @@ mod tests {
         let network = GlobalNetwork::open(&dir).unwrap();
         let route = NetworkRoute::default();
         let revision = route_revision(&route);
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         open_gate(&network, &route);
         let check = network.begin_check(revision.clone(), true).unwrap();
         network.save(&NetworkRoute { bind_interface: Some("en-test".into()), ..route.clone() }).unwrap();
@@ -2210,7 +2210,7 @@ mod tests {
     fn a_new_gateway_starts_closed_and_manual_pause_is_durable() {
         let dir = temp("gate");
         let network = GlobalNetwork::open(&dir).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         let status = network.status(true).unwrap();
         assert_eq!(status.gate, NetworkGateMode::Closed);
         assert!(status.next_retry_at.is_some());
@@ -2258,7 +2258,7 @@ mod tests {
 
         // Start a local gateway and model the active bound route without using
         // a real host interface or making external network requests.
-        network.start_with(&dir.join("gateway.sock"), 0, &NetworkRoute::default()).unwrap();
+        network.start_with(&vm_core::sockets::Endpoint::Tcp(0), 0, &NetworkRoute::default()).unwrap();
         network.runtime().active_route = Some(bound.clone());
         assert!(network.download_proxy().is_err(), "a closed gate blocks downloads");
         assert!(network.import("blocked", Some(&url), None).is_err());
@@ -2298,7 +2298,7 @@ mod tests {
             bind_interface: None,
         };
         network.save(&route).unwrap();
-        network.start(&dir.join("gateway.sock"), 0).unwrap();
+        network.start(&vm_core::sockets::Endpoint::Tcp(0), 0).unwrap();
         open_gate(&network, &route);
         let before = network.gate_snapshot();
 

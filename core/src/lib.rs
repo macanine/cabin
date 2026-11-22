@@ -1,45 +1,80 @@
 //! Cabin core: all product logic for the desktop app.
+//!
+//! Most of the crate runs inside the Ubuntu VM (the agent runtime, browser,
+//! desktop and daemon plumbing), so those modules are Unix-only. The desktop
+//! shell links the host-side subset on every platform: the wire model, the
+//! sync engine (host half), the proxy/store/IPv4 helpers and the hello
+//! protocol.
 
-pub mod agent_runtime;
-pub mod agents;
-pub mod browser;
-pub mod chat;
-pub mod chat_view;
-pub mod context;
-pub mod device_probe;
-pub mod environment;
 pub mod error;
-pub mod fetch;
 pub mod fsx;
-pub mod guest_desktop;
-pub mod guest_dns;
-pub mod guest_ipv4;
-pub mod guest_system;
+pub mod hello;
 pub mod ipv4;
 pub mod model;
-pub mod monitor;
-pub mod native_display;
-pub mod network_probe;
-pub mod node;
-pub mod ops;
 pub mod paths;
 pub mod proxy;
-pub mod python;
-pub mod rpc;
-pub mod sessions;
-pub mod setup;
 pub mod store;
 pub mod sync;
-pub mod system;
 pub mod util;
+
+#[cfg(unix)]
+pub mod agent_runtime;
+#[cfg(unix)]
+pub mod agents;
+#[cfg(unix)]
+pub mod app;
+#[cfg(unix)]
+pub mod browser;
+#[cfg(unix)]
+pub mod chat;
+#[cfg(unix)]
+pub mod chat_view;
+#[cfg(unix)]
+pub mod context;
+#[cfg(unix)]
+pub mod device_probe;
+#[cfg(unix)]
+pub mod environment;
+#[cfg(unix)]
+pub mod fetch;
+#[cfg(unix)]
+pub mod guest_desktop;
+#[cfg(unix)]
+pub mod guest_dns;
+#[cfg(unix)]
+pub mod guest_ipv4;
+#[cfg(unix)]
+pub mod guest_system;
+#[cfg(unix)]
+pub mod monitor;
+#[cfg(unix)]
+pub mod native_display;
+#[cfg(unix)]
+pub mod network_probe;
+#[cfg(unix)]
+pub mod node;
+#[cfg(unix)]
+pub mod ops;
+#[cfg(unix)]
+pub mod python;
+#[cfg(unix)]
+pub mod rpc;
+#[cfg(unix)]
+pub mod sessions;
+#[cfg(unix)]
+pub mod setup;
+#[cfg(unix)]
+pub mod system;
+#[cfg(unix)]
 pub mod workbench;
+#[cfg(unix)]
 pub mod workspace_diff;
+#[cfg(unix)]
 pub mod worktree;
 
 pub use error::{Error, Result};
-pub mod app;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod bindings {
     use crate::model::*;
     use ts_rs::{Config, TS};
@@ -269,8 +304,11 @@ mod bindings {
             std::fs::create_dir_all(path.parent().ok_or("no parent")?)?;
             std::fs::write(path, &generated)?;
         }
+        // Checkouts may carry CRLF line endings; compare content only.
         assert_eq!(
-            std::fs::read_to_string(path).unwrap_or_default(),
+            std::fs::read_to_string(path).unwrap_or_default().replace("
+", "
+"),
             generated,
             "TypeScript bindings are stale; run CABIN_UPDATE_IPC_BINDINGS=1 cargo test ipc_bindings"
         );

@@ -2,6 +2,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -30,7 +31,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> 
         .or_else(|| {
             fs::metadata(path)
                 .ok()
-                .map(|meta| meta.permissions().mode() & 0o7777)
+                .map(|meta| mode_of(&meta))
         })
         .unwrap_or(0o644);
     let name = path
@@ -39,16 +40,18 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> 
         .unwrap_or_else(|| "file".into());
     let temp = parent.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(mode)
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(mode);
+        let mut file = options
             .open(&temp)
             .map_err(|error| Error::path("create", &temp, error))?;
         file.write_all(bytes)
             .map_err(|error| Error::path("write", &temp, error))?;
         file.sync_all()
             .map_err(|error| Error::path("sync", &temp, error))?;
+        #[cfg(unix)]
         fs::set_permissions(&temp, fs::Permissions::from_mode(mode))
             .map_err(|error| Error::path("chmod", &temp, error))?;
         fs::rename(&temp, path).map_err(|error| Error::path("replace", path, error))
@@ -105,6 +108,7 @@ pub fn restore(path: &Path, backup: Option<&Path>) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn atomic_write_replaces_and_keeps_mode() -> Result<()> {
         let dir = tempfile::tempdir()?;
@@ -135,5 +139,61 @@ mod tests {
         restore(&path, None)?;
         assert!(!path.exists());
         Ok(())
+    }
+}
+
+/// Unix mode bits of `meta` (Windows derives them from the attributes; the
+/// guest applies them as-is, so Windows-hosted syncs simply send plain
+/// read-only/normal files).
+pub fn mode_of(meta: &fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        meta.permissions().mode() & 0o7777
+    }
+    #[cfg(not(unix))]
+    {
+        if meta.is_dir() {
+            0o755
+        } else if meta.permissions().readonly() {
+            0o444
+        } else {
+            0o644
+        }
+    }
+}
+
+/// Modified time in Unix seconds (floored).
+pub fn mtime_secs_of(meta: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        meta.mtime().max(0) as u64
+    }
+    #[cfg(not(unix))]
+    {
+        meta.modified()
+            .ok()
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+}
+
+/// Modified time in nanoseconds since the epoch.
+pub fn mtime_nanos_of(meta: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        (meta.mtime().max(0) as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(meta.mtime_nsec().max(0) as u64)
+    }
+    #[cfg(not(unix))]
+    {
+        meta.modified()
+            .ok()
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
     }
 }

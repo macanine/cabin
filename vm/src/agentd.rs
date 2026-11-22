@@ -37,8 +37,9 @@ pub fn default_binary() -> PathBuf {
 pub fn require_binary(binary: &Path) -> Result<&Path> {
     if !binary.is_file() {
         return message(format!(
-            "Guest cabind binary not found at {}. Set CABIND_BIN to the Linux ARM64 cabind binary (or place it next to vmctl).",
-            binary.display()
+            "Guest cabind binary not found at {}. Set CABIND_BIN to the Linux {} cabind binary (or place it next to vmctl).",
+            binary.display(),
+            crate::platform::guest_arch()
         ));
     }
     Ok(binary)

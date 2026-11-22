@@ -25,8 +25,8 @@ pub struct Os {
     builds: &'static str,
     /// A dated build folder in that listing (captured without the slash).
     build_dir: &'static str,
-    /// The arm64 image inside a build folder.
-    image: &'static str,
+    /// The release version, e.g. `24.04`.
+    pub version: &'static str,
 }
 
 /// The default for new machines.
@@ -40,7 +40,7 @@ pub const RELEASES: [Os; 2] = [
         testing: false,
         builds: "https://cloud-images.ubuntu.com/minimal/releases/noble/",
         build_dir: r"release-\d{8}(?:\.\d+)?",
-        image: r"ubuntu-24\.04-minimal-cloudimg-arm64\.img",
+        version: "24.04",
     },
     Os {
         id: "ubuntu-26.04",
@@ -49,9 +49,26 @@ pub const RELEASES: [Os; 2] = [
         testing: false,
         builds: "https://cloud-images.ubuntu.com/minimal/releases/resolute/",
         build_dir: r"release-\d{8}(?:\.\d+)?",
-        image: r"ubuntu-26\.04-minimal-cloudimg-arm64\.img",
+        version: "26.04",
     },
 ];
+
+impl Os {
+    /// The cloud image for the host's guest architecture (`aarch64` on the
+    /// macOS product, the native architecture elsewhere).
+    pub fn image(&self) -> String {
+        let arch = if crate::platform::guest_arch() == "x86_64" {
+            "amd64"
+        } else {
+            "arm64"
+        };
+        format!(
+            r"ubuntu-{}-minimal-cloudimg-{}\.img",
+            self.version.replace('.', r"\."),
+            arch
+        )
+    }
+}
 
 pub fn find(id: &str) -> Option<&'static Os> {
     RELEASES.iter().find(|os| os.id == id)
@@ -115,7 +132,7 @@ impl Os {
         match last_error {
             Some(error) => message(format!("could not find a {} image: {error}", self.name)),
             None => message(format!(
-                "no recent {} build lists an arm64 image",
+                "no recent {} build lists an image for this architecture",
                 self.name
             )),
         }
@@ -129,7 +146,7 @@ impl Os {
     /// The image's file name and checksum in a `SHA256SUMS` list
     /// (`<hex> *<file>` or `<hex>  <file>`).
     fn find_image(&self, sums: &str) -> Option<(String, Checksum)> {
-        let image = Regex::new(&format!("^{}$", self.image)).ok()?;
+        let image = Regex::new(&format!("^{}$", self.image())).ok()?;
         sums.lines().find_map(|line| {
             let mut parts = line.split_whitespace();
             let hex = parts.next()?.to_ascii_lowercase();
@@ -161,14 +178,22 @@ impl Os {
 
     /// The archive the image uses, then mirrors commonly faster in Asia.
     pub fn mirrors(&self) -> &'static [&'static str] {
-        &[
-            "http://ports.ubuntu.com/ubuntu-ports",
-            "https://ftp.kaist.ac.kr/ubuntu-ports",
-            "https://mirrors.nju.edu.cn/ubuntu-ports",
-        ]
+        if crate::platform::guest_arch() == "x86_64" {
+            &[
+                "http://archive.ubuntu.com/ubuntu",
+                "https://ftp.kaist.ac.kr/ubuntu",
+                "https://mirrors.nju.edu.cn/ubuntu",
+            ]
+        } else {
+            &[
+                "http://ports.ubuntu.com/ubuntu-ports",
+                "https://ftp.kaist.ac.kr/ubuntu-ports",
+                "https://mirrors.nju.edu.cn/ubuntu-ports",
+            ]
+        }
     }
 
-    /// The suite whose arm64 index a mirror test downloads.
+    /// The suite whose package index a mirror test downloads.
     pub fn mirror_index_suite(&self) -> String {
         format!("{}-updates", self.codename)
     }
@@ -261,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn finds_the_arm64_image_in_the_checksum_list() {
+    fn finds_the_guest_image_in_the_checksum_list() {
         let ubuntu = find("ubuntu-24.04").unwrap();
         let sums = format!(
             "{a} *ubuntu-24.04-minimal-cloudimg-arm64.manifest\n{b} *ubuntu-24.04-minimal-cloudimg-arm64.img\n{c} *ubuntu-24.04-minimal-cloudimg-amd64.img\n",
@@ -270,8 +295,13 @@ mod tests {
             c = "3".repeat(64)
         );
         let (file, checksum) = ubuntu.find_image(&sums).unwrap();
-        assert_eq!(file, "ubuntu-24.04-minimal-cloudimg-arm64.img");
-        assert_eq!(checksum, Checksum::Sha256("ab".repeat(32)));
+        let (arch, digest) = if crate::platform::guest_arch() == "x86_64" {
+            ("amd64", "3".repeat(64))
+        } else {
+            ("arm64", "ab".repeat(32))
+        };
+        assert_eq!(file, format!("ubuntu-24.04-minimal-cloudimg-{arch}.img"));
+        assert_eq!(checksum, Checksum::Sha256(digest));
         // A short or malformed digest is not trusted.
         assert!(
             ubuntu

@@ -4,7 +4,6 @@
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,6 +13,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use crate::py_json;
 use crate::{Error, Result};
@@ -27,31 +29,18 @@ pub fn message<T>(text: impl Into<String>) -> Result<T> {
 // ---- time ---------------------------------------------------------------
 
 fn format_time(format: &str, utc: bool) -> String {
-    format_time_at(unsafe { libc::time(std::ptr::null_mut()) }, format, utc)
-}
-
-fn format_time_at(now: libc::time_t, format: &str, utc: bool) -> String {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let ok = unsafe {
-        if utc {
-            libc::gmtime_r(&now, &mut tm)
-        } else {
-            libc::localtime_r(&now, &mut tm)
+    match format {
+        "%Y-%m-%dT%H:%M:%S+00:00" if utc => crate::compat::utc_stamp_string(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+        ),
+        "%Y%m%d-%H%M%S" if !utc => {
+            crate::compat::local_stamp_string(std::time::SystemTime::now())
         }
-    };
-    if ok.is_null() {
-        return String::new();
+        _ => String::new(),
     }
-    let mut buffer: [libc::c_char; 64] = [0; 64];
-    let fmt = std::ffi::CString::new(format).unwrap_or_default();
-    let length = unsafe { libc::strftime(buffer.as_mut_ptr(), buffer.len(), fmt.as_ptr(), &tm) };
-    if length == 0 {
-        return String::new();
-    }
-    // `c_char` is u8 on Linux/ARM64 but i8 on macOS, so the cast is needed there.
-    #[allow(clippy::unnecessary_cast)]
-    let bytes: Vec<u8> = buffer[..length].iter().map(|value| *value as u8).collect();
-    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// The standard persisted timestamp: Unix milliseconds.
@@ -83,18 +72,14 @@ pub fn utcnow() -> String {
 pub fn utcstamp_of(at: std::time::SystemTime) -> String {
     let secs = at
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as libc::time_t)
+        .map(|d| d.as_secs() as i64)
         .unwrap_or_default();
-    format_time_at(secs, "%Y-%m-%dT%H:%M:%S+00:00", true)
+    crate::compat::utc_stamp_string(secs)
 }
 
 /// `utcnow()` display text for a stored millisecond timestamp.
 pub fn utcstamp_from_millis(ms: i64) -> String {
-    format_time_at(
-        ms.div_euclid(1000) as libc::time_t,
-        "%Y-%m-%dT%H:%M:%S+00:00",
-        true,
-    )
+    crate::compat::utc_stamp_string(ms.div_euclid(1000))
 }
 
 /// Parse a `utcnow()` stamp (`2026-11-15T13:26:45+00:00`).
@@ -192,14 +177,15 @@ pub fn atomic_write_bytes(path: &Path, data: &[u8], mode: u32) -> Result<()> {
         .unwrap_or("artifact");
     let temp = temp_path(parent, name);
     let result = (|| -> Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(mode)
-            .open(&temp)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(mode);
+        let mut file = options.open(&temp)?;
         file.write_all(data)?;
         file.flush()?;
         file.sync_all()?;
+        #[cfg(unix)]
         fs::set_permissions(&temp, fs::Permissions::from_mode(mode))?;
         fs::rename(&temp, path)?;
         if let Ok(directory) = File::open(parent) {
@@ -260,7 +246,17 @@ pub fn copy_dir(source: &Path, destination: &Path) -> std::io::Result<()> {
 }
 
 pub fn chmod(path: &Path, mode: u32) -> std::io::Result<()> {
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows stores no mode bits; the profile directory already belongs
+        // to the current user.
+        let _ = (path, mode);
+        Ok(())
+    }
 }
 
 // ---- formatting ---------------------------------------------------------
@@ -337,13 +333,23 @@ pub fn shell_quote(value: &str) -> String {
 }
 
 pub fn which(name: &str) -> Option<PathBuf> {
+    #[cfg(unix)]
     if name.contains('/') {
         let path = PathBuf::from(name);
         return if executable(&path) { Some(path) } else { None };
     }
+    #[cfg(windows)]
+    if name.contains(['/', '\\']) {
+        let path = PathBuf::from(name);
+        return if path.is_file() { Some(path) } else { None };
+    }
     let path = std::env::var_os("PATH")?;
     for directory in std::env::split_paths(&path) {
+        #[cfg(unix)]
         let candidate = directory.join(name);
+        // Windows requires the .exe suffix and no executable bit check.
+        #[cfg(windows)]
+        let candidate = directory.join(format!("{name}.exe"));
         if executable(&candidate) {
             return Some(candidate);
         }
@@ -353,42 +359,26 @@ pub fn which(name: &str) -> Option<PathBuf> {
 
 fn executable(path: &Path) -> bool {
     match fs::metadata(path) {
+        #[cfg(unix)]
         Ok(metadata) => metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
+        #[cfg(windows)]
+        Ok(metadata) => metadata.is_file(),
         Err(_) => false,
     }
 }
 
 pub fn pid_alive(pid: u32) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
-    pid > 1 && unsafe { libc::kill(pid, 0) == 0
-        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+    crate::compat::pid_alive(pid)
 }
 
 pub fn send_signal(pid: u32, signal: i32) {
-    if let Ok(pid) = libc::pid_t::try_from(pid)
-        && pid > 1
-    {
-        unsafe { libc::kill(pid, signal) };
-    }
+    crate::compat::send_signal(pid, signal)
 }
 
 pub fn random_password(length: usize) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut random = [0u8; 64];
-    let mut filled = 0;
-    if let Ok(mut file) = File::open("/dev/urandom") {
-        while filled < random.len() {
-            match file.read(&mut random[filled..]) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => filled += read,
-            }
-        }
-    }
-    if filled < random.len() {
-        for (index, byte) in random.iter_mut().enumerate() {
-            *byte = (std::process::id() as usize + index * 131) as u8;
-        }
-    }
+    crate::compat::random_bytes(&mut random);
     (0..length)
         .map(|index| ALPHABET[random[index % random.len()] as usize % ALPHABET.len()] as char)
         .collect()
@@ -405,13 +395,7 @@ pub fn port_free(port: u16, host: &str) -> bool {
 }
 
 pub fn disk_free_bytes(path: &Path) -> u64 {
-    let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap_or_default();
-    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-    let rc = unsafe { libc::statfs(c_path.as_ptr(), &mut stat) };
-    if rc != 0 {
-        return u64::MAX;
-    }
-    (stat.f_bavail as u64).saturating_mul(stat.f_bsize as u64)
+    crate::compat::disk_free_bytes(path)
 }
 
 pub fn tail_file(path: &Path, lines: usize) -> String {
@@ -470,6 +454,7 @@ fn capture_with_stdin(
         None if input.is_some() => Stdio::piped(),
         None => Stdio::null(),
     });
+    crate::compat::no_window(&mut command);
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
@@ -585,6 +570,7 @@ pub fn run(argv: &[String], log: &Arc<Mutex<File>>, options: RunOptions<'_>) -> 
     } else {
         command.stdin(Stdio::null());
     }
+    crate::compat::no_window(&mut command);
     if let Some(cwd) = options.cwd {
         command.current_dir(cwd);
     }
@@ -687,49 +673,56 @@ pub fn log_line(log: &Arc<Mutex<File>>, text: &str) {
 }
 
 pub fn host_ip(interface: &str) -> Option<String> {
-    let result = capture(
-        &[
-            "ipconfig".to_string(),
-            "getifaddr".to_string(),
-            interface.to_string(),
-        ],
-        Duration::from_secs(3),
-        None,
-    );
-    if result.code == 0 && !result.output.trim().is_empty() {
-        return Some(result.output.trim().to_string());
+    #[cfg(windows)]
+    {
+        return crate::compat::adapter_ip(interface);
     }
-    let route = capture(
-        &[
-            "route".to_string(),
-            "-n".to_string(),
-            "get".to_string(),
-            "default".to_string(),
-        ],
-        Duration::from_secs(3),
-        None,
-    );
-    if route.code == 0 {
-        for line in route.output.lines() {
-            let line = line.trim();
-            if let Some(rest) = line.strip_prefix("interface:") {
-                let iface = rest.trim();
-                let ip = capture(
-                    &[
-                        "ipconfig".to_string(),
-                        "getifaddr".to_string(),
-                        iface.to_string(),
-                    ],
-                    Duration::from_secs(3),
-                    None,
-                );
-                if ip.code == 0 && !ip.output.trim().is_empty() {
-                    return Some(ip.output.trim().to_string());
+    #[cfg(not(windows))]
+    {
+        let result = capture(
+            &[
+                "ipconfig".to_string(),
+                "getifaddr".to_string(),
+                interface.to_string(),
+            ],
+            Duration::from_secs(3),
+            None,
+        );
+        if result.code == 0 && !result.output.trim().is_empty() {
+            return Some(result.output.trim().to_string());
+        }
+        let route = capture(
+            &[
+                "route".to_string(),
+                "-n".to_string(),
+                "get".to_string(),
+                "default".to_string(),
+            ],
+            Duration::from_secs(3),
+            None,
+        );
+        if route.code == 0 {
+            for line in route.output.lines() {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix("interface:") {
+                    let iface = rest.trim();
+                    let ip = capture(
+                        &[
+                            "ipconfig".to_string(),
+                            "getifaddr".to_string(),
+                            iface.to_string(),
+                        ],
+                        Duration::from_secs(3),
+                        None,
+                    );
+                    if ip.code == 0 && !ip.output.trim().is_empty() {
+                        return Some(ip.output.trim().to_string());
+                    }
                 }
             }
         }
+        None
     }
-    None
 }
 
 /// Locks that survive a panic elsewhere. A thread that panicked while

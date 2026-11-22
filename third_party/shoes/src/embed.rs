@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
-#[cfg(unix)]
 pub use crate::tun::{RelayGate, RelayTicket};
 
 use crate::config::{
@@ -441,6 +440,48 @@ async fn run_tun_inner(
         }
     };
     crate::tun::run_tun_from_config_controlled(tun, shutdown, false, resolver, gate).await
+}
+
+/// Run the single TUN config in `config_yaml` on a packet socket the host
+/// owns (one half of a loopback UDP pair; never closed here) until `shutdown`
+/// fires. Packets are raw IP without any header. Windows entry point (Cabin
+/// addition, see VENDORED.txt).
+#[cfg(windows)]
+pub async fn run_tun_controlled_with_device(
+    config_yaml: &str,
+    shutdown: oneshot::Receiver<()>,
+    gate: RelayGate,
+    device: std::net::UdpSocket,
+) -> std::io::Result<()> {
+    let configs = parse(config_yaml)?;
+    let (configs, _) = convert_cert_paths(configs).await?;
+    let ValidatedConfigs {
+        configs,
+        dns_groups,
+        global_limits,
+    } = create_server_configs(configs)?;
+    reject_external_dns(&configs, !dns_groups.is_empty())?;
+    validate_binding(&configs, None)?;
+    let mut tun = None;
+    for config in configs {
+        match config {
+            Config::TunServer(config) if tun.is_none() => tun = Some(config),
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "run_tun takes exactly one TUN config and nothing else",
+                ));
+            }
+        }
+    }
+    let tun = tun.ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "no TUN config given")
+    })?;
+    crate::resources::configure(global_limits)?;
+    let mut dns_registry = build_dns_registry(dns_groups).await?;
+    let resolver = crate::resolver::ipv4_only(dns_registry.get_for_server(None));
+    crate::tun::run_tun_from_config_controlled_with_device(tun, device, shutdown, resolver, gate)
+        .await
 }
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]

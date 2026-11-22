@@ -12,11 +12,17 @@
 //! - `cabind guest-system ...`  query guest environment and validate JSON
 //! - `cabind --version`
 
+#[cfg(unix)]
 use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+#[cfg(unix)]
+use std::process::Command;
+use std::process::ExitCode;
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use agent_core::app::App;
 use agent_core::paths::AppPaths;
 
@@ -24,6 +30,7 @@ const UNIT: &str = "cabind.service";
 
 /// Unix socket paths are limited to ~108 bytes; fall back to the runtime
 /// directory when the data directory is too deep.
+#[cfg(unix)]
 fn socket(paths: &AppPaths) -> PathBuf {
     if let Some(path) = std::env::var_os("CABIND_SOCKET") {
         return PathBuf::from(path);
@@ -39,6 +46,7 @@ fn socket(paths: &AppPaths) -> PathBuf {
     runtime.join(format!("cabind-{user}.sock"))
 }
 
+#[cfg(unix)]
 fn systemctl(args: &[&str]) -> bool {
     Command::new("systemctl")
         .arg("--user")
@@ -47,6 +55,7 @@ fn systemctl(args: &[&str]) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+#[cfg(unix)]
 fn install_service(paths: &AppPaths) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let unit_dir = paths.home().join(".config/systemd/user");
@@ -75,6 +84,7 @@ fn install_service(paths: &AppPaths) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn guest_desktop(args: &[String]) -> ExitCode {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let result: Result<(), String> = match args.first().map(String::as_str) {
@@ -128,6 +138,7 @@ fn guest_desktop(args: &[String]) -> ExitCode {
     }
 }
 
+#[cfg(unix)]
 fn guest_system(args: &[String]) -> ExitCode {
     let result: Result<(), String> = match args.first().map(String::as_str) {
         Some("environment") => agent_core::guest_system::environment()
@@ -154,6 +165,15 @@ fn guest_system(args: &[String]) -> ExitCode {
     }
 }
 
+#[cfg(not(unix))]
+fn main() -> ExitCode {
+    // The daemon runs inside the Ubuntu VM; Windows hosts only build it for
+    // the guest (see `npm run build:agentd`).
+    eprintln!("cabind runs inside the Ubuntu VM");
+    ExitCode::FAILURE
+}
+
+#[cfg(unix)]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let paths = AppPaths::from_env();

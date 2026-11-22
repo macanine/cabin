@@ -211,6 +211,7 @@ pub(crate) async fn write_codex_export(
     contents: String,
 ) -> Result<String, AppError> {
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
 
     if contents.len() > 2 * 1024 * 1024 {
@@ -227,11 +228,11 @@ pub(crate) async fn write_codex_export(
             format!("codex-account-{number}.json")
         };
         let path = std::path::Path::new(&directory).join(name);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&path)
         {
             Ok(mut file) => {
                 if let Err(error) = file
@@ -268,8 +269,10 @@ pub(crate) async fn write_codex_export(
 #[cfg(test)]
 mod export_tests {
     use super::write_codex_export;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
     #[test]
     fn exports_are_private_and_never_overwrite() {
         let dir = tempfile::tempdir().unwrap();

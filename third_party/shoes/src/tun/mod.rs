@@ -60,6 +60,7 @@ pub use relay_gate::{RelayGate, RelayTicket};
 pub use tun_server::TunServerConfig;
 
 use std::net::SocketAddr;
+#[cfg(unix)]
 use std::os::fd::{BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
 
@@ -86,8 +87,34 @@ use udp_manager::TunUdpManager;
 /// 3. The stack thread reads packets directly from TUN using poll()
 /// 4. Handles TCP connections through the proxy chain
 /// 5. Handles UDP packets through tokio (forwarded from stack thread)
+#[cfg(unix)]
 async fn run_tun_server(
     config: TunServerConfig,
+    proxy_selector: Arc<ClientProxySelector>,
+    resolver: Arc<dyn Resolver>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+    gate: RelayGate,
+) -> std::io::Result<()> {
+    run_tun_server_inner(config, proxy_selector, resolver, shutdown_rx, gate).await
+}
+
+/// Windows variant: the packet device is the stack's half of a loopback UDP
+/// pair owned by the host gateway (Cabin addition, see VENDORED.txt).
+#[cfg(windows)]
+async fn run_tun_server(
+    config: TunServerConfig,
+    device: std::net::UdpSocket,
+    proxy_selector: Arc<ClientProxySelector>,
+    resolver: Arc<dyn Resolver>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+    gate: RelayGate,
+) -> std::io::Result<()> {
+    run_tun_server_inner(config, device, proxy_selector, resolver, shutdown_rx, gate).await
+}
+
+async fn run_tun_server_inner(
+    config: TunServerConfig,
+    #[cfg(windows)] device: std::net::UdpSocket,
     proxy_selector: Arc<ClientProxySelector>,
     resolver: Arc<dyn Resolver>,
     mut shutdown_rx: oneshot::Receiver<()>,
@@ -99,27 +126,37 @@ async fn run_tun_server(
         config.mtu, config.tcp_enabled, config.udp_enabled, config.icmp_enabled
     );
 
-    let fd = if let Some(fd) = config.raw_fd {
-        info!("Using provided raw FD: {}", fd);
-        if config.close_fd_on_drop {
-            unsafe { OwnedFd::from_raw_fd(fd) }
+    #[cfg(unix)]
+    let mut tcp_stack = {
+        let fd = if let Some(fd) = config.raw_fd {
+            info!("Using provided raw FD: {}", fd);
+            if config.close_fd_on_drop {
+                unsafe { OwnedFd::from_raw_fd(fd) }
+            } else {
+                unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?
+            }
         } else {
-            unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?
+            let tun_device = config.create_sync_device()?;
+            let fd = tun_device.into_raw_fd();
+            info!("Created TUN device with FD: {}", fd);
+            unsafe { OwnedFd::from_raw_fd(fd) }
+        };
+
+        // Creates the direct TCP stack in a dedicated thread.
+        let mut stack_config = config.clone();
+        if config.raw_fd.is_none() && cfg!(any(target_os = "macos", target_os = "ios")) {
+            stack_config.packet_information = true;
         }
-    } else {
-        let tun_device = config.create_sync_device()?;
-        let fd = tun_device.into_raw_fd();
-        info!("Created TUN device with FD: {}", fd);
-        unsafe { OwnedFd::from_raw_fd(fd) }
+        TcpStackDirect::with_config(fd, stack_config, gate.clone())?
+    };
+    #[cfg(windows)]
+    let mut tcp_stack = {
+        let mut stack_config = config.clone();
+        stack_config.packet_information = false;
+        TcpStackDirect::with_config(device, stack_config, gate.clone())?
     };
 
-    // Creates the direct TCP stack in a dedicated thread.
-    let mut stack_config = config.clone();
-    if config.raw_fd.is_none() && cfg!(any(target_os = "macos", target_os = "ios")) {
-        stack_config.packet_information = true;
-    }
     let mut gate_updates = gate.subscribe();
-    let mut tcp_stack = TcpStackDirect::with_config(fd, stack_config, gate.clone())?;
 
     // Get UDP receiver (stack thread filters UDP and sends here)
     let udp_from_stack_rx = tcp_stack.take_udp_rx().expect("udp_rx already taken");
@@ -315,6 +352,7 @@ async fn handle_udp_packets(
 }
 
 /// Start TUN server based on the provided configuration.
+#[cfg(unix)]
 pub async fn start_tun_server(
     config: TunConfig,
     resolver: std::sync::Arc<dyn crate::resolver::Resolver>,
@@ -332,6 +370,7 @@ pub async fn start_tun_server(
 }
 
 /// Run TUN server from config with external shutdown control.
+#[cfg(unix)]
 pub async fn run_tun_from_config(
     config: TunConfig,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
@@ -348,6 +387,7 @@ pub async fn run_tun_from_config(
     .await
 }
 
+#[cfg(unix)]
 pub(crate) async fn run_tun_from_config_controlled(
     config: TunConfig,
     shutdown_rx: oneshot::Receiver<()>,
@@ -401,7 +441,39 @@ pub(crate) async fn run_tun_from_config_controlled(
     .await
 }
 
-#[cfg(test)]
+/// Windows variant taking the packet device directly (the config carries no
+/// device_fd). Cabin addition, see VENDORED.txt.
+#[cfg(windows)]
+pub(crate) async fn run_tun_from_config_controlled_with_device(
+    config: TunConfig,
+    device: std::net::UdpSocket,
+    shutdown_rx: oneshot::Receiver<()>,
+    resolver: Arc<dyn Resolver>,
+    gate: RelayGate,
+) -> std::io::Result<()> {
+    let mut tun_server_config = TunServerConfig::new()
+        .mtu(config.mtu)
+        .tcp_enabled(config.tcp_enabled)
+        .udp_enabled(config.udp_enabled)
+        .icmp_enabled(config.icmp_enabled)
+        .close_fd_on_drop(false);
+    tun_server_config.resource_limits = config.resource_limits;
+
+    let rules = config.rules.map(ConfigSelection::unwrap_config).into_vec();
+    let client_proxy_selector = Arc::new(create_tcp_client_proxy_selector(rules, resolver.clone()));
+
+    run_tun_server(
+        tun_server_config,
+        device,
+        client_proxy_selector,
+        resolver,
+        shutdown_rx,
+        gate,
+    )
+    .await
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::fd::AsRawFd;

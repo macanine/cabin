@@ -1,13 +1,14 @@
 //! Direct TCP Stack Manager for smoltcp integration.
 //!
 //! This module manages the smoltcp TCP/IP stack in a dedicated OS thread,
-//! using `poll()` on TUN and wake fds for event-driven I/O.
+//! using `poll()` on TUN and wake fds for event-driven I/O. Unix reads and
+//! writes packets through the TUN file descriptor; Windows (Cabin addition,
+//! see VENDORED.txt) uses one half of a loopback UDP pair.
 
 use std::{
     collections::{HashMap, HashSet},
     io,
     net::SocketAddr,
-    os::fd::{AsRawFd, OwnedFd, RawFd},
     panic::{self, AssertUnwindSafe},
     sync::{
         Arc, Mutex,
@@ -16,6 +17,9 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
+
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
 use log::{debug, error, info, trace, warn};
 use smoltcp::{
@@ -34,7 +38,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use super::packet::PacketBuffer;
 use super::tcp_conn::{TcpConnection, TcpConnectionControl, TcpSocketState};
-use super::wake::{Wake, WakeReceiver};
+use super::wake::{TunDescriptor, Wake, WakeReceiver};
 use super::{RelayGate, TunServerConfig};
 
 pub const PACKET_QUEUE_CAPACITY: usize = 64;
@@ -69,7 +73,7 @@ struct SharedState {
 
 /// Direct TCP Stack Manager.
 ///
-/// Manages the smoltcp interface with direct fd access for efficient I/O.
+/// Manages the smoltcp interface with direct packet I/O.
 pub struct TcpStackDirect {
     /// Handle to the stack thread
     thread_handle: Option<JoinHandle<()>>,
@@ -80,8 +84,11 @@ pub struct TcpStackDirect {
     udp_rx: Option<Receiver<PacketBuffer>>,
     /// Shared state with the stack thread
     shared_state: Arc<Mutex<SharedState>>,
-    /// TUN file descriptor (owned, will be closed on drop)
+    /// TUN device handle (owned, closed on drop on Unix).
+    #[cfg(unix)]
     _tun_fd: OwnedFd,
+    #[cfg(windows)]
+    _tun: std::net::UdpSocket,
 }
 
 impl Drop for TcpStackDirect {
@@ -106,7 +113,7 @@ impl TcpStackDirect {
     ///
     /// This spawns a dedicated OS thread for running the smoltcp interface.
     /// The thread waits for TUN readiness and cross-thread notifications.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn new(tun_fd: OwnedFd, mtu: usize) -> Self {
         Self::with_config(
             tun_fd,
@@ -116,6 +123,8 @@ impl TcpStackDirect {
         .unwrap()
     }
 
+    /// Create a direct TCP stack from a Unix TUN descriptor.
+    #[cfg(unix)]
     pub fn with_config(
         tun_fd: OwnedFd,
         config: TunServerConfig,
@@ -183,6 +192,76 @@ impl TcpStackDirect {
         })
     }
 
+    /// Create a direct TCP stack from a Windows packet socket (one half of a
+    /// loopback UDP pair owned by the host gateway).
+    #[cfg(windows)]
+    pub fn with_config(
+        tun: std::net::UdpSocket,
+        config: TunServerConfig,
+        gate: RelayGate,
+    ) -> io::Result<Self> {
+        tun.set_nonblocking(true)?;
+        let kept = tun.try_clone()?;
+        let (wake, wake_rx) = Wake::new()?;
+        let (udp_tx, udp_rx) = mpsc::channel(PACKET_QUEUE_CAPACITY);
+
+        let running = Arc::new(AtomicBool::new(true));
+        let shared_state = Arc::new(Mutex::new(SharedState {
+            udp_response_rx: None,
+            new_conn_tx: None,
+        }));
+
+        let thread_handle = {
+            let running = running.clone();
+            let shared_state = shared_state.clone();
+            let stack_wake = wake.clone();
+
+            thread::Builder::new()
+                .name("shoes-smoltcp-direct".to_owned())
+                .spawn(move || {
+                    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                        run_direct_stack_thread(
+                            Arc::new(tun),
+                            config,
+                            udp_tx,
+                            running.clone(),
+                            shared_state,
+                            stack_wake,
+                            wake_rx,
+                            gate,
+                        );
+                    }));
+
+                    match result {
+                        Ok(()) => {
+                            info!("smoltcp direct stack thread exited normally");
+                        }
+                        Err(panic_info) => {
+                            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                                s.clone()
+                            } else {
+                                "Unknown panic".to_string()
+                            };
+                            error!("smoltcp direct stack thread PANICKED: {}", msg);
+                        }
+                    }
+
+                    running.store(false, Ordering::Relaxed);
+                })?
+        };
+
+        Ok(Self {
+            thread_handle: Some(thread_handle),
+            wake,
+            running,
+            udp_rx: Some(udp_rx),
+            shared_state,
+            _tun: kept,
+        })
+    }
+
     pub fn wake_handle(&self) -> Wake {
         self.wake.clone()
     }
@@ -214,9 +293,12 @@ impl TcpStackDirect {
     }
 }
 
-/// Direct TUN device that reads/writes directly to fd.
+/// Direct TUN device that reads/writes packets through the platform handle.
 struct DirectDevice {
+    #[cfg(unix)]
     fd: RawFd,
+    #[cfg(windows)]
+    tun: Arc<std::net::UdpSocket>,
     mtu: usize,
     pending_rx: Option<PacketBuffer>,
     tx_buffer: Vec<u8>,
@@ -224,6 +306,7 @@ struct DirectDevice {
 }
 
 impl DirectDevice {
+    #[cfg(unix)]
     fn new(fd: RawFd, mtu: usize, packet_information: bool) -> Self {
         Self {
             fd,
@@ -231,6 +314,17 @@ impl DirectDevice {
             pending_rx: None,
             tx_buffer: Vec::with_capacity(mtu),
             packet_information,
+        }
+    }
+
+    #[cfg(windows)]
+    fn new(tun: Arc<std::net::UdpSocket>, mtu: usize, _packet_information: bool) -> Self {
+        Self {
+            tun,
+            mtu,
+            pending_rx: None,
+            tx_buffer: Vec::with_capacity(mtu),
+            packet_information: false,
         }
     }
 
@@ -248,9 +342,20 @@ impl DirectDevice {
         let mut buffer = PacketBuffer::with_capacity(self.mtu + 4);
         buffer.resize(self.mtu + 4);
 
-        match read_nonblocking(self.fd, &mut buffer) {
+        let read_result = {
+            #[cfg(unix)]
+            {
+                read_nonblocking(self.fd, &mut buffer)
+            }
+            #[cfg(windows)]
+            {
+                self.tun.recv(&mut buffer)
+            }
+        };
+        match read_result {
             Ok(n) if n > 0 => {
                 buffer.truncate(n);
+                #[cfg(unix)]
                 if self.packet_information {
                     if n < 5 || buffer[..4] != packet_header(buffer[4])? {
                         return Err(io::Error::new(
@@ -287,7 +392,14 @@ impl DirectDevice {
 
     /// Write a packet to TUN.
     fn write_packet(&self, data: &[u8]) -> io::Result<()> {
-        write_packet(self.fd, data, self.packet_information)
+        #[cfg(unix)]
+        {
+            write_packet(self.fd, data, self.packet_information)
+        }
+        #[cfg(windows)]
+        {
+            self.tun.send(data).map(|_| ())
+        }
     }
 }
 
@@ -302,7 +414,10 @@ impl Device for DirectDevice {
         let buffer = self.pending_rx.take()?;
         let rx = DirectRxToken { buffer };
         let tx = DirectTxToken {
+            #[cfg(unix)]
             fd: self.fd,
+            #[cfg(windows)]
+            tun: Arc::clone(&self.tun),
             packet_information: self.packet_information,
             buffer: &mut self.tx_buffer,
         };
@@ -311,7 +426,10 @@ impl Device for DirectDevice {
 
     fn transmit(&mut self, _timestamp: SmolInstant) -> Option<Self::TxToken<'_>> {
         Some(DirectTxToken {
+            #[cfg(unix)]
             fd: self.fd,
+            #[cfg(windows)]
+            tun: Arc::clone(&self.tun),
             packet_information: self.packet_information,
             buffer: &mut self.tx_buffer,
         })
@@ -345,7 +463,10 @@ impl RxToken for DirectRxToken {
 }
 
 struct DirectTxToken<'a> {
+    #[cfg(unix)]
     fd: RawFd,
+    #[cfg(windows)]
+    tun: Arc<std::net::UdpSocket>,
     packet_information: bool,
     buffer: &'a mut Vec<u8>,
 }
@@ -359,7 +480,12 @@ impl TxToken for DirectTxToken<'_> {
         self.buffer.resize(len, 0);
         let result = f(self.buffer);
 
+        #[cfg(unix)]
         if let Err(e) = write_packet(self.fd, self.buffer, self.packet_information) {
+            warn!("Failed to write to TUN: {}", e);
+        }
+        #[cfg(windows)]
+        if let Err(e) = self.tun.send(self.buffer) {
             warn!("Failed to write to TUN: {}", e);
         }
 
@@ -371,8 +497,39 @@ const MAX_PACKET_BATCH: usize = 64;
 const MAX_EGRESS_SWEEPS: usize = 8;
 
 /// Run the direct smoltcp stack thread.
+#[cfg(unix)]
 fn run_direct_stack_thread(
     fd: RawFd,
+    config: TunServerConfig,
+    udp_tx: Sender<PacketBuffer>,
+    running: Arc<AtomicBool>,
+    shared_state: Arc<Mutex<SharedState>>,
+    stack_wake: Wake,
+    mut wake_rx: WakeReceiver,
+    gate: RelayGate,
+) {
+    run_direct_stack_loop(fd, config, udp_tx, running, shared_state, stack_wake, wake_rx, gate)
+}
+
+/// Windows variant: the packet device is a loopback UDP socket.
+#[cfg(windows)]
+fn run_direct_stack_thread(
+    tun: Arc<std::net::UdpSocket>,
+    config: TunServerConfig,
+    udp_tx: Sender<PacketBuffer>,
+    running: Arc<AtomicBool>,
+    shared_state: Arc<Mutex<SharedState>>,
+    stack_wake: Wake,
+    mut wake_rx: WakeReceiver,
+    gate: RelayGate,
+) {
+    run_direct_stack_loop(&tun, config, udp_tx, running, shared_state, stack_wake, wake_rx, gate)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_direct_stack_loop(
+    #[cfg(unix)] fd: RawFd,
+    #[cfg(windows)] tun: &TunDescriptor,
     config: TunServerConfig,
     udp_tx: Sender<PacketBuffer>,
     running: Arc<AtomicBool>,
@@ -384,7 +541,10 @@ fn run_direct_stack_thread(
     info!("smoltcp direct stack thread initializing...");
 
     let limits = &config.resource_limits;
+    #[cfg(unix)]
     let mut device = DirectDevice::new(fd, config.mtu as usize, config.packet_information);
+    #[cfg(windows)]
+    let mut device = DirectDevice::new(Arc::clone(tun), config.mtu as usize, false);
 
     let mut iface_config = InterfaceConfig::new(HardwareAddress::Ip);
     iface_config.random_seed = rand::random();
@@ -463,7 +623,11 @@ fn run_direct_stack_thread(
         }
         if !policy.open {
             drop(policy);
-            if let Err(error) = wake_rx.wait(fd, None) {
+            #[cfg(unix)]
+            let waited = wake_rx.wait(fd, None);
+            #[cfg(windows)]
+            let waited = wake_rx.wait(tun, None);
+            if let Err(error) = waited {
                 if error.kind() != io::ErrorKind::Interrupted {
                     error!("TUN poll failed while suspended: {error}");
                     break;
@@ -742,7 +906,11 @@ fn run_direct_stack_thread(
 
         let delay = iface.poll_delay(stack_now(), &socket_set);
         drop(policy);
-        match wake_rx.wait(fd, delay.map(Into::into)) {
+        #[cfg(unix)]
+        let waited = wake_rx.wait(fd, delay.map(Into::into));
+        #[cfg(windows)]
+        let waited = wake_rx.wait(tun, delay.map(Into::into));
+        match waited {
             Ok(_) => wait_error_count = 0,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => {
@@ -999,6 +1167,7 @@ fn should_filter_packet(packet: &[u8]) -> bool {
 }
 
 /// Set a file descriptor to non-blocking mode (call once at startup).
+#[cfg(unix)]
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 {
@@ -1012,6 +1181,7 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn packet_header(first_byte: u8) -> io::Result<[u8; 4]> {
     let version = first_byte >> 4;
     #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -1035,6 +1205,7 @@ fn packet_header(first_byte: u8) -> io::Result<[u8; 4]> {
     Ok(protocol.to_be_bytes())
 }
 
+#[cfg(unix)]
 fn write_packet(fd: RawFd, data: &[u8], packet_information: bool) -> io::Result<()> {
     write_packet_with(data, packet_information, |header, payload| {
         let n = if header.is_empty() {
@@ -1063,6 +1234,7 @@ fn write_packet(fd: RawFd, data: &[u8], packet_information: bool) -> io::Result<
 /// Non-blocking read from a file descriptor (fd must already be non-blocking).
 /// Returns Err(WouldBlock) when no data is available, so callers can
 /// distinguish it from Ok(0) which indicates EOF.
+#[cfg(unix)]
 fn read_nonblocking(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
     let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
     if n < 0 {
@@ -1072,6 +1244,8 @@ fn read_nonblocking(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
     }
 }
 
+#[cfg(unix)]
+#[cfg(unix)]
 fn write_packet_with(
     data: &[u8],
     packet_information: bool,
@@ -1110,7 +1284,7 @@ fn write_packet_with(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::io::IntoRawFd;

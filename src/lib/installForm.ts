@@ -17,7 +17,7 @@ export interface ResourcePreset {
 
 export const RESOURCE_PRESETS: ResourcePreset[] = [
   { key: "light", label: "Light", cpus: 2, memoryMb: 2048, diskGb: 12, note: "One agent at a time" },
-  { key: "balanced", label: "Balanced", cpus: 4, memoryMb: 4096, diskGb: 20, note: "Most Macs" },
+  { key: "balanced", label: "Balanced", cpus: 4, memoryMb: 4096, diskGb: 20, note: "Most computers" },
   { key: "roomy", label: "Roomy", cpus: 8, memoryMb: 8192, diskGb: 40, note: "Several agents, big repos" },
 ];
 

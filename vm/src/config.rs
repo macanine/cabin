@@ -18,8 +18,11 @@ use crate::py_json;
 use crate::util::{host_ip, message, now_millis, read_json, sha256_text, timestamp_millis};
 use crate::{Error, Result};
 
-pub const CHROME_URL: &str =
-    "https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb";
+pub const CHROME_URL: &str = if cfg!(target_arch = "x86_64") && !cfg!(target_os = "macos") {
+    "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+} else {
+    "https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb"
+};
 
 pub const NETWORK_MODES: [&str; 5] = [
     "user",

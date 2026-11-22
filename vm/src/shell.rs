@@ -251,7 +251,15 @@ pub fn browser_paste(home: &Path, name: &str, text: Option<&str>) -> Result<()> 
     let text = match text {
         Some(text) => text.to_string(),
         None => {
+            #[cfg(unix)]
             let output = std::process::Command::new("/usr/bin/pbpaste").output()?;
+            #[cfg(not(unix))]
+            let output = {
+                let mut command = std::process::Command::new("powershell");
+                command.args(["-NoProfile", "-Command", "Get-Clipboard"]);
+                crate::compat::no_window(&mut command);
+                command.output()?
+            };
             if !output.status.success() {
                 return message("Could not read clipboard");
             }

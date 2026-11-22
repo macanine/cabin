@@ -1,9 +1,5 @@
 use std::{
     io::{self, Read, Write},
-    os::{
-        fd::{AsRawFd, RawFd},
-        unix::net::UnixStream,
-    },
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -11,24 +7,43 @@ use std::{
     time::Duration,
 };
 
+#[cfg(unix)]
+use std::os::{
+    fd::{AsRawFd, RawFd},
+    unix::net::UnixStream,
+};
+
+#[cfg(unix)]
+/// The packet-carrying device handle the stack waits on: a TUN fd on Unix.
+pub(super) type TunDescriptor = RawFd;
+
+#[cfg(windows)]
+/// The packet-carrying device handle on Windows: one half of a loopback UDP
+/// pair owned by the host gateway (Cabin addition, see VENDORED.txt).
+pub(super) type TunDescriptor = std::sync::Arc<std::net::UdpSocket>;
+
+/// One half of the wake-up channel (Unix socketpair or loopback UDP pair).
+#[cfg(unix)]
+type WakeSocket = UnixStream;
+#[cfg(windows)]
+type WakeSocket = std::net::UdpSocket;
+
 #[derive(Clone)]
 pub(super) struct Wake(Arc<WakeInner>);
 
 struct WakeInner {
-    writer: UnixStream,
+    writer: WakeSocket,
     pending: AtomicBool,
 }
 
 pub(super) struct WakeReceiver {
-    reader: UnixStream,
+    reader: WakeSocket,
     wake: Wake,
 }
 
 impl Wake {
     pub fn new() -> io::Result<(Self, WakeReceiver)> {
-        let (reader, writer) = UnixStream::pair()?;
-        reader.set_nonblocking(true)?;
-        writer.set_nonblocking(true)?;
+        let (reader, writer) = wake_sockets()?;
         let wake = Self(Arc::new(WakeInner {
             writer,
             pending: AtomicBool::new(false),
@@ -45,7 +60,7 @@ impl Wake {
             return;
         }
         loop {
-            match (&self.0.writer).write(&[1]) {
+            match wake_write(&self.0.writer) {
                 Ok(_) => return,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 // A full socket is already readable. Producers may outlive the receiver.
@@ -66,27 +81,57 @@ impl Wake {
     }
 }
 
+/// One wake byte into the channel's writer half (write on Unix, send on Windows).
+fn wake_write(writer: &WakeSocket) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut writer = writer;
+        writer.write(&[1]).map(|_| ())
+    }
+    #[cfg(windows)]
+    {
+        writer.send(&[1]).map(|_| ())
+    }
+}
+
+/// Drain all pending wake bytes (Unix: stream reads; Windows: one datagram each).
+fn wake_drain_all(reader: &mut WakeSocket) -> io::Result<bool> {
+    let mut any = false;
+    loop {
+        let result = {
+            #[cfg(unix)]
+            {
+                reader.read(&mut [0; 128])
+            }
+            #[cfg(windows)]
+            {
+                reader.recv(&mut [0; 128])
+            }
+        };
+        match result {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(_) => any = true,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(any)
+}
+
 impl WakeReceiver {
     /// Acknowledges notifications before the caller consumes shared work, never before waiting.
     pub fn drain(&mut self) -> io::Result<()> {
-        let mut bytes = [0; 128];
-        loop {
-            match self.reader.read(&mut bytes) {
-                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(error) => return Err(error),
-            }
-        }
+        wake_drain_all(&mut self.reader)?;
         self.wake.0.pending.swap(false, Ordering::AcqRel);
         Ok(())
     }
 
-    pub fn wait(&self, tun_fd: RawFd, delay: Option<Duration>) -> io::Result<bool> {
+    #[cfg(unix)]
+    pub fn wait(&self, tun: RawFd, delay: Option<Duration>) -> io::Result<bool> {
         let mut fds = [
             libc::pollfd {
-                fd: tun_fd,
+                fd: tun,
                 events: libc::POLLIN,
                 revents: 0,
             },
@@ -119,9 +164,77 @@ impl WakeReceiver {
         }
         Ok(result > 0)
     }
+
+    /// Windows waits on the packet socket and the wake socket with WSAPoll.
+    #[cfg(windows)]
+    pub fn wait(&self, tun: &TunDescriptor, delay: Option<Duration>) -> io::Result<bool> {
+        use std::os::windows::io::AsRawSocket;
+        use windows_sys::Win32::Networking::WinSock::{WSAPOLLFD, WSAPoll};
+        const WIN_POLLIN: i16 = 0x0300; // POLLRDNORM | POLLRDBAND
+        const WIN_POLLERR: i16 = 0x8;
+        const WIN_POLLHUP: i16 = 0x10;
+        const WIN_POLLNVAL: i16 = 0x20;
+        let mut fds = [
+            WSAPOLLFD {
+                fd: tun.as_raw_socket() as usize,
+                events: WIN_POLLIN,
+                revents: 0,
+            },
+            WSAPOLLFD {
+                fd: self.reader.as_raw_socket() as usize,
+                events: WIN_POLLIN,
+                revents: 0,
+            },
+        ];
+        let timeout = delay.map_or(-1, |delay| {
+            delay
+                .as_nanos()
+                .div_ceil(1_000_000)
+                .min(i32::MAX as u128) as i32
+        });
+        let result = unsafe { WSAPoll(fds.as_mut_ptr(), fds.len() as u32, timeout) };
+        if result < 0 {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
+        for fd in fds {
+            if fd.revents & WIN_POLLNVAL != 0 {
+                return Err(io::Error::from(io::ErrorKind::InvalidInput));
+            }
+            if fd.revents & WIN_POLLERR != 0 {
+                return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+            }
+            if fd.revents & WIN_POLLHUP != 0 && fd.revents & WIN_POLLIN == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+        }
+        Ok(result > 0)
+    }
 }
 
-#[cfg(test)]
+fn wake_sockets() -> io::Result<(WakeSocket, WakeSocket)> {
+    #[cfg(unix)]
+    {
+        let (reader, writer) = UnixStream::pair()?;
+        reader.set_nonblocking(true)?;
+        writer.set_nonblocking(true)?;
+        Ok((reader, writer))
+    }
+    #[cfg(windows)]
+    {
+        use std::net::{Ipv4Addr, SocketAddr};
+        let first = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let second = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let first_addr: SocketAddr = first.local_addr()?;
+        let second_addr: SocketAddr = second.local_addr()?;
+        first.connect(second_addr)?;
+        second.connect(first_addr)?;
+        first.set_nonblocking(true)?;
+        second.set_nonblocking(true)?;
+        Ok((first, second))
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::{sync::mpsc, thread};
@@ -133,6 +246,19 @@ mod tests {
         for _ in 0..10_000 {
             wake.notify();
         }
+        assert!(
+            receiver
+                .wait(tun.as_raw_fd(), Some(Duration::ZERO))
+                .unwrap()
+        );
+
+        // The receiver stays quiet once the notification is consumed.
+        assert!(
+            !receiver
+                .wait(tun.as_raw_fd(), Some(Duration::ZERO))
+                .unwrap()
+        );
+        wake.notify();
         assert!(
             receiver
                 .wait(tun.as_raw_fd(), Some(Duration::ZERO))

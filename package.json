@@ -11,7 +11,7 @@
     "tauri": "tauri",
     "setup:mac": "node scripts/setup-macos.mjs",
     "tauri:mac": "sh scripts/tauri-macos.sh",
-    "build:agentd": "cd core && export CARGO_TARGET_DIR=target && (command -v cargo-zigbuild >/dev/null && cargo zigbuild --release --bin cabind --target aarch64-unknown-linux-musl || cargo build --release --bin cabind --target aarch64-unknown-linux-musl)",
+    "build:agentd": "node scripts/build-agentd.mjs",
     "test:ui": "node tests/ui/smoke.mjs"
   },
   "dependencies": {

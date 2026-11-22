@@ -558,6 +558,11 @@ impl Machine {
     /// Create, provision and start the VM. A failure destroys the partial
     /// instance so the next attempt starts clean.
     pub fn validate(options: &InstallOptions) -> Result<()> {
+        if options.device && crate::platform::guest_arch() != "aarch64" {
+            return crate::util::message(
+                "The device profile is currently built for ARM machines; disable it to install on this host",
+            );
+        }
         if let Some(user) = options
             .username
             .as_deref()
@@ -595,7 +600,11 @@ impl Machine {
             os_name: os.name.to_string(),
             os_choices: os_choices(),
             image_index: os.index_url().to_string(),
-            qemu_release: crate::qemu_engine::RELEASE.to_string(),
+            qemu_release: if cfg!(target_os = "macos") {
+                crate::qemu_engine::RELEASE.to_string()
+            } else {
+                crate::platform::qemu_system().to_string()
+            },
             qemu_installed: engine.is_some(),
             cpus: cfg.cpus,
             memory_mb: cfg.memory_mb,
@@ -761,14 +770,14 @@ impl Machine {
         crate::download::cancel_all();
         let runtime = Runtime::new(&cfg);
         if let Some(pid) = runtime.pid().filter(|&pid| crate::vm::pid_alive(Some(pid)))
-            && runtime.signal_vm(pid, libc::SIGTERM)
+            && runtime.signal_vm(pid, crate::compat::signal::SIGTERM)
         {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while std::time::Instant::now() < deadline && crate::vm::pid_alive(Some(pid)) {
                 std::thread::sleep(Duration::from_millis(100));
             }
             if crate::vm::pid_alive(Some(pid)) {
-                runtime.signal_vm(pid, libc::SIGKILL);
+                runtime.signal_vm(pid, crate::compat::signal::SIGKILL);
             }
         }
         true
@@ -831,7 +840,10 @@ impl Machine {
     fn stop_without_config(&self, instance: &InstancePaths) -> Result<()> {
         let Some(pid) = self.live_recorded_pid() else { return Ok(()) };
         let pidfile = instance.pidfile();
-        for (signal, timeout) in [(libc::SIGTERM, 5), (libc::SIGKILL, 2)] {
+        for (signal, timeout) in [
+            (crate::compat::signal::SIGTERM, 5),
+            (crate::compat::signal::SIGKILL, 2),
+        ] {
             if !crate::vm::pid_alive(Some(pid)) {
                 return Ok(());
             }
@@ -874,8 +886,8 @@ impl Machine {
     pub fn destroy(&self) -> Result<MachineInfo> {
         reject_symlink(&self.home)?;
         if let Ok(root) = self.home.canonicalize()
-            && (root.parent().is_none() || std::env::var_os("HOME").is_some_and(|home| {
-                PathBuf::from(home).canonicalize().is_ok_and(|home| home == root)
+            && (root.parent().is_none() || crate::compat::home_dir().is_some_and(|home| {
+                home.canonicalize().is_ok_and(|home| home == root)
             }))
         {
             return crate::util::message("Refusing to erase app data from the system root or user home directory");
@@ -1012,6 +1024,28 @@ impl Drop for StopPoller {
 mod tests {
     use super::*;
 
+    /// A process that stays alive for the duration of these checks.
+    fn long_sleeping_child() -> std::process::Child {
+        let mut command = long_sleeping_command();
+        crate::compat::no_window(&mut command);
+        command.spawn().unwrap()
+    }
+
+    fn long_sleeping_command() -> std::process::Command {
+        #[cfg(unix)]
+        {
+            let mut command = std::process::Command::new("sleep");
+            command.arg("30");
+            command
+        }
+        #[cfg(windows)]
+        {
+            let mut command = std::process::Command::new("ping");
+            command.args(["-n", "31", "127.0.0.1"]);
+            command
+        }
+    }
+
     #[test]
     fn destroy_removes_machine_cache_and_settings_but_not_shared_files() {
         let base = std::env::temp_dir().join(format!("vm-destroy-test-{}", std::process::id()));
@@ -1046,10 +1080,7 @@ mod tests {
         let base = std::env::temp_dir().join(format!("vm-destroy-safety-{}", std::process::id()));
         let home = base.join("vm");
         std::fs::create_dir_all(home.join("instances/agent")).unwrap();
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
+        let mut child = long_sleeping_child();
         std::fs::write(
             home.join("instances/agent/qemu.pid"),
             child.id().to_string(),
@@ -1075,10 +1106,7 @@ mod tests {
         let cfg = machine.install_config(&InstallOptions::default()).unwrap();
         std::fs::create_dir_all(cfg.instance_dir()).unwrap();
         cfg.save_instance_meta().unwrap();
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
+        let mut child = long_sleeping_child();
         std::fs::write(cfg.pidfile(), child.id().to_string()).unwrap();
         assert!(machine.destroy().is_err());
         assert!(
@@ -1118,6 +1146,7 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn destroy_refuses_a_symlinked_data_directory() {
         let base = std::env::temp_dir().join(format!("vm-destroy-link-{}", std::process::id()));
@@ -1206,9 +1235,13 @@ mod tests {
             plan["ethernets"]["data0"]["match"]["macaddress"],
             cfg.mac_data()
         );
-        let args = crate::device::render::network_args(&cfg, &resolved).unwrap();
-        assert!(!args.iter().any(|arg| arg.starts_with("user,")));
-        assert!(args.iter().any(|arg| arg.contains("stream,id=data")));
+        // The QEMU argv mapping needs a resolvable QEMU (the macOS fake
+        // engine above, or the distro QEMU on Linux/Windows dev hosts).
+        if crate::qemu_engine::installed(&home).is_some() {
+            let args = crate::device::render::network_args(&cfg, &resolved).unwrap();
+            assert!(!args.iter().any(|arg| arg.starts_with("user,")));
+            assert!(args.iter().any(|arg| arg.contains("stream,id=data")));
+        }
         assert_eq!(
             crate::device::render::ssh_endpoint(&cfg, Some(&resolved)).unwrap(),
             ("127.0.0.1".into(), cfg.ssh_port)

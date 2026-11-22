@@ -40,15 +40,14 @@ pub fn mappings(cfg: &Config) -> Result<Vec<Mapping>> {
 }
 
 fn valid_guest_path(path: &str) -> bool {
-    let path = Path::new(path);
-    path.is_absolute()
-        && path != Path::new("/")
-        && path.components().all(|part| {
-            matches!(
-                part,
-                std::path::Component::RootDir | std::path::Component::Normal(_)
-            )
-        })
+    // Guest paths are Linux paths on every host, so the POSIX shape is
+    // checked directly (Path::is_absolute is drive-based on Windows).
+    path.starts_with("/")
+        && path != "/"
+        && path
+            .split("/")
+            .skip(1)
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 fn default_guest_path(items: &[Mapping], host_path: &Path) -> String {
@@ -237,6 +236,7 @@ pub fn status(home: &Path, name: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -313,6 +313,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn mapping_registry_write_failure_preserves_the_previous_file() {
         let root = fixture("mapping-write-failure");

@@ -67,8 +67,16 @@ impl Engine {
     fn in_tree(root: &Path) -> Self {
         let share = root.join("share").join("qemu");
         Self {
-            qemu: root.join("bin").join("qemu-system-aarch64"),
-            qemu_img: root.join("bin").join("qemu-img"),
+            qemu: root.join("bin").join(if cfg!(windows) {
+                "qemu-system-aarch64.exe"
+            } else {
+                "qemu-system-aarch64"
+            }),
+            qemu_img: root.join("bin").join(if cfg!(windows) {
+                "qemu-img.exe"
+            } else {
+                "qemu-img"
+            }),
             firmware_code: share.join("edk2-aarch64-code.fd"),
             firmware_vars: share.join("edk2-aarch64-vars.fd"),
             firmware_dir: share,
@@ -90,7 +98,7 @@ impl Engine {
 /// The engine this host runs, if it is installed.
 pub fn installed(home: &Path) -> Option<Engine> {
     if !cfg!(target_os = "macos") {
-        return crate::platform::linux_qemu();
+        return crate::platform::distro_qemu();
     }
     let engine = Engine::in_tree(&root(home));
     engine.complete().then_some(engine)
@@ -102,8 +110,15 @@ pub fn require(home: &Path) -> Result<Engine> {
         crate::Error::Message(if cfg!(target_os = "macos") {
             "The built-in QEMU is not installed yet; run the installation (step qemu) again"
                 .to_string()
+        } else if cfg!(windows) {
+            format!(
+                "Install QEMU for Windows with {}, qemu-img and EDK2 firmware. Add QEMU to PATH if installed outside Program Files.",
+                crate::platform::qemu_system()
+            )
+        } else if crate::platform::guest_arch() == "x86_64" {
+            "Install qemu-system-x86, qemu-utils and ovmf on this Linux host".to_string()
         } else {
-            "qemu-system-aarch64, qemu-img and AAVMF firmware are needed on this Linux host (e.g. apt install qemu-system-arm qemu-utils qemu-efi-aarch64)".to_string()
+            "Install qemu-system-arm, qemu-utils and qemu-efi-aarch64 on this Linux host".to_string()
         })
     })
 }

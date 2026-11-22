@@ -1,7 +1,9 @@
 //! QEMU process orchestration, firmware discovery, and SSH helpers.
 
 use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -104,27 +106,49 @@ fn spice_args(cfg: &Config) -> Vec<String> {
 }
 
 pub(crate) fn check_spice_dir(cfg: &Config) -> Result<()> {
-    let metadata = fs::symlink_metadata(cfg.spice_dir())?;
-    if !metadata.is_dir()
-        || metadata.permissions().mode() & 0o777 != 0o700
-        || metadata.uid() != unsafe { libc::geteuid() }
+    #[cfg(unix)]
     {
-        return message("The SPICE socket directory must be private to the current user");
+        let metadata = fs::symlink_metadata(cfg.spice_dir())?;
+        if !metadata.is_dir()
+            || metadata.permissions().mode() & 0o777 != 0o700
+            || metadata.uid() != unsafe { libc::geteuid() }
+        {
+            return message("The SPICE socket directory must be private to the current user");
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let metadata = fs::symlink_metadata(cfg.spice_dir())?;
+        if !metadata.is_dir() {
+            return message("The SPICE socket directory must be private to the current user");
+        }
     }
     Ok(())
 }
 
 fn prepare_spice_dir(cfg: &Config) -> Result<()> {
+    #[cfg(unix)]
     match fs::DirBuilder::new().mode(0o700).create(cfg.spice_dir()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    #[cfg(not(unix))]
+    match fs::create_dir(cfg.spice_dir()) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error.into()),
     }
     check_spice_dir(cfg)?;
     // Stale sockets are only removed after verifying their parent is private.
+    #[cfg(unix)]
     match fs::remove_file(cfg.spice_socket()) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
         _ => Ok(()),
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(())
     }
 }
 
@@ -166,7 +190,7 @@ pub fn build_qemu_args(
             let client = Path::new(&cfg.socket_vmnet_client);
             if !client.is_file()
                 || fs::metadata(client)
-                    .map(|metadata| metadata.permissions().mode() & 0o111 == 0)
+                    .map(executable_bit)
                     .unwrap_or(true)
             {
                 return message(format!(
@@ -193,7 +217,7 @@ pub fn build_qemu_args(
         let client = Path::new(&cfg.socket_vmnet_client);
         if !client.is_file()
             || fs::metadata(client)
-                .map(|metadata| metadata.permissions().mode() & 0o111 == 0)
+                .map(executable_bit)
                 .unwrap_or(true)
         {
             return message(format!(
@@ -216,8 +240,14 @@ pub fn build_qemu_args(
     args.extend([
         "-name".to_string(),
         format!("vmctl-{}", cfg.name),
+        // The aarch64 `virt` platform is the Mac product; x86_64 guests use
+        // q35 with the same virtio device set.
         "-machine".to_string(),
-        format!("virt,accel={},highmem=on", crate::platform::accel().accel),
+        if crate::platform::guest_arch() == "x86_64" {
+            format!("q35,accel={}", crate::platform::accel().accel)
+        } else {
+            format!("virt,accel={},highmem=on", crate::platform::accel().accel)
+        },
         "-cpu".to_string(),
         crate::platform::accel().cpu.to_string(),
         "-smp".to_string(),
@@ -249,16 +279,19 @@ pub fn build_qemu_args(
         "-device".to_string(),
         "virtio-blk-pci,drive=seed,bootindex=2".to_string(),
         "-object".to_string(),
-        "rng-random,filename=/dev/urandom,id=rng0".to_string(),
+        if cfg!(target_os = "macos") {
+            "rng-random,filename=/dev/urandom,id=rng0".to_string()
+        } else {
+            // Windows has no /dev/urandom; QEMU's built-in entropy source is
+            // the portable equivalent (QEMU 5.0+).
+            "rng-builtin,id=rng0".to_string()
+        },
         "-device".to_string(),
         "virtio-rng-pci,rng=rng0".to_string(),
         "-device".to_string(),
         "virtio-serial-pci".to_string(),
         "-chardev".to_string(),
-        format!(
-            "socket,path={},server=on,wait=off,id=qga0",
-            cfg.qga_socket().display()
-        ),
+        crate::sockets::listen_chardev(&crate::sockets::qga_endpoint(cfg), "qga0", ""),
         "-device".to_string(),
         "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0".to_string(),
     ]);
@@ -270,7 +303,7 @@ pub fn build_qemu_args(
         args.push("-device".to_string());
         args.push("ramfb".to_string());
     }
-    if cfg.desktop_spice {
+    if cfg.desktop_spice && cfg!(unix) {
         args.extend(spice_args(cfg));
     }
     if cfg.usb_tablet {
@@ -283,7 +316,7 @@ pub fn build_qemu_args(
             "usb-kbd".to_string(),
         ]);
     }
-    if cfg.audio_backend == "coreaudio" {
+    if cfg.audio_backend == "coreaudio" && cfg!(target_os = "macos") {
         args.extend([
             "-audiodev".to_string(),
             "coreaudio,id=audio0".to_string(),
@@ -295,7 +328,7 @@ pub fn build_qemu_args(
     }
     args.extend([
         "-display".to_string(),
-        if display_mode.unwrap_or(&cfg.display_mode) == "cocoa" {
+        if display_mode.unwrap_or(&cfg.display_mode) == "cocoa" && cfg!(target_os = "macos") {
             "cocoa".to_string()
         } else {
             "none".to_string()
@@ -303,15 +336,15 @@ pub fn build_qemu_args(
         "-monitor".to_string(),
         "none".to_string(),
         "-chardev".to_string(),
-        format!(
-            "socket,id=console0,path={},server=on,wait=off,logfile={},logappend=on",
-            cfg.console_socket().display(),
-            serial_log.display()
+        crate::sockets::listen_chardev(
+            &crate::sockets::console_endpoint(cfg),
+            "console0",
+            &format!(",logfile={},logappend=on", serial_log.display()),
         ),
         "-serial".to_string(),
         "chardev:console0".to_string(),
         "-qmp".to_string(),
-        format!("unix:{},server=on,wait=off", cfg.qmp_socket().display()),
+        crate::sockets::qmp_listen_arg(&crate::sockets::qmp_endpoint(cfg)),
         "-pidfile".to_string(),
         cfg.pidfile().display().to_string(),
     ]);
@@ -331,10 +364,10 @@ pub fn build_qemu_args(
         "gateway" => {
             args.extend([
                 "-netdev".to_string(),
-                format!(
-                    "stream,id=data,server=off,addr.type=unix,addr.path={},{}",
-                    cfg.net_socket().display(),
-                    stream_reconnect_option(&args[0])
+                crate::sockets::stream_netdev(
+                    &crate::sockets::net_endpoint(cfg),
+                    "data",
+                    &stream_reconnect_option(&args[0]),
                 ),
                 "-device".to_string(),
                 format!("virtio-net-pci,netdev=data,mac={}", cfg.mac_data()),
@@ -390,11 +423,17 @@ pub(crate) fn owns_qemu_process(pid: u32, pidfile: &Path, vm_name: &str) -> bool
     if !pid_alive(Some(pid)) {
         return false;
     }
-    let result = capture(
-        &["ps".into(), "-ww".into(), "-p".into(), pid.to_string(), "-o".into(), "command=".into()],
-        Duration::from_secs(2),
-        None,
-    );
+    #[cfg(unix)]
+    let args = ["ps".into(), "-ww".into(), "-p".into(), pid.to_string(), "-o".into(), "command=".into()];
+    #[cfg(windows)]
+    let args = [
+        "powershell.exe".into(),
+        "-NoProfile".into(),
+        "-NonInteractive".into(),
+        "-Command".into(),
+        format!("[Console]::OutputEncoding = [Text.Encoding]::UTF8; (Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine"),
+    ];
+    let result = capture(&args, Duration::from_secs(if cfg!(windows) { 15 } else { 2 }), None);
     if result.code != 0 {
         return false;
     }
@@ -402,9 +441,11 @@ pub(crate) fn owns_qemu_process(pid: u32, pidfile: &Path, vm_name: &str) -> bool
         return false;
     };
     let arguments = format!(" -{arguments} ");
-    Path::new(executable).file_name().is_some_and(|name| name == "qemu-system-aarch64")
+    let qemu = format!("{}{}", crate::platform::qemu_system(), std::env::consts::EXE_SUFFIX);
+    Path::new(executable.trim_matches('"')).file_name().is_some_and(|name| name == qemu.as_str())
         && arguments.contains(&format!(" -name vmctl-{vm_name} "))
-        && arguments.contains(&format!(" -pidfile {} ", pidfile.display()))
+        && (arguments.contains(&format!(" -pidfile {} ", pidfile.display()))
+            || arguments.contains(&format!(" -pidfile \"{}\" ", pidfile.display())))
 }
 
 /// Settings for starting QEMU and waiting for authenticated SSH.
@@ -482,14 +523,14 @@ impl Runtime {
     }
 
     pub fn qmp(&self, timeout: Duration) -> Option<QmpClient> {
-        QmpClient::connect(&self.cfg.qmp_socket(), timeout).ok()
+        QmpClient::connect(&crate::sockets::qmp_endpoint(&self.cfg), timeout).ok()
     }
 
     pub fn running(&self) -> bool {
         if !self.alive() {
             return false;
         }
-        match qmp_query_status(&self.cfg.qmp_socket(), Duration::from_secs(3)) {
+        match qmp_query_status(&crate::sockets::qmp_endpoint(&self.cfg), Duration::from_secs(3)) {
             Some(status) => matches!(
                 status.get("status").and_then(Value::as_str),
                 Some("running") | Some("paused")
@@ -502,7 +543,7 @@ impl Runtime {
         let pid = self.pid();
         let alive = pid_alive(pid);
         let qmp = if alive {
-            qmp_query_status(&self.cfg.qmp_socket(), Duration::from_secs(2))
+            qmp_query_status(&crate::sockets::qmp_endpoint(&self.cfg), Duration::from_secs(2))
         } else {
             None
         };
@@ -539,7 +580,12 @@ impl Runtime {
                 self.cfg.qga_socket(),
                 self.cfg.console_socket(),
             ] {
+                // Windows instances keep sockets.json (the loopback ports are
+                // reused by the next start); Unix removes the socket files.
+                #[cfg(unix)]
                 let _ = fs::remove_file(path);
+                #[cfg(not(unix))]
+                let _ = path;
             }
         }
     }
@@ -558,7 +604,7 @@ impl Runtime {
                     }
                 ));
             }
-            if qmp_query_status(&self.cfg.qmp_socket(), Duration::from_secs(1)).is_some() {
+            if qmp_query_status(&crate::sockets::qmp_endpoint(&self.cfg), Duration::from_secs(1)).is_some() {
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(100));
@@ -606,7 +652,9 @@ impl Runtime {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.cfg.serial_log_path());
         let effective_display = display_mode.unwrap_or(&self.cfg.display_mode);
-        let foreground = self.cfg.effective_network_mode() == "socket-vmnet"
+        // Windows has no -daemonize: QEMU runs as a supervised child there.
+        let foreground = cfg!(not(unix))
+            || self.cfg.effective_network_mode() == "socket-vmnet"
             || effective_display == "cocoa"
             || self.cfg.audio_backend == "coreaudio";
         if foreground {
@@ -639,6 +687,8 @@ impl Runtime {
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(client_log.try_clone()?))
                 .stderr(Stdio::from(client_log));
+            crate::compat::no_window(&mut command);
+            #[cfg(unix)]
             unsafe {
                 command.pre_exec(|| {
                     libc::setsid();
@@ -694,8 +744,8 @@ impl Runtime {
             "ssh_port": self.cfg.ssh_port,
             "network_mode": self.cfg.network_mode,
             "serial_log": serial_log.display().to_string(),
-            "qmp_socket": self.cfg.qmp_socket().display().to_string(),
-            "qga_socket": self.cfg.qga_socket().display().to_string(),
+            "qmp_socket": crate::sockets::qmp_endpoint(&self.cfg).describe(),
+            "qga_socket": crate::sockets::qga_endpoint(&self.cfg).describe(),
         });
         if let Err(error) =
             crate::util::atomic_write_json(&self.cfg.runtime_path(), &runtime, 0o600)
@@ -789,7 +839,7 @@ impl Runtime {
         // 4. signals
         if self.alive() {
             log_line(log, "guest did not shut down; sending SIGTERM");
-            if !self.signal_vm(pid, libc::SIGTERM) {
+            if !self.signal_vm(pid, crate::compat::signal::SIGTERM) {
                 return false;
             }
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -799,7 +849,7 @@ impl Runtime {
         }
         if self.alive() {
             log_line(log, "sending SIGKILL");
-            if !self.signal_vm(pid, libc::SIGKILL) {
+            if !self.signal_vm(pid, crate::compat::signal::SIGKILL) {
                 return false;
             }
             thread::sleep(Duration::from_secs(1));
@@ -950,7 +1000,7 @@ impl Runtime {
         if self.cfg.device_enabled() {
             return false;
         }
-        match QgaClient::connect(&self.cfg.qga_socket(), Duration::from_secs(3)) {
+        match QgaClient::connect(&crate::sockets::qga_endpoint(&self.cfg), Duration::from_secs(3)) {
             Ok(mut client) => client.execute("guest-ping", None).is_ok(),
             Err(_) => false,
         }
@@ -959,10 +1009,12 @@ impl Runtime {
 
 pub fn preflight(cfg: &Config) -> Vec<String> {
     let mut issues = Vec::new();
-    if !matches!(std::env::consts::OS, "macos" | "linux") {
+    if !matches!(std::env::consts::OS, "macos" | "linux" | "windows") {
         issues.push("Cabin runs VMs on macOS (and Linux for development)".to_string());
     }
-    if std::env::consts::ARCH != "aarch64" {
+    // A non-arm64 host can only emulate the aarch64 guest (TCG), which the
+    // pipeline already supports on Linux development hosts.
+    if std::env::consts::ARCH != "aarch64" && !crate::platform::accel().emulated {
         issues.push(format!(
             "this build targets arm64, host is {}",
             std::env::consts::ARCH
@@ -973,7 +1025,7 @@ pub fn preflight(cfg: &Config) -> Vec<String> {
             issues.push(format!("required tool missing: {tool}"));
         }
     }
-    if cfg.direct_vmnet() && unsafe { libc::geteuid() } != 0 {
+    if cfg.direct_vmnet() && euid_not_root() {
         issues.push(
             "QEMU's built-in vmnet backend requires root on macOS (ad-hoc entitlement signing is not accepted). Use --network socket-vmnet with the socket_vmnet root daemon (recommended), or --network user."
                 .to_string(),
@@ -1038,7 +1090,7 @@ pub fn preflight(cfg: &Config) -> Vec<String> {
             issues
                 .push("device.network.require_bridged is true; use a bridged network".to_string());
         }
-        if matches!(mode, "vmnet-shared" | "vmnet-bridged") && unsafe { libc::geteuid() } != 0 {
+        if matches!(mode, "vmnet-shared" | "vmnet-bridged") && euid_not_root() {
             issues.push(
                     "device network mode uses QEMU's built-in vmnet backend, which requires root on macOS; use socket-vmnet with a root socket_vmnet daemon"
                         .to_string(),
@@ -1114,7 +1166,13 @@ mod tests {
             ..crate::Config::default()
         };
         let runtime = std::sync::Arc::new(super::Runtime::new(&config));
+        #[cfg(unix)]
         let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        #[cfg(not(unix))]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "exit 0"])
+            .spawn()
+            .unwrap();
         child.wait().unwrap();
         let other = runtime.clone();
         let result = std::thread::spawn(move || {
@@ -1139,4 +1197,26 @@ mod tests {
             std::process::id()
         ))
     }
+}
+
+/// Unix checks the executable bit; Windows files are executable by extension.
+fn executable_bit(metadata: std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        metadata.permissions().mode() & 0o111 == 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        false
+    }
+}
+
+/// Unix-only root check for the vmnet modes (never true on Windows).
+fn euid_not_root() -> bool {
+    #[cfg(unix)]
+    let not_root = unsafe { libc::geteuid() } != 0;
+    #[cfg(not(unix))]
+    let not_root = true;
+    not_root
 }

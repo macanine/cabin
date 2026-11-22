@@ -9,6 +9,7 @@
 
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
@@ -44,7 +45,7 @@ pub fn pack(root: &Path, paths: &[String], out: impl Write) -> io::Result<()> {
         let full = root.join(rel_path);
         let Ok(meta) = fs::symlink_metadata(&full) else { continue };
         let mut header = tar::Header::new_gnu();
-        header.set_mode(meta.permissions().mode() & 0o7777);
+        header.set_mode(crate::fsx::mode_of(&meta));
         header.set_mtime(mtime_secs(&meta));
         if meta.file_type().is_symlink() {
             let target = fs::read_link(&full)?;
@@ -68,8 +69,7 @@ pub fn pack(root: &Path, paths: &[String], out: impl Write) -> io::Result<()> {
 }
 
 fn mtime_secs(meta: &fs::Metadata) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    meta.mtime().max(0) as u64
+    crate::fsx::mtime_secs_of(meta)
 }
 
 /// A header line, then a tar stream (the guest's `sync apply`).
@@ -183,6 +183,7 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
         tar::EntryType::Directory => {
             clear_for(&full, true)?;
             fs::create_dir_all(&full)?;
+            #[cfg(unix)]
             fs::set_permissions(&full, fs::Permissions::from_mode(mode | 0o700))?;
         }
         tar::EntryType::Symlink => {
@@ -191,6 +192,7 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
             if fs::symlink_metadata(&full).is_ok() {
                 fs::remove_file(&full)?;
             }
+            #[cfg(unix)]
             std::os::unix::fs::symlink(&target, &full)?;
             fs::set_times_nofollow(&full, times)?;
         }
@@ -200,7 +202,11 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
             // being truncated, and a random name lets concurrent applies coexist.
             let (tmp, mut file) = loop {
                 let tmp = full.with_file_name(format!(".vasync-{}.tmp", uuid::Uuid::new_v4()));
-                match fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp) {
+                let mut options = fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                options.mode(0o600);
+                match options.open(&tmp) {
                     Ok(file) => break (tmp, file),
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                     Err(error) => return Err(error),
@@ -208,6 +214,7 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
             };
             let written = (|| {
                 io::copy(entry, &mut file)?;
+                #[cfg(unix)]
                 file.set_permissions(fs::Permissions::from_mode(mode))?;
                 file.set_times(times)?;
                 drop(file);
@@ -229,6 +236,7 @@ mod tests {
     use super::*;
     use crate::sync::{SyncRules, scan};
 
+    #[cfg(unix)]
     #[test]
     fn a_tree_round_trips_with_modes_mtimes_and_symlinks() {
         let src = tempfile::tempdir().unwrap();
@@ -277,6 +285,7 @@ mod tests {
         assert!(dst.path().join("keep/theirs").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn never_writes_through_a_symlinked_folder_or_outside_the_root() {
         let outside = tempfile::tempdir().unwrap();
@@ -302,6 +311,7 @@ mod tests {
         builder.append_data(&mut header, path, contents).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_archive_cannot_replace_a_checked_parent_with_a_symlink() {
         let dst = tempfile::tempdir().unwrap();
@@ -423,6 +433,7 @@ mod tests {
         assert!(!dst.path().join("bad-time").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn existing_predictable_temp_symlink_is_never_followed_or_removed() {
         let dst = tempfile::tempdir().unwrap();

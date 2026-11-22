@@ -90,8 +90,13 @@ pub fn test_one(os: &crate::os::Os, uri: &str) -> MirrorResult {
         }
         other => return result("unreachable", latency, None, format!("HTTP {other}")),
     }
+    let arch = if crate::platform::guest_arch() == "x86_64" {
+        "amd64"
+    } else {
+        "arm64"
+    };
     let index = format!(
-        "{uri}/dists/{}/main/binary-arm64/Packages.gz",
+        "{uri}/dists/{}/main/binary-{arch}/Packages.gz",
         os.mirror_index_suite()
     );
     match fetch(&index, 30, true) {
@@ -104,7 +109,12 @@ pub fn test_one(os: &crate::os::Os, uri: &str) -> MirrorResult {
                 latency,
                 speed,
                 format!(
-                    "ARM64 packages available{}",
+                    "{} packages available{}",
+                    if crate::platform::guest_arch() == "x86_64" {
+                        "x86_64"
+                    } else {
+                        "ARM64"
+                    },
                     speed.map(|s| format!(", {s} KB/s")).unwrap_or_default()
                 ),
             )
@@ -113,7 +123,7 @@ pub fn test_one(os: &crate::os::Os, uri: &str) -> MirrorResult {
             "noArm64",
             latency,
             None,
-            format!("Release found but no arm64 index (HTTP {})", index.status),
+            format!("Release found but no {arch} index (HTTP {})", index.status),
         ),
         None => result(
             "unreachable",

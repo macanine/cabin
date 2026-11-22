@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::io::{self, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::unix::{fs::FileTypeExt, net::UnixStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -56,7 +57,7 @@ fn bridges() -> Result<std::sync::MutexGuard<'static, Registry>> {
 
 fn token() -> io::Result<String> {
     let mut random = [0; 32];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
+    crate::compat::random_bytes(&mut random);
     Ok(crate::util::hex_lower(&random))
 }
 
@@ -101,7 +102,10 @@ pub fn start(cfg: &Config) -> Result<String> {
 }
 
 pub fn start_spice(cfg: &Config, parent_origin: Option<&str>) -> Result<String> {
-    if !cfg.desktop_spice || cfg.device_enabled() {
+    if !cfg.desktop_spice
+        || cfg.device_enabled()
+        || cfg!(not(unix)) // QEMU ships no SPICE backend on Windows hosts
+    {
         return message("SPICE is unavailable for this desktop");
     }
     if !Runtime::new(cfg).running() {
@@ -113,6 +117,7 @@ pub fn start_spice(cfg: &Config, parent_origin: Option<&str>) -> Result<String> 
     }
     crate::vm::check_spice_dir(cfg)?;
     let socket = cfg.spice_socket();
+    #[cfg(unix)]
     if !std::fs::symlink_metadata(&socket)?.file_type().is_socket() {
         return message("QEMU's SPICE socket is unavailable");
     }
@@ -199,6 +204,7 @@ struct Peer {
 }
 
 enum Upstream {
+    #[cfg(unix)]
     Unix(UnixStream),
     Ssh(Child),
 }
@@ -206,6 +212,7 @@ enum Upstream {
 impl Drop for Upstream {
     fn drop(&mut self) {
         match self {
+            #[cfg(unix)]
             Self::Unix(socket) => {
                 let _ = socket.shutdown(Shutdown::Both);
             }
@@ -465,6 +472,7 @@ type UpstreamIo = (Box<dyn Read + Send>, Box<dyn Write>);
 
 fn connect_upstream(peer: &Peer, target: &Target) -> io::Result<UpstreamIo> {
     match target {
+        #[cfg(unix)]
         Target::Spice { socket, .. } => {
             use socket2::{Domain, SockAddr, Socket, Type};
             let upstream = Socket::new(Domain::UNIX, Type::STREAM, None)?;
@@ -474,13 +482,17 @@ fn connect_upstream(peer: &Peer, target: &Target) -> io::Result<UpstreamIo> {
             peer.attach(Upstream::Unix(stream.try_clone()?))?;
             Ok((Box::new(stream.try_clone()?), Box::new(stream)))
         }
+        #[cfg(not(unix))]
+        Target::Spice { .. } => Err(io::Error::other("SPICE requires a Unix host")),
         Target::Vnc { ssh, log } => {
             let stderr = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(log)?;
-            let mut child = Command::new(&ssh[0])
-                .args(&ssh[1..])
+            let mut ssh_command = Command::new(&ssh[0]);
+            ssh_command.args(&ssh[1..]);
+            crate::compat::no_window(&mut ssh_command);
+            let mut child = ssh_command
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::from(stderr))
@@ -657,7 +669,7 @@ fn spice_asset(path: &str) -> Option<&'static [u8]> {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::BufRead;

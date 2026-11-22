@@ -86,16 +86,20 @@ fn reuse_ssh(mut ssh: Vec<String>, dir: &Path) -> Vec<String> {
     // A recreated machine may use another port or key; do not reuse a master
     // that still points at the previous one.
     ssh.hash(&mut hasher);
-    let control = format!("/tmp/cabin-sync-{:016x}.sock", hasher.finish());
-    let options = [
-        "-o".to_string(),
-        "ControlMaster=auto".to_string(),
-        "-o".to_string(),
-        format!("ControlPath={control}"),
-        "-o".to_string(),
-        "ControlPersist=30".to_string(),
-    ];
-    ssh.splice(1..1, options);
+    #[cfg(unix)]
+    {
+        let control = format!("/tmp/cabin-sync-{:016x}.sock", hasher.finish());
+        let options = [
+            "-o".to_string(),
+            "ControlMaster=auto".to_string(),
+            "-o".to_string(),
+            format!("ControlPath={control}"),
+            "-o".to_string(),
+            "ControlPersist=30".to_string(),
+        ];
+        ssh.splice(1..1, options);
+    }
+    // Windows OpenSSH has no ControlMaster: plain connections are used.
     ssh
 }
 
@@ -242,7 +246,18 @@ impl SyncManager {
         let host = host.to_string_lossy().into_owned();
         let project = {
             let mut projects = self.projects.locked();
-            let nested = |a: &str, b: &str| a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"));
+            // Windows host paths use backslash separators; compare them with
+            // one separator (guest paths are always POSIX).
+            #[cfg(windows)]
+            let nested = |a: &str, b: &str| {
+                let a = a.replace('\\', "/");
+                let b = b.replace('\\', "/");
+                a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
+            };
+            #[cfg(not(windows))]
+            let nested = |a: &str, b: &str| {
+                a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
+            };
             if let Some(other) = projects.iter().find(|p| nested(&p.host_path, &host)) {
                 return Err(format!("{host} overlaps the synced folder of “{}”", other.name));
             }
@@ -896,6 +911,7 @@ mod tests {
         assert_eq!(std::fs::read(path).unwrap(), b"broken base");
     }
 
+    #[cfg(unix)]
     #[test]
     fn short_sync_commands_share_one_ssh_transport() {
         let dir = tempfile::tempdir().unwrap();
@@ -1019,7 +1035,10 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let bin = home.path().join(vm_core::agentd::REMOTE_BIN);
         std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        #[cfg(unix)]
         std::os::unix::fs::symlink(binary.canonicalize().unwrap(), &bin).unwrap();
+        #[cfg(not(unix))]
+        std::os::windows::fs::symlink_file(binary.canonicalize().unwrap(), &bin).unwrap();
         let ssh = vec!["env".into(), format!("HOME={}", home.path().display()), "sh".into(), "-c".into()];
         Some((home, ssh))
     }
@@ -1037,6 +1056,7 @@ mod tests {
         std::fs::read_to_string(root.join(rel)).ok()
     }
 
+    #[cfg(unix)]
     fn setup(mode: SyncMode) -> Option<(tempfile::TempDir, tempfile::TempDir, Arc<SyncManager>, SyncProject, PathBuf, PathBuf)> {
         let (guest_home, ssh) = local_guest()?;
         let state = tempfile::tempdir().unwrap();
@@ -1061,6 +1081,7 @@ mod tests {
         Some((guest_home, state, manager, view.project, mac, vm))
     }
 
+    #[cfg(unix)]
     #[test]
     fn safe_mode_end_to_end() {
         let Some((_g, _s, manager, project, mac, vm)) = setup(SyncMode::Safe) else { return };
@@ -1094,6 +1115,7 @@ mod tests {
         assert!(manager.status(&project.id).conflicts.is_empty(), "a resolved conflict stays resolved");
     }
 
+    #[cfg(unix)]
     #[test]
     fn mirror_mode_end_to_end() {
         let Some((_g, _s, manager, project, mac, vm)) = setup(SyncMode::Mirror) else { return };
@@ -1108,6 +1130,7 @@ mod tests {
         assert_eq!(read(&vm, "src/lib.rs").as_deref(), Some("lib"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn two_way_mode_end_to_end() {
         let Some((_g, _s, manager, project, mac, vm)) = setup(SyncMode::TwoWay) else { return };
@@ -1133,6 +1156,7 @@ mod tests {
         assert_eq!(read(&mac, ".git/HEAD").as_deref(), Some("ref: refs/heads/main"));
     }
 
+    #[cfg(unix)]
     fn bench_throughput(mode: SyncMode, label: &str) {
         let Some((_g, _s, manager, project, mac, _vm)) = setup(mode) else { return };
         for dir in 0..200 {
@@ -1157,12 +1181,14 @@ mod tests {
     }
 
     /// Timings on a real tree (run with --ignored --nocapture).
+    #[cfg(unix)]
     #[test]
     #[ignore = "benchmark"]
     fn throughput() {
         bench_throughput(SyncMode::TwoWay, "two-way");
     }
 
+    #[cfg(unix)]
     #[test]
     #[ignore = "benchmark"]
     fn throughput_safe() {

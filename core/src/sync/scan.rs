@@ -155,13 +155,18 @@ pub fn stat(root: &Path, rel: &str) -> io::Result<Option<Entry>> {
 }
 
 fn entry_from(path: String, kind: EntryKind, meta: &std::fs::Metadata, full: &Path) -> Entry {
+    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     Entry {
         path,
         kind,
         size: if kind == EntryKind::File { meta.len() } else { 0 },
-        mtime_ns: if kind == EntryKind::Dir { 0 } else { meta.mtime() * 1_000_000_000 + meta.mtime_nsec() },
-        mode: meta.mode() & 0o7777,
+        mtime_ns: if kind == EntryKind::Dir {
+            0
+        } else {
+            crate::fsx::mtime_nanos_of(meta) as i64
+        },
+        mode: crate::fsx::mode_of(meta),
         target: (kind == EntryKind::Symlink)
             .then(|| std::fs::read_link(full).ok().map(|t| t.to_string_lossy().into_owned()))
             .flatten(),
@@ -171,7 +176,12 @@ fn entry_from(path: String, kind: EntryKind, meta: &std::fs::Metadata, full: &Pa
 fn relative(root: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(root).ok()?;
     let text = rel.to_str()?;
-    (!text.is_empty()).then(|| text.to_string())
+    // Entry paths are `/`-separated on the wire, whatever the host uses.
+    #[cfg(windows)]
+    let text = text.replace('\\', "/");
+    #[cfg(unix)]
+    let text = text.to_owned();
+    (!text.is_empty()).then_some(text)
 }
 
 /// Binary listing used by `cabind sync scan` for large trees. JSON
@@ -320,6 +330,7 @@ mod tests {
             std::fs::create_dir_all(full.parent().unwrap()).unwrap();
             std::fs::write(full, body).unwrap();
         }
+        #[cfg(unix)]
         std::os::unix::fs::symlink("src/main.rs", root.join("link")).unwrap();
         dir
     }
@@ -335,12 +346,17 @@ mod tests {
         std::fs::write(dir.path().join(".git/HEAD"), "ref").unwrap();
         let rules = SyncRules { gitignore: true, ignore: vec!["*.log".into()], excluded: vec!["docs".into()], ..SyncRules::default() };
         let entries = scan(dir.path(), &rules, None).unwrap();
-        assert_eq!(
-            paths(&entries),
-            [".cabinignore", ".gitignore", "link", "src", "src/.gitignore", "src/main.rs"]
-        );
-        let link = entries.iter().find(|e| e.path == "link").unwrap();
-        assert_eq!((link.kind, link.target.as_deref()), (EntryKind::Symlink, Some("src/main.rs")));
+        // The fixture adds a symlink only where the host can create one.
+        let expected: Vec<&str> = if cfg!(unix) {
+            vec![".cabinignore", ".gitignore", "link", "src", "src/.gitignore", "src/main.rs"]
+        } else {
+            vec![".cabinignore", ".gitignore", "src", "src/.gitignore", "src/main.rs"]
+        };
+        assert_eq!(paths(&entries), expected);
+        if cfg!(unix) {
+            let link = entries.iter().find(|e| e.path == "link").unwrap();
+            assert_eq!((link.kind, link.target.as_deref()), (EntryKind::Symlink, Some("src/main.rs")));
+        }
         assert_eq!(entries.iter().find(|e| e.path == "src/main.rs").unwrap().size, 12);
     }
 
@@ -351,6 +367,7 @@ mod tests {
         assert_eq!(scan(&root, &SyncRules::default(), None).unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 
+    #[cfg(unix)]
     #[test]
     fn denied_subtree_does_not_look_like_deleted_files() {
         use std::os::unix::fs::PermissionsExt;

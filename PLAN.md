@@ -1,6 +1,6 @@
 # Cabin architecture and plan
 
-Cabin is a desktop workbench for one Ubuntu ARM64 VM. The Mac provides the window,
+Cabin is a desktop workbench for one Ubuntu VM. The host provides the window,
 machine lifecycle, network, and project sync. The guest owns the agent executables,
 workspaces, PTYs, chat processes, and desktop session.
 
@@ -12,8 +12,8 @@ contracts.
 
 | Area | Decision |
 |---|---|
-| VM and release inputs | The Mac app runs one VM through QEMU and HVF. Setup downloads the pinned macanine/qemu release and an Ubuntu 24.04 or 26.04 LTS cloud image. The installed machine records the image's dated URL and SHA-256. Ubuntu's generic kernel supplies the required 9p and display drivers. |
-| Host and guest transport | Tauri commands run on the Mac. Guest commands use newline-delimited JSON RPC and typed events over `ssh ... cabind connect`. The per-machine SSH key authenticates the relay. The app compares the daemon's hello build hash with its bundled Linux ARM64 binary and deploys it when needed. |
+| VM and release inputs | On Apple Silicon, setup downloads the pinned macanine/qemu engine for HVF. Windows x64 runs a native amd64 guest with the installed QEMU, and Linux uses its distribution's QEMU. Setup records the Ubuntu 24.04 or 26.04 LTS image's dated URL and SHA-256. Ubuntu's generic kernel supplies the required 9p and display drivers. |
+| Host and guest transport | Tauri commands run on the host. Guest commands use newline-delimited JSON RPC and typed events over `ssh ... cabind connect`. The per-machine SSH key authenticates the relay. The app compares the daemon's hello build hash with its Linux binary for the guest architecture and deploys it when needed. |
 | Lifecycle and recovery | The installer collects System, Account, and Review before it starts provisioning. Guest system changes prepare, apply, verify, and roll back through the operation journal. Machine startup reports each phase and keeps its logs. A first-install rollback removes its incomplete disk, while repair uses the existing disk. |
 | Desktop and tools | Sway is the guest desktop. noVNC over SSH is the default viewer. SPICE uses the same desktop through a private QEMU socket on supported machines. Node.js, Python, uv, and agent tooling are installed in the guest. |
 | UI and data flow | The React window consumes a startup snapshot and typed events. Host and guest report authoritative process and operation state. Visible reads refresh on entry, foreground return, updates, or bounded polling where events are unavailable. Settings use one column with the most relevant state and actions at the top. |
