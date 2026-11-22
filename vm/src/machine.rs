@@ -558,7 +558,7 @@ impl Machine {
     /// Create, provision and start the VM. A failure destroys the partial
     /// instance so the next attempt starts clean.
     pub fn validate(options: &InstallOptions) -> Result<()> {
-        if options.device && crate::platform::guest_arch() != "aarch64" {
+        if options.device && !crate::arch::GuestArch::current().device_profile_supported() {
             return crate::util::message(
                 "The device profile is currently built for ARM machines; disable it to install on this host",
             );
@@ -603,7 +603,7 @@ impl Machine {
             qemu_release: if cfg!(target_os = "macos") {
                 crate::qemu_engine::RELEASE.to_string()
             } else {
-                crate::platform::qemu_system().to_string()
+                crate::arch::GuestArch::current().qemu_system_binary().to_string()
             },
             qemu_installed: engine.is_some(),
             cpus: cfg.cpus,
@@ -1200,12 +1200,7 @@ mod tests {
         let machine = Machine::new(&home, env!("CARGO_MANIFEST_DIR"));
         if cfg!(target_os = "macos") {
             let engine = crate::qemu_engine::root(&home);
-            for file in [
-                "bin/qemu-system-aarch64",
-                "bin/qemu-img",
-                "share/qemu/edk2-aarch64-code.fd",
-                "share/qemu/edk2-aarch64-vars.fd",
-            ] {
+            for file in crate::arch::GuestArch::current().engine_files() {
                 let path = engine.join(file);
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                 std::fs::write(path, []).unwrap();

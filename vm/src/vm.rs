@@ -237,19 +237,18 @@ pub fn build_qemu_args(
         args.push("-L".to_string());
         args.push(directory.display().to_string());
     }
+    // Machine type, accelerator (WHPX through `-accel`) and CPU model.
+    if cfg!(windows) && crate::platform::accel().accel == "whpx" {
+        // Probe once per engine; a rejected WHPX switches to TCG before launch.
+        let _ = crate::accel::status_for_engine(Path::new(&resolved.qemu_bin));
+    }
+    let accelerator = crate::platform::accel().qemu_args(crate::arch::GuestArch::current());
     args.extend([
         "-name".to_string(),
         format!("vmctl-{}", cfg.name),
-        // The aarch64 `virt` platform is the Mac product; x86_64 guests use
-        // q35 with the same virtio device set.
-        "-machine".to_string(),
-        if crate::platform::guest_arch() == "x86_64" {
-            format!("q35,accel={}", crate::platform::accel().accel)
-        } else {
-            format!("virt,accel={},highmem=on", crate::platform::accel().accel)
-        },
-        "-cpu".to_string(),
-        crate::platform::accel().cpu.to_string(),
+    ]);
+    args.extend(accelerator);
+    args.extend([
         "-smp".to_string(),
         cfg.cpus.to_string(),
         "-m".to_string(),
@@ -441,7 +440,7 @@ pub(crate) fn owns_qemu_process(pid: u32, pidfile: &Path, vm_name: &str) -> bool
         return false;
     };
     let arguments = format!(" -{arguments} ");
-    let qemu = format!("{}{}", crate::platform::qemu_system(), std::env::consts::EXE_SUFFIX);
+    let qemu = crate::arch::GuestArch::current().qemu_system_file();
     Path::new(executable.trim_matches('"')).file_name().is_some_and(|name| name == qemu.as_str())
         && arguments.contains(&format!(" -name vmctl-{vm_name} "))
         && (arguments.contains(&format!(" -pidfile {} ", pidfile.display()))
@@ -631,34 +630,18 @@ impl Runtime {
         Ok(true)
     }
 
-    pub(crate) fn start_stopped(
+    /// Launch QEMU (foreground or daemonized) and wait for its monitor.
+    fn launch_qemu(
         &self,
         log: &Arc<Mutex<File>>,
-        boot: Boot<'_>,
-        attempt: Option<&Attempt>,
+        serial_log: &Path,
+        phase: Option<&str>,
+        display_mode: Option<&str>,
+        effective_display: &str,
+        foreground: bool,
     ) -> Result<()> {
-        let Boot {
-            ssh_timeout,
-            serial_log,
-            phase,
-            display_mode,
-        } = boot;
-        self.cleanup_stale();
-        ensure_dir(&self.cfg.instance_dir())?;
-        if self.cfg.desktop_spice {
-            prepare_spice_dir(&self.cfg)?;
-        }
-        let serial_log = serial_log
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.cfg.serial_log_path());
-        let effective_display = display_mode.unwrap_or(&self.cfg.display_mode);
-        // Windows has no -daemonize: QEMU runs as a supervised child there.
-        let foreground = cfg!(not(unix))
-            || self.cfg.effective_network_mode() == "socket-vmnet"
-            || effective_display == "cocoa"
-            || self.cfg.audio_backend == "coreaudio";
         if foreground {
-            let args = build_qemu_args(&self.cfg, false, Some(&serial_log), phase, display_mode)?;
+            let args = build_qemu_args(&self.cfg, false, Some(serial_log), phase, display_mode)?;
             let client_log_path = InstancePaths::new(self.cfg.instance_dir()).file(
                 if self.cfg.effective_network_mode() == "socket-vmnet" {
                     "socket-vmnet-client.log"
@@ -713,7 +696,7 @@ impl Runtime {
                 thread::sleep(Duration::from_millis(200));
             }
         } else {
-            let args = build_qemu_args(&self.cfg, true, Some(&serial_log), phase, display_mode)?;
+            let args = build_qemu_args(&self.cfg, true, Some(serial_log), phase, display_mode)?;
             log_line(log, "launching QEMU (daemonized)");
             run(
                 &args,
@@ -727,6 +710,62 @@ impl Runtime {
         if let Err(error) = self.wait_qmp(Duration::from_secs(45)) {
             self.stop(log, Duration::from_secs(10));
             return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn start_stopped(
+        &self,
+        log: &Arc<Mutex<File>>,
+        boot: Boot<'_>,
+        attempt: Option<&Attempt>,
+    ) -> Result<()> {
+        let Boot {
+            ssh_timeout,
+            serial_log,
+            phase,
+            display_mode,
+        } = boot;
+        self.cleanup_stale();
+        ensure_dir(&self.cfg.instance_dir())?;
+        if self.cfg.desktop_spice {
+            prepare_spice_dir(&self.cfg)?;
+        }
+        let serial_log = serial_log
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.cfg.serial_log_path());
+        let effective_display = display_mode.unwrap_or(&self.cfg.display_mode);
+        // Windows has no -daemonize: QEMU runs as a supervised child there.
+        let foreground = cfg!(not(unix))
+            || self.cfg.effective_network_mode() == "socket-vmnet"
+            || effective_display == "cocoa"
+            || self.cfg.audio_backend == "coreaudio";
+        let mut retried = false;
+        loop {
+            let launched = self.launch_qemu(
+                log,
+                &serial_log,
+                phase,
+                display_mode,
+                effective_display,
+                foreground,
+            );
+            match launched {
+                Ok(()) => break,
+                Err(error) if !retried && crate::platform::accel().accel == "whpx" => {
+                    // WHPX can pass the probe and still fail a real machine
+                    // (device or memory limits): retry once under TCG.
+                    let reason = crate::accel::classify_failure(&error.to_string());
+                    log_line(
+                        log,
+                        &format!("WHPX start failed ({reason:?}); retrying under TCG: {error}"),
+                    );
+                    crate::accel::fall_back_to_tcg(reason);
+                    retried = true;
+                    self.cleanup_stale();
+                }
+                Err(error) => return Err(error),
+            }
         }
         // A foreground client/QEMU must not become a zombie when the command
         // returns; hand the child to a detached reaper now that startup has
@@ -1012,11 +1051,12 @@ pub fn preflight(cfg: &Config) -> Vec<String> {
     if !matches!(std::env::consts::OS, "macos" | "linux" | "windows") {
         issues.push("Cabin runs VMs on macOS (and Linux for development)".to_string());
     }
-    // A non-arm64 host can only emulate the aarch64 guest (TCG), which the
-    // pipeline already supports on Linux development hosts.
-    if std::env::consts::ARCH != "aarch64" && !crate::platform::accel().emulated {
+    // The guest always matches the host architecture (arm64 on macOS), which
+    // runs accelerated (HVF, KVM, WHPX) or emulated (TCG). Only a host with no
+    // supported guest architecture is refused.
+    if !crate::arch::GuestArch::host_supported() {
         issues.push(format!(
-            "this build targets arm64, host is {}",
+            "unsupported host architecture: {}",
             std::env::consts::ARCH
         ));
     }

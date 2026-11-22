@@ -19,7 +19,9 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+pub mod accel;
 pub mod agentd;
+pub mod arch;
 pub mod browser;
 pub mod chrome_feature;
 pub mod chrome_viewer;

@@ -232,6 +232,10 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 
 ## Host platforms
 
+- `vm/src/arch.rs` (`GuestArch`) is the single source of architecture decisions: QEMU
+  binary, firmware names, machine type, image suffix, mirrors, Chrome package, and browser
+  platform. `vm/src/accel.rs` owns acceleration status and the WHPX probe and TCG fallback.
+  Do not branch on `aarch64` or `x86_64` elsewhere.
 - macOS (Apple Silicon) is the product target with HVF, the pinned macanine QEMU engine,
   Unix sockets, `hdiutil`, and the AppKit window chrome. Linux development uses distro QEMU
   (KVM or TCG), `xorriso`, and PATH tools. Windows x64 uses an amd64 guest and QEMU from

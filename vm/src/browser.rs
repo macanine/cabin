@@ -13,6 +13,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::Result;
+use crate::arch::GuestArch;
 use crate::config::Config;
 use crate::paths::ResourcePaths;
 use crate::util::{message, read_json, shell_quote as q};
@@ -27,12 +28,34 @@ const NATIVE_FINGERPRINT_VERSION: &[u8] = b"cabin-native-browser-v1\0";
 pub fn load_defaults(project_root: &Path) -> Result<Value> {
     let path = ResourcePaths::new(project_root).browser_config();
     match read_json(&path) {
-        Some(Value::Object(map)) if !map.is_empty() => Ok(Value::Object(map)),
+        Some(Value::Object(map)) if !map.is_empty() => {
+            Ok(localize_defaults(Value::Object(map), GuestArch::current()))
+        }
         _ => message(format!(
             "missing browser profile defaults: {}",
             path.display()
         )),
     }
+}
+
+/// `config/browser.json` is written for arm64. Substitute the guest's
+/// platform in every string and the client-hint CPU architecture.
+pub fn localize_defaults(mut data: Value, arch: GuestArch) -> Value {
+    fn walk(value: &mut Value, arch: GuestArch) {
+        match value {
+            Value::String(text) => *text = arch.localize_fingerprint(text),
+            Value::Array(items) => items.iter_mut().for_each(|item| walk(item, arch)),
+            Value::Object(map) => map.values_mut().for_each(|item| walk(item, arch)),
+            _ => {}
+        }
+    }
+    walk(&mut data, arch);
+    if let Some(Value::Object(hints)) = data.pointer_mut("/ua_data")
+        && hints.contains_key("architecture")
+    {
+        hints.insert("architecture".to_string(), json!(arch.cpu_architecture()));
+    }
+    data
 }
 
 pub fn deep_merge(base: &Value, override_value: &Value) -> Value {
@@ -170,7 +193,7 @@ pub fn resolve(cfg: &Config) -> Result<Value> {
                 "device_memory".to_string(),
                 json!(memory_bucket(cfg.memory_mb)),
             );
-            navigator.insert("platform".to_string(), json!("Linux aarch64"));
+            navigator.insert("platform".to_string(), json!(GuestArch::current().ua_platform()));
         }
         {
             let screen = object_mut(&mut data, "screen")?;
@@ -931,6 +954,20 @@ fn audit_result(expected: Value, report: &Value, runtime_note: Option<String>) -
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn defaults_follow_the_guest_architecture() {
+        use crate::arch::GuestArch;
+        let raw: serde_json::Value =
+            serde_json::from_str(include_str!("../config/browser.json")).unwrap();
+        let amd = super::localize_defaults(raw.clone(), GuestArch::Amd64);
+        assert_eq!(amd["navigator"]["platform"], "Linux x86_64");
+        assert!(amd["navigator"]["user_agent"].as_str().unwrap().contains("Linux x86_64"));
+        assert!(amd["navigator"]["app_version"].as_str().unwrap().contains("Linux x86_64"));
+        assert_eq!(amd["ua_data"]["architecture"], "x86");
+        let arm = super::localize_defaults(raw.clone(), GuestArch::Arm64);
+        assert_eq!(arm, raw);
+    }
+
     use super::{Settings, audit_result, identity_fingerprint, install_profile, object_mut, settings, with_settings};
     use serde_json::json;
 

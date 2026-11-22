@@ -57,11 +57,7 @@ impl Os {
     /// The cloud image for the host's guest architecture (`aarch64` on the
     /// macOS product, the native architecture elsewhere).
     pub fn image(&self) -> String {
-        let arch = if crate::platform::guest_arch() == "x86_64" {
-            "amd64"
-        } else {
-            "arm64"
-        };
+        let arch = crate::arch::GuestArch::current().cloud_image_suffix();
         format!(
             r"ubuntu-{}-minimal-cloudimg-{}\.img",
             self.version.replace('.', r"\."),
@@ -178,19 +174,7 @@ impl Os {
 
     /// The archive the image uses, then mirrors commonly faster in Asia.
     pub fn mirrors(&self) -> &'static [&'static str] {
-        if crate::platform::guest_arch() == "x86_64" {
-            &[
-                "http://archive.ubuntu.com/ubuntu",
-                "https://ftp.kaist.ac.kr/ubuntu",
-                "https://mirrors.nju.edu.cn/ubuntu",
-            ]
-        } else {
-            &[
-                "http://ports.ubuntu.com/ubuntu-ports",
-                "https://ftp.kaist.ac.kr/ubuntu-ports",
-                "https://mirrors.nju.edu.cn/ubuntu-ports",
-            ]
-        }
+        crate::arch::GuestArch::current().apt_mirrors()
     }
 
     /// The suite whose package index a mirror test downloads.
@@ -295,10 +279,9 @@ mod tests {
             c = "3".repeat(64)
         );
         let (file, checksum) = ubuntu.find_image(&sums).unwrap();
-        let (arch, digest) = if crate::platform::guest_arch() == "x86_64" {
-            ("amd64", "3".repeat(64))
-        } else {
-            ("arm64", "ab".repeat(32))
+        let (arch, digest) = match crate::arch::GuestArch::current() {
+            crate::arch::GuestArch::Amd64 => ("amd64", "3".repeat(64)),
+            crate::arch::GuestArch::Arm64 => ("arm64", "ab".repeat(32)),
         };
         assert_eq!(file, format!("ubuntu-24.04-minimal-cloudimg-{arch}.img"));
         assert_eq!(checksum, Checksum::Sha256(digest));

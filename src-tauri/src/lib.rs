@@ -125,12 +125,7 @@ fn agentd_binary(resources: Option<PathBuf>) -> PathBuf {
         return PathBuf::from(path);
     }
     let core = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/target");
-    // The guest architecture follows the host (aarch64 on the macOS product).
-    let guest = if cfg!(target_os = "macos") || cfg!(target_arch = "aarch64") {
-        "aarch64-unknown-linux-musl"
-    } else {
-        "x86_64-unknown-linux-musl"
-    };
+    let guest = vm_core::arch::GuestArch::current().rust_musl_triple();
     let mut candidates: Vec<PathBuf> = resources
         .into_iter()
         .map(|dir| dir.join("cabind"))
