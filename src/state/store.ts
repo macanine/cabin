@@ -27,7 +27,10 @@ const chatListeners = new Map<string, Set<ChatListener>>();
 function set(next: AppState) {
   if (next === state) return;
   state = next;
-  listeners.forEach((listener) => listener());
+  // One failing subscriber must not stop the others (React's included).
+  listeners.forEach((listener) => {
+    try { listener(); } catch (error) { console.error(error); }
+  });
 }
 
 export const appStore = {

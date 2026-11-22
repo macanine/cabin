@@ -13,13 +13,13 @@ function fastestMirror(results: MirrorResult[]): MirrorResult | undefined {
 }
 
 function statusPill(result: MirrorResult) {
-  if (result.status === "ok") return <span className="pill ok">ARM64 ok</span>;
-  if (result.status === "noArm64") return <span className="pill warn">No ARM64</span>;
+  if (result.status === "ok") return <span className="pill ok">Packages ok</span>;
+  if (result.status === "noArm64") return <span className="pill warn">Missing packages</span>;
   return <span className="pill bad">Unreachable</span>;
 }
 
 /**
- * Tests the system's ARM64 package mirrors and lets the user pick one.
+ * Tests the system's package mirrors and lets the user pick one.
  * `value` is the chosen mirror URI, or null for the image default (the
  * result the backend marks `default`).
  */
@@ -79,8 +79,7 @@ export function MirrorPicker({
         </Button>
       </div>
       <p className="faint" style={{ fontSize: 12, margin: "2px 0 8px" }}>
-        The VM is ARM64. Each mirror is checked for this system's ARM64 packages and timed by downloading its
-        package index.
+        Each mirror is checked for this machine's packages and timed by downloading its package index.
       </p>
       {error && <div className="callout bad">{error}</div>}
       {results == null ? (

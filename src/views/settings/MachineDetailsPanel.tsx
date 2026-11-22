@@ -115,7 +115,7 @@ export function MachineDetailsPanel({ machine, details, observation }: {
       <div className="machine-columns">
         <Section title="System" hint={observation ? `Guest observed ${formatGuestDateTime(observation.at)}` : undefined}>
           <Facts rows={[
-            ["Operating system", `${details.osName} · ARM64`],
+            ["Operating system", `${details.osName} · ${details.imageUrl?.includes("amd64") ? "x86_64" : "ARM64"}`],
             ["Login", machine.username && machine.hostname ? mono(`${machine.username}@${machine.hostname}`) : null],
             ["Guest kernel", mono(observation?.kernel)],
             ["Guest uptime", observation ? formatDuration(observation.uptimeSeconds * 1000) : null],

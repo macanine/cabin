@@ -1,0 +1,72 @@
+// Walk the first-run journey in headless Chrome and save screenshots.
+// Run: node tests/ui/journey.mjs <scenario> [outDir]
+//   scenarios: mac | win-nowhpx | win-noqemu | fail-image | fail-provision
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
+
+const scenario = process.argv[2] ?? "mac";
+const out = process.argv[3] ?? `/tmp/cabin-journey/${scenario}`;
+fs.mkdirSync(out, { recursive: true });
+const PORT = Number(process.env.UI_TEST_PORT ?? 1611);
+const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const query = {
+  mac: "host=mac", "win-nowhpx": "host=win-nowhpx", "win-noqemu": "host=win-noqemu",
+  "fail-image": "host=win&fail=image", "fail-provision": "host=mac&fail=provision",
+}[scenario];
+const vite = spawn("npx", ["vite", "--port", String(PORT), "--strictPort", "--host", "127.0.0.1"], { stdio: "ignore" });
+const base = `http://127.0.0.1:${PORT}/tests/ui/install.html?${query}`;
+for (let i = 0; i < 60; i++) { try { await fetch(base); break; } catch { await sleep(300); } }
+
+const port = 9300 + Math.floor(Math.random() * 300);
+const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", `--remote-debugging-port=${port}`, `--user-data-dir=/tmp/journey-${port}`, "about:blank"], { stdio: "ignore" });
+let list;
+for (let i = 0; i < 50; i++) { try { list = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); if (list.length) break; } catch {} await sleep(200); }
+const ws = new WebSocket(list.find((t) => t.type === "page").webSocketDebuggerUrl);
+await new Promise((r) => (ws.onopen = r));
+let id = 0; const pending = new Map(); const errors = [];
+ws.onmessage = (m) => {
+  const d = JSON.parse(m.data);
+  if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); }
+  if (d.method === "Runtime.exceptionThrown") errors.push(d.params.exceptionDetails.exception?.description ?? "exception");
+  if (d.method === "Runtime.consoleAPICalled" && d.params.type === "error") errors.push(d.params.args.map((a) => a.value ?? a.description).join(" "));
+};
+const send = (method, params = {}) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+await send("Runtime.enable"); await send("Page.enable");
+await send("Emulation.setDeviceMetricsOverride", { width: 1240, height: 800, deviceScaleFactor: 1, mobile: false });
+await send("Page.navigate", { url: base }); await sleep(3500);
+const evalJs = async (e) => (await send("Runtime.evaluate", { expression: e, returnByValue: true, awaitPromise: true })).result?.result?.value;
+let shot = 0;
+async function snap(name) {
+  const r = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+  const file = `${out}/${String(++shot).padStart(2, "0")}-${name}.png`;
+  fs.writeFileSync(file, Buffer.from(r.result.data, "base64"));
+  console.log("shot", file);
+}
+async function click(text, sel = "button") {
+  const p = await evalJs(`(()=>{const e=[...document.querySelectorAll(${JSON.stringify(sel)})].find(e=>e.textContent.trim().includes(${JSON.stringify(text)}) && !e.disabled);if(!e)return null;e.scrollIntoView({block:"center"});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+  if (!p) { console.log("MISSING button:", text); return false; }
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: p.x, y: p.y, button: "left", clickCount: 1 });
+  await sleep(700);
+  return true;
+}
+const buttons = () => evalJs(`[...document.querySelectorAll("button")].filter(b=>b.offsetParent).map(b=>(b.disabled?"[disabled] ":"")+b.textContent.trim()).filter(Boolean)`);
+const text = () => evalJs("document.body.innerText");
+
+await snap("setup");
+console.log("TEXT setup:\n" + (await text()));
+console.log("BUTTONS:", await buttons());
+if (await click("Advanced")) { await snap("advanced"); console.log("TEXT advanced:\n" + (await text())); await click("Advanced"); }
+if (scenario === "win-nowhpx") {
+  if (await click("Turn on")) { await sleep(1000); await snap("after-fix"); console.log("TEXT after fix:\n" + (await text())); console.log("BUTTONS:", await buttons()); }
+}
+const probe = () => evalJs(`import("/src/state/store.ts").then(m=>{let v;m.patchState(s=>{v=s;return s});return JSON.stringify({busy:v.machine?.busy,steps:v.install.map(s=>s.id+":"+s.state)})})`);
+if (await click("Install")) {
+  if (process.env.PROBE) for (let i = 0; i < 12; i++) { console.log("PROBE", await probe(), "| DOM:", await evalJs(`[...document.querySelectorAll("h1,h2")].map(e=>e.textContent+" / "+(e.nextElementSibling?.textContent??"")).join(" | ")`)); await sleep(500); }
+  await sleep(1200); await snap("installing-early"); console.log("TEXT installing:\n" + (await text()));
+  await sleep(2500); await snap("installing-mid");
+  await sleep(5000); await snap("end"); console.log("TEXT end:\n" + (await text())); console.log("BUTTONS:", await buttons());
+}
+console.log("ERRORS:", errors);
+ws.close(); chrome.kill(); vite.kill();
+process.exit(0);

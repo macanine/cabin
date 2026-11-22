@@ -14,18 +14,18 @@ export interface WizardStepDef {
 
 export const WIZARD_STEPS: WizardStepDef[] = [
   {
-    key: "image",
-    title: "Download Ubuntu",
-    description: "The newest official Ubuntu cloud image, checked against Ubuntu's published SHA-256.",
-    helper: "A verified image is kept, so a retry or a reinstall skips the download.",
-    pipeline: ["image"],
-  },
-  {
     key: "skeleton",
-    title: "Prepare the virtual machine",
-    description: "CPU, memory, network and UEFI firmware, run by the QEMU that comes with Cabin.",
+    title: "Check the virtual machine engine",
+    description: "The QEMU and UEFI firmware that come with Cabin are checked before anything is created.",
     helper: "Nothing to install: the engine is part of Cabin.",
     pipeline: ["qemu"],
+  },
+  {
+    key: "image",
+    title: "Download Ubuntu",
+    description: "The newest official Ubuntu cloud image from the fastest mirror, checked against Ubuntu's published SHA-256.",
+    helper: "A verified image is kept, so a retry or a reinstall skips the download.",
+    pipeline: ["image"],
   },
   {
     key: "disk",
@@ -50,8 +50,8 @@ export const WIZARD_STEPS: WizardStepDef[] = [
   },
   {
     key: "agentd",
-    title: "Connect cabin",
-    description: "Cabin's service is copied in, started and connected over SSH.",
+    title: "Start Cabin in the machine",
+    description: "Cabin's service is copied into the machine, started and connected.",
     helper: "From here on, workspaces, sessions and agents live inside the machine.",
     pipeline: [],
   },
@@ -100,20 +100,20 @@ export function explainFailure(text: string): FailureHelp {
         "Ubuntu's image index could not be read. Check this computer's internet connection or proxy, then retry.",
     };
   }
-  if (t.includes("qemu archive") || t.includes("macanine/qemu")) {
+  if (t.includes("qemu archive") || t.includes("macanine/qemu") || t.includes("bundled qemu")) {
     return {
       title: "The virtual machine engine could not be prepared",
-      advice: "Its download or unpacking failed. Check this computer's internet connection and free disk space, then retry; the download resumes.",
+      advice: "Cabin's bundled QEMU could not be checked or unpacked. Retry; if it keeps failing, reinstall Cabin.",
     };
   }
   if (t.includes("download cancelled")) {
     return { title: "The download was cancelled", advice: "Install again to continue; the part already downloaded is kept and resumed." };
   }
-  if (t.includes("download failed after") || /http [45]\d\d/.test(t)) {
+  if (t.includes("download failed after") || t.includes("could not download") || t.includes("connection reset") || /http [45]\d\d/.test(t)) {
     return {
       title: "A file could not be downloaded",
       advice:
-        "The Ubuntu image or the bundled QEMU could not be downloaded. Check this computer's internet connection or proxy, then retry. What was already downloaded is kept and resumed.",
+        "The Ubuntu image could not be downloaded. Check this computer's internet connection or proxy, then retry: the download resumes where it stopped and tries the other mirrors.",
     };
   }
   if (t.includes('step "device-network" failed')) {

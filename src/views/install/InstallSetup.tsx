@@ -10,7 +10,6 @@ import { MirrorPicker } from "../../components/MirrorPicker";
 import { Note } from "../../components/Boot";
 import { DisclosureChevron, Reveal } from "../../components/motion";
 import { ReadinessPanel } from "./ReadinessPanel";
-import { uiActions } from "../../state/ui";
 import {
   chosenOs, diskGb, formProblem, hostnameProblem, installSummary, matchingPreset, mirrorHost,
   readinessView, RESOURCE_PRESETS, setupSummary, usernameProblem,
@@ -101,10 +100,7 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
       <header className="grid justify-items-center gap-1.5 text-center">
         <span className="glass mb-1 grid size-14 place-items-center rounded-2xl text-accent"><IconBrandUbuntu size={30} /></span>
         <h1 className="m-0 text-2xl font-semibold tracking-tight">Set up your agent machine</h1>
-        <p className="m-0 max-w-[480px] text-md text-muted">Run Claude Code, Codex, OpenCode, Pi and Antigravity in one local Ubuntu VM.</p>
-        <Button variant="subtle" size="compact-sm" onClick={() => uiActions.navigate({ kind: "settings", tab: "machine" })}>
-          Machine settings
-        </Button>
+        <p className="m-0 max-w-[560px] text-md text-balance text-muted">Claude Code, Codex, OpenCode, Pi and Antigravity run in one Ubuntu machine on this computer. Cabin sets it up for you.</p>
       </header>
 
       <ReadinessPanel items={readiness} onChanged={onRecheck} />

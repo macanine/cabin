@@ -42,6 +42,7 @@ test("failures are explained in plain language", async () => {
   assert.match(explainFailure("qemu not found").title, /bundled QEMU is missing/);
   assert.match(explainFailure("download failed after 5 attempts: could not connect: dns").title, /could not be downloaded/);
   assert.match(explainFailure("HTTP 404 Not Found for https://x").title, /could not be downloaded/);
+  assert.match(explainFailure("could not download https://cloud-images.ubuntu.com/x.img: connection reset by peer").title, /could not be downloaded/);
   assert.match(explainFailure('step "device-network" failed: set device.network.ssh_host').title, /device network/);
   assert.match(explainFailure("SSH authentication failed").title, /log in.*SSH/);
   assert.equal(formatDuration(75_000), "1m 15s");

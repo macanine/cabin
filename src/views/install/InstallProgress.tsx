@@ -10,7 +10,6 @@ import { patchState, useApp } from "../../state/store";
 import { uiActions } from "../../state/ui";
 import { MirrorPicker } from "../../components/MirrorPicker";
 import { type StateTone } from "../../components/common";
-import { Celebration } from "../../components/Celebration";
 import { StepProgress } from "../../components/StepProgress";
 import { BootDetails, BootHero, BootStep, BootSteps, Elapsed, Note, Ticker } from "../../components/Boot";
 import { useAutoOpen } from "../../components/motion";
@@ -135,13 +134,17 @@ export function InstallProgress({
     }
   });
 
+  // The pipeline finished and the machine is starting for the first time.
+  const starting = startedAt != null && installed && !installing && !connected && !failed && machine.state === "running";
   const title = justInstalled ? "Your machine is ready"
+    : starting ? "Starting your machine"
     : installing ? machine.busy === "Cancelling the install" ? "Cancelling…" : `Installing ${osName}`
       : cancelled ? "Install cancelled"
         : failed ? "The install stopped"
           : installed ? "Installation" : "Install";
   const subtitle = justInstalled
     ? `${osName} is running and Cabin ${machine.guestVersion ?? ""} is connected.`
+    : starting ? "Almost done: connecting to Cabin's service in the machine."
     : installing ? WIZARD_STEPS[current].title
       : cancelled ?? (failed ? help?.title : installed ? "Every step is recorded and can be verified and resumed." : undefined);
 
@@ -150,7 +153,7 @@ export function InstallProgress({
   return (
     <>
       <BootHero
-        tone={justInstalled || (installed && !failed && !installing) ? "ok" : failed ? "bad" : "running"}
+        tone={justInstalled || (installed && !failed && !installing && !starting) ? "ok" : failed ? "bad" : "running"}
         progress={installing || failed || justInstalled ? progress : installed ? 1 : progress}
         title={title}
         subtitle={subtitle}
@@ -159,7 +162,6 @@ export function InstallProgress({
 
       {justInstalled && (
         <div className="grid justify-items-center gap-3">
-          <Celebration size={44} />
           {noAgents ? (
             <Button size="md" onClick={() => uiActions.navigate({ kind: "agents" })}>Install your agents</Button>
           ) : (
@@ -212,7 +214,7 @@ export function InstallProgress({
         </div>
       )}
 
-      {installed && !installing && !justInstalled && (
+      {installed && !installing && !justInstalled && !starting && (
         <section className="glass grid gap-2 rounded-xl p-3.5">
           <div className="flex flex-wrap items-center gap-2">
             <span className="min-w-0 flex-1 text-sm text-faint">Resume repairs missing steps while the machine is stopped.</span>

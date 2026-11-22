@@ -14,18 +14,20 @@ export function fixLabel(fix: Fix): string | null {
     case "enableWhpx": return "Turn on";
     case "restartHost": return "Restart Windows";
     case "openUrl": return "How to fix";
-    case "reinstallApp": return null;
+    case "reinstallApp": return "Download Cabin";
   }
 }
 
-function Row({ item, tone, busy, onFix }: { item: Readiness; tone: "bad" | "warn"; busy: boolean; onFix: (fix: Fix) => void }) {
-  const label = item.fix ? fixLabel(item.fix) : null;
+const DOWNLOAD_URL = "https://github.com/macanine/cabin/releases/latest";
+
+function Row({ item, tone, busy, onFix, pendingRestart }: { item: Readiness; tone: "bad" | "warn"; busy: boolean; onFix: (fix: Fix) => void; pendingRestart: boolean }) {
+  const label = pendingRestart ? null : item.fix ? fixLabel(item.fix) : null;
   return (
     <div className="flex items-start gap-3 py-2.5">
       {tone === "bad" ? <IconCircleX size={17} className="mt-0.5 shrink-0 text-bad" /> : <IconAlertTriangle size={17} className="mt-0.5 shrink-0 text-warn" />}
       <div className="grid min-w-0 flex-1 gap-0.5">
         <strong className="text-md">{item.label}</strong>
-        <span className="text-sm text-muted">{item.detail}</span>
+        <span className="text-sm text-muted">{pendingRestart ? "Turned on. Restart Windows to start using it; until then the machine runs emulated." : item.detail}</span>
       </div>
       {item.fix && label && <Button size="compact-sm" variant="default" loading={busy} onClick={() => onFix(item.fix!)}>{label}</Button>}
     </div>
@@ -48,7 +50,7 @@ export function ReadinessPanel({ items, onChanged }: { items: Readiness[] | null
     setBusy(id);
     setError(null);
     try {
-      const outcome = await machineIpc.fix(next);
+      const outcome = await machineIpc.fix(next.kind === "reinstallApp" ? { kind: "openUrl", url: DOWNLOAD_URL } : next);
       if (outcome.restartRequired) setRestart("needed");
       onChanged();
     } catch (err) {
@@ -64,14 +66,14 @@ export function ReadinessPanel({ items, onChanged }: { items: Readiness[] | null
       {problems.length > 0 && (
         <div role={blocking.length ? "alert" : "status"} className={`divide-y divide-line/60 rounded-xl border px-4 py-1 ${blocking.length ? "border-bad/40 bg-bad/5" : "border-warn/40 bg-warn/5"}`}>
           {problems.map(({ item, tone }) => (
-            <Row key={item.id} item={item} tone={tone} busy={busy === item.id} onFix={(f) => void fix(f, item.id)} />
+            <Row key={item.id} item={item} tone={tone} busy={busy === item.id} onFix={(f) => void fix(f, item.id)} pendingRestart={restart != null && item.fix?.kind === "enableWhpx"} />
           ))}
         </div>
       )}
       {restart && (
         <Note tone="warn">
           <span className="flex flex-wrap items-center justify-between gap-3">
-            <span>Windows needs a restart to finish turning this on. Save your work first.</span>
+            <span>{restart === "confirm" ? "Save your work: Windows restarts in a few seconds." : "Restart Windows now for a much faster install, or install now and restart later."}</span>
             {restart === "needed"
               ? <Button size="compact-sm" variant="default" onClick={() => setRestart("confirm")}>Restart Windows</Button>
               : <Button size="compact-sm" color="red" loading={busy === "restart"} onClick={() => void fix({ kind: "restartHost" }, "restart")}>Restart now</Button>}
@@ -89,7 +91,7 @@ export function ReadinessPanel({ items, onChanged }: { items: Readiness[] | null
           </button>
           <Reveal open={showPassed}>
             <ul className="m-0 grid list-none gap-1 px-1 pt-1 pb-2 text-sm text-muted">
-              {passed.map((item) => <li key={item.id} className="flex gap-2"><IconCheck size={14} className="mt-0.5 shrink-0 text-ok" /><span><strong className="text-fg">{item.label}</strong> · {item.detail}</span></li>)}
+              {passed.map((item) => <li key={item.id} className="flex gap-2"><IconCheck size={14} className="mt-0.5 shrink-0 text-ok" /><span><strong className="text-fg">{item.label}</strong>{item.detail ? ` · ${item.detail}` : ""}</span></li>)}
             </ul>
           </Reveal>
         </div>
