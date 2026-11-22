@@ -88,6 +88,28 @@ It does not edit files owned by another workstream in the same wave.
   and `tauri build`, then uploads the installers as artifacts.
 - QEMU GPL compliance: ship `COPYING`/license files and a `SOURCES.txt` with the source URL.
 
+**A: implemented contract** (manifest and packaging, for workstream D)
+- `scripts/vendor.json`: `{ schema: 1, platforms: { "macos-arm64" | "windows-x64": { guestArch,
+  qemu: pin, openssh?: pin } } }`, where `pin = { version, license, format, url, sha256,
+  sourceUrl, upstreamSourceUrl?, extraFiles? }`.
+- Output `build/vendor/<platform>/`, bundled as the resource dir `vendor/`:
+  `qemu/`, `openssh/` (Windows), `licenses/`, `SOURCES.txt`, `manifest.json`.
+- `manifest.json` (all paths relative to `vendor/`):
+  `{ platform, guestArch: "aarch64"|"x86_64", qemu: { version, system, img, firmwareCode,
+  firmwareVars, firmwareDir }, ssh?: { version, ssh, sshKeygen } }`.
+  macOS: `qemu/bin/qemu-system-aarch64`, `qemu/bin/qemu-img`,
+  `qemu/share/qemu/edk2-aarch64-{code,vars}.fd`. Windows: `qemu/qemu-system-x86_64.exe`,
+  `qemu/qemu-img.exe`, `qemu/share/edk2-x86_64-code.fd`, `qemu/share/edk2-i386-vars.fd`
+  (the Windows installer has no x86_64 vars template; the i386 one is the same format),
+  `openssh/ssh.exe`, `openssh/ssh-keygen.exe`. The Windows `share/` sits next to the exe,
+  so QEMU finds its ROMs without `-L`; keep the exe and `share/` together.
+- Extraction uses the `7z-wasm` npm package (7-Zip 24.09 as WebAssembly) rather than
+  `7zip-bin`, because `7zip-bin` ships 7-Zip 16.02 `7za`, which cannot open NSIS installers.
+- `build-agentd.mjs` order: `--target`, `CABIN_GUEST_ARCH`, `TAURI_ENV_TARGET_TRIPLE`, host.
+  `CABIN_PREBUILT_CABIND=1` skips the build when the Cargo output already exists (CI).
+- CI builds `cabind` for both guest arches on Ubuntu (cargo-zigbuild) and the desktop jobs
+  download it. This avoids zig on Windows.
+
 **B: Guest architecture model and acceleration** (`ws-b-arch`)
 - New `vm/src/arch.rs`: `enum GuestArch { Arm64, Amd64 }` with `current()`,
   `debian()` (`arm64`/`amd64`), `rust_triple()`, `qemu_system()`, `firmware_names()`,

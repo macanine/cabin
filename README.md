@@ -182,6 +182,23 @@ CABIN_LIVE_OPENCODE=1 CABIN_OPENCODE2_BIN=/path/to/opencode2 \
   cargo test --manifest-path core/Cargo.toml --test live_opencode -- --ignored --nocapture
 ```
 
+### Packaging
+
+Release builds ship everything the app needs, so end users install nothing. `scripts/vendor.json`
+pins QEMU for macOS arm64 and Windows x64, and Win32-OpenSSH for Windows x64 (url, sha256,
+version, license, source URL). `npm run vendor` (also run by Tauri's `beforeDevCommand` and
+`beforeBuildCommand`) downloads the pins into `build/vendor-cache/`, verifies the hashes, and
+unpacks a pruned tree into `build/vendor/<platform>/` with `manifest.json`, `SOURCES.txt`, and
+license files. Tauri bundles that directory as the resource `vendor/`. The manifest format is
+documented at the top of `scripts/fetch-vendor.mjs`.
+
+To bump a pin, edit the entry in `scripts/vendor.json`: download the new file, compute its
+SHA-256 yourself (`shasum -a 256`), and update `url`, `sha256`, `version`, and `sourceUrl`
+together. For the macOS QEMU, keep `vm/src/qemu_engine.rs` (`RELEASE`, `SHA256`) in step until
+it reads the manifest. Then run `npm run vendor` and check the tree. `npm run tauri:win -- build`
+builds the Windows installer, and CI (`.github/workflows/build.yml`) builds both platforms.
+Linux uses the distribution's QEMU and skips the fetch.
+
 ### IPC bindings
 
 Regenerate the TypeScript bindings after changing Rust wire types or Tauri commands.
