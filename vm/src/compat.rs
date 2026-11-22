@@ -7,6 +7,7 @@ use std::os::fd::AsRawFd;
 use std::io;
 use std::path::Path;
 use std::process::Command;
+#[cfg(windows)]
 use std::time::Duration;
 
 #[cfg(unix)]
