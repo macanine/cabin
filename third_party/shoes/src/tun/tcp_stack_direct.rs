@@ -38,7 +38,9 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use super::packet::PacketBuffer;
 use super::tcp_conn::{TcpConnection, TcpConnectionControl, TcpSocketState};
-use super::wake::{TunDescriptor, Wake, WakeReceiver};
+#[cfg(windows)]
+use super::wake::TunDescriptor;
+use super::wake::{Wake, WakeReceiver};
 use super::{RelayGate, TunServerConfig};
 
 pub const PACKET_QUEUE_CAPACITY: usize = 64;
@@ -505,7 +507,7 @@ fn run_direct_stack_thread(
     running: Arc<AtomicBool>,
     shared_state: Arc<Mutex<SharedState>>,
     stack_wake: Wake,
-    mut wake_rx: WakeReceiver,
+    wake_rx: WakeReceiver,
     gate: RelayGate,
 ) {
     run_direct_stack_loop(fd, config, udp_tx, running, shared_state, stack_wake, wake_rx, gate)

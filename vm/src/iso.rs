@@ -83,26 +83,6 @@ impl Record {
         }
     }
 
-    fn file(name: &str, data_len: usize, extent: u32) -> Self {
-        let mut identifier = name.as_bytes().to_vec();
-        identifier.extend_from_slice(b";1");
-        Self {
-            name: identifier,
-            extent,
-            size: data_len as u32,
-            directory: false,
-        }
-    }
-
-    fn joliet_file(name: &str, data_len: usize, extent: u32) -> Self {
-        Self {
-            name: name.bytes().flat_map(|byte| [0u8, byte]).collect(),
-            extent,
-            size: data_len as u32,
-            directory: false,
-        }
-    }
-
     fn record_size(&self) -> usize {
         let mut length = 33 + self.name.len();
         if self.name.len() % 2 == 0 {

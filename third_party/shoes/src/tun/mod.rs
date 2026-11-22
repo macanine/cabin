@@ -92,7 +92,7 @@ async fn run_tun_server(
     config: TunServerConfig,
     proxy_selector: Arc<ClientProxySelector>,
     resolver: Arc<dyn Resolver>,
-    mut shutdown_rx: oneshot::Receiver<()>,
+    shutdown_rx: oneshot::Receiver<()>,
     gate: RelayGate,
 ) -> std::io::Result<()> {
     run_tun_server_inner(config, proxy_selector, resolver, shutdown_rx, gate).await

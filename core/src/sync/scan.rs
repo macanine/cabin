@@ -155,8 +155,6 @@ pub fn stat(root: &Path, rel: &str) -> io::Result<Option<Entry>> {
 }
 
 fn entry_from(path: String, kind: EntryKind, meta: &std::fs::Metadata, full: &Path) -> Entry {
-    #[cfg(unix)]
-    use std::os::unix::fs::MetadataExt;
     Entry {
         path,
         kind,
