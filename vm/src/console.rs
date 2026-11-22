@@ -10,6 +10,7 @@
 use std::path::Path;
 
 use crate::Result;
+#[cfg(not(unix))]
 use crate::util::message;
 
 #[cfg(unix)]

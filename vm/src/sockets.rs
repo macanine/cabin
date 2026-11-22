@@ -8,7 +8,9 @@
 //! (the app, vmctl) agrees on them.
 
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+#[cfg(windows)]
+use std::net::TcpListener;
+use std::net::{Shutdown, TcpStream};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -17,7 +19,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
-use crate::util::{atomic_write_json, read_json};
+#[cfg(windows)]
+use crate::util::atomic_write_json;
+use crate::util::read_json;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Endpoint {
@@ -160,6 +164,7 @@ pub fn stream_netdev(endpoint: &Endpoint, id: &str, reconnect: &str) -> String {
 
 /// The instance's port set: persisted values, allocating free loopback ports
 /// (and recording them) when this is the first use of the instance.
+#[cfg(windows)]
 fn ports(cfg: &Config) -> Option<Ports> {
     load_ports(cfg).or_else(|| ensure_ports(cfg).ok())
 }

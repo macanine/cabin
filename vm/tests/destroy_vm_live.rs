@@ -55,7 +55,7 @@ fn destroy_stops_a_real_vm_and_removes_every_owned_file() {
         String::from_utf8_lossy(&output.stderr)
     );
     let pid = vm_core::vm::read_pid(&cfg.pidfile()).expect("QEMU pid");
-    let socket = cfg.qmp_socket();
+    let socket = vm_core::sockets::qmp_endpoint(&cfg);
     let deadline = Instant::now() + Duration::from_secs(10);
     while vm_core::qmp::QmpClient::connect(&socket, Duration::from_secs(1)).is_err() {
         assert!(Instant::now() < deadline, "QEMU did not open QMP");

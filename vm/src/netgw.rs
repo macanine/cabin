@@ -1353,7 +1353,7 @@ impl GatewayStacks {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 fn datagram_pair() -> Result<(std::os::unix::net::UnixDatagram, std::os::unix::net::UnixDatagram)> {
     let (ours, theirs) = std::os::unix::net::UnixDatagram::pair()?;
     for socket in [&ours, &theirs] {
