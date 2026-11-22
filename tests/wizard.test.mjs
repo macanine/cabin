@@ -38,7 +38,8 @@ test("failures are explained in plain language", async () => {
   assert.match(explainFailure("preflight failed: TCP port 12233 on 127.0.0.1 is already in use; pass --ssh-port with a free port").title, /Port 12233 is already in use/);
   assert.match(explainFailure("something odd").title, /step failed/);
   assert.match(explainFailure('step "image" failed: could not find a Ubuntu 26.04 LTS image: HTTP 404').title, /system image/);
-  assert.match(explainFailure('step "qemu" failed: could not unpack the QEMU archive: x').title, /built-in QEMU/);
+  assert.match(explainFailure('step "qemu" failed: could not unpack the QEMU archive: x').title, /virtual machine engine/);
+  assert.match(explainFailure("qemu not found").title, /bundled QEMU is missing/);
   assert.match(explainFailure("download failed after 5 attempts: could not connect: dns").title, /could not be downloaded/);
   assert.match(explainFailure("HTTP 404 Not Found for https://x").title, /could not be downloaded/);
   assert.match(explainFailure('step "device-network" failed: set device.network.ssh_host').title, /device network/);
@@ -59,4 +60,16 @@ test("the running stage's newest log line, without its timestamp", async () => {
   const steps = [{ ...step("provision", "running"), logTail: ["[12:00:01] apt-get update", "[12:00:09] Setting up git (1:2.43)", ""] }];
   assert.equal(stageTicker(steps, def("provision")), "Setting up git (1:2.43)");
   assert.equal(stageTicker([], def("provision")), null);
+});
+
+test("install copy is platform-neutral and never tells people to install tools", async () => {
+  const { explainFailure } = await import("../src/lib/wizard.ts");
+  const texts = WIZARD_STEPS.flatMap((d) => [d.title, d.description, d.helper]);
+  for (const text of ["no route to host", "not enough free disk", "download failed after 5", "qemu missing", "temporary failure resolving x", "qemu archive"]) {
+    const { title, advice } = explainFailure(text);
+    texts.push(title, advice);
+  }
+  for (const text of texts) {
+    assert.doesNotMatch(text, /\bMac\b|ARM64|install qemu|cabind/i, text);
+  }
 });

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use agent_core::model::{
-    AppEvent, AppSnapshot, BrowserEnvironmentProbe, BrowserEnvironmentView, BrowserSettings, GuestConnection, GuestNetworkProbe, HostCheck,
+    AppEvent, AppSnapshot, BrowserEnvironmentProbe, BrowserEnvironmentView, BrowserSettings, GuestConnection, GuestNetworkProbe,
     HostSnapshot, InstallPlan, InstallStep, MachineInstallOptions, MachineState, MachineStatus,
     MirrorResult, NetworkCheckReport, NetworkConnectivity, NetworkGateMode,
     NetworkRoute, NetworkStatus, StartReport, StartState,
@@ -878,32 +878,23 @@ impl Host {
         Ok(self.snapshot().machine)
     }
 
-    /// Host prerequisites for running the VM.
-    pub fn checks(&self) -> Vec<HostCheck> {
-        let mut checks = Vec::new();
-        // The built-in QEMU is downloaded by the install itself.
-        let engine = vm_core::qemu_engine::require(self.machine.home());
-        checks.push(HostCheck {
-            id: "qemu".into(),
-            label: "QEMU".into(),
-            ok: engine.is_ok() || cfg!(target_os = "macos"),
-            detail: match engine {
-                Ok(engine) => engine.qemu.display().to_string(),
-                Err(_) if cfg!(target_os = "macos") => format!(
-                    "{} is downloaded during the install",
-                    vm_core::qemu_engine::RELEASE
-                ),
-                Err(error) => error.to_string(),
-            },
-        });
+    /// Host readiness for an install of the given size.
+    pub fn checks(&self, disk_gb: u32, memory_mb: u32) -> vm_core::readiness::ReadinessReport {
+        let mut items = vm_core::readiness::host_readiness(self.machine.home(), disk_gb, memory_mb);
+        items.insert(
+            items.iter().position(|item| item.id == "disk").unwrap_or(items.len()),
+            vm_core::readiness::service_check(self.agentd.is_file()),
+        );
+        vm_core::readiness::ReadinessReport { items, host: vm_core::readiness::host_facts() }
+    }
 
-        checks.push(HostCheck {
-            id: "agentd".into(),
-            label: "cabind for the VM".into(),
-            ok: self.agentd.is_file(),
-            detail: self.agentd.display().to_string(),
-        });
-        checks
+    /// Carry out a readiness fix.
+    pub fn fix(&self, fix: vm_core::readiness::Fix) -> Result<vm_core::readiness::FixOutcome, AppError> {
+        vm_core::readiness::apply_fix(&fix).map_err(|error| AppError {
+            code: "fixFailed".into(),
+            message: error.to_string(),
+            details: None,
+        })
     }
 
     // ------------------------------------------------------- guest link

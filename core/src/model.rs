@@ -2191,16 +2191,6 @@ pub struct MirrorResult {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct HostCheck {
-    pub id: String,
-    pub label: String,
-    pub ok: bool,
-    pub detail: String,
-}
-
 /// One pipeline step during a machine install.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]

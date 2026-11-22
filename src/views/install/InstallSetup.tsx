@@ -1,22 +1,22 @@
 import { Button, NumberInput, Slider, Switch, TextInput } from "@mantine/core";
 import {
-  IconAlertTriangle, IconArrowLeft, IconArrowRight, IconBrandUbuntu, IconCheck, IconCpu, IconDeviceDesktop, IconDownload, IconUser,
+  IconBrandUbuntu, IconCheck, IconCpu, IconDeviceDesktop, IconDownload, IconSettings, IconUser,
 } from "@tabler/icons-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import type { HostCheck, InstallPlan, MachineInstallOptions, MirrorResult, OsChoice } from "../../services/ipc/generated/core";
+import type { HostFacts, Readiness } from "../../services/ipc/generated/common";
+import type { InstallPlan, MachineInstallOptions, MirrorResult, OsChoice } from "../../services/ipc/generated/core";
 import { machineIpc } from "../../services/ipc/app";
 import { MirrorPicker } from "../../components/MirrorPicker";
 import { Note } from "../../components/Boot";
-import { Reveal } from "../../components/motion";
-import { Stepper } from "../../components/Stepper";
+import { DisclosureChevron, Reveal } from "../../components/motion";
+import { ReadinessPanel } from "./ReadinessPanel";
 import { uiActions } from "../../state/ui";
 import {
-  chosenOs, diskGb, formProblem, hostnameProblem, installSummary, isOptionalCheck, matchingPreset, mirrorHost,
-  RESOURCE_PRESETS, usernameProblem,
+  chosenOs, diskGb, formProblem, hostnameProblem, installSummary, matchingPreset, mirrorHost,
+  readinessView, RESOURCE_PRESETS, setupSummary, usernameProblem,
 } from "../../lib/installForm";
 
 const gb = (mb: number) => `${mb / 1024 % 1 === 0 ? mb / 1024 : (mb / 1024).toFixed(1)} GB`;
-const STEPS = ["System", "Account", "Review"] as const;
 
 /** The working mirror with the best measured speed. */
 function fastest(results: MirrorResult[]): MirrorResult | null {
@@ -50,55 +50,33 @@ const Heading = ({ children, hint }: { children: ReactNode; hint?: ReactNode }) 
   </div>
 );
 
-function HostReadiness({ checks, plan }: { checks: HostCheck[] | null; plan: InstallPlan | null }) {
-  const missing = (checks ?? []).filter((c) => !isOptionalCheck(c.id) && !c.ok);
-  const emulated = plan?.accel.startsWith("tcg") ?? false;
-  if (checks == null) return <Note>Checking host requirements…</Note>;
-  if (missing.length) {
-    return (
-      <Note tone="bad" role="alert">
-        <div className="flex gap-2"><IconAlertTriangle size={15} className="mt-0.5 shrink-0" />
-          <div className="grid gap-0.5"><strong>Host requirements missing</strong>
-            {missing.map((c) => <span key={c.id} className="text-fg">{c.label}: <span className="font-mono text-xs">{c.detail}</span></span>)}
-          </div>
-        </div>
-      </Note>
-    );
-  }
-  return (
-    <Note tone={emulated ? "warn" : "ok"}>
-      <span className="flex items-center gap-2">
-        {emulated ? <IconAlertTriangle size={15} /> : <IconCheck size={15} />}
-        {emulated ? "QEMU is using software emulation. Installation may take longer." : "This computer is ready. Installing usually takes a few minutes."}
-      </span>
-    </Note>
-  );
-}
-
 /**
- * The installer's setup as a three-step wizard: system and size, the
- * account and package mirror, then a review with Install. The fastest mirror
- * is measured in the background and used unless one is chosen.
+ * The installer's setup on one screen: what this computer needs, a one-line
+ * summary of the defaults chosen for it, Install, and everything adjustable
+ * folded under Advanced. The fastest mirror is measured in the background
+ * and used unless one is chosen.
  */
-export function InstallSetup({ options, set, plan, choices, checks, planError, onInstall }: {
+export function InstallSetup({ options, set, plan, choices, readiness, host, planError, onInstall, onRecheck }: {
   options: MachineInstallOptions;
   set: (patch: Partial<MachineInstallOptions>) => void;
   plan: InstallPlan | null;
   choices: OsChoice[];
-  checks: HostCheck[] | null;
+  readiness: Readiness[] | null;
+  host: HostFacts | null;
   planError: string | null;
   onInstall: () => void;
+  onRecheck: () => void;
 }) {
   const os = chosenOs(options, choices);
   const preset = matchingPreset(options);
-  const [step, setStep] = useState(0);
+  const [advanced, setAdvanced] = useState(false);
   const [custom, setCustom] = useState(preset == null);
   const [mirrorAuto, setMirrorAuto] = useState<MirrorResult | null>(null);
   const mirrorChosen = useRef(false);
   const problem = formProblem(options);
-  const blocked = (checks ?? []).some((c) => !isOptionalCheck(c.id) && !c.ok);
+  const blocked = readiness == null || readinessView(readiness).blocking.length > 0;
   const user = options.username ?? "";
-  const host = options.hostname ?? "";
+  const host_ = options.hostname ?? "";
 
   // Measure the mirrors for this system once; use the fastest unless one was picked.
   useEffect(() => {
@@ -117,10 +95,9 @@ export function InstallSetup({ options, set, plan, choices, checks, planError, o
     ? `${mirrorHost(options.aptMirror)}${mirrorAuto && mirrorAuto.uri === options.aptMirror ? " (fastest)" : ""}`
     : mirrorAuto?.default ? `${mirrorAuto.host} (fastest)` : "Ubuntu's own archive";
   const osChoices = choices.length ? choices : [{ id: "ubuntu-24.04", name: "Ubuntu 24.04 LTS", testing: false, mirrors: [] }];
-  const accountProblem = usernameProblem(user) ?? hostnameProblem(host);
 
   return (
-    <div className="grid min-w-0 gap-6">
+    <div className="view-enter grid min-w-0 gap-6">
       <header className="grid justify-items-center gap-1.5 text-center">
         <span className="glass mb-1 grid size-14 place-items-center rounded-2xl text-accent"><IconBrandUbuntu size={30} /></span>
         <h1 className="m-0 text-2xl font-semibold tracking-tight">Set up your agent machine</h1>
@@ -130,12 +107,29 @@ export function InstallSetup({ options, set, plan, choices, checks, planError, o
         </Button>
       </header>
 
-      <Stepper steps={STEPS} step={step} onGo={setStep} />
+      <ReadinessPanel items={readiness} onChanged={onRecheck} />
 
-      <section key={step} className="view-enter grid min-w-0 gap-5">
-        {step === 0 && (
-          <>
-            <HostReadiness checks={checks} plan={plan} />
+      <section className="glass grid gap-3 rounded-xl p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="min-w-0 text-md font-medium [overflow-wrap:anywhere]">{setupSummary(options, os, plan?.username ?? "dev")}</span>
+          <Button size="md" leftSection={<IconDownload size={18} />} disabled={problem != null || plan == null || planError != null || blocked} onClick={onInstall}>
+            Install
+          </Button>
+        </div>
+        {(problem || planError) && <Note tone="bad" role="alert">{problem ?? planError}</Note>}
+      </section>
+
+      <div>
+        <button
+          type="button"
+          aria-expanded={advanced}
+          onClick={() => setAdvanced((v) => !v)}
+          className="press flex cursor-pointer items-center gap-2 border-0 bg-transparent px-1 py-1 text-sm font-medium text-muted hover:text-fg"
+        >
+          <IconSettings size={15} /> Advanced <DisclosureChevron open={advanced} />
+        </button>
+        <Reveal open={advanced}>
+          <div className="grid min-w-0 gap-6 px-1 pt-4 pb-1">
             <div>
               <Heading>Ubuntu</Heading>
               <div role="radiogroup" aria-label="Ubuntu release" className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5">
@@ -152,7 +146,7 @@ export function InstallSetup({ options, set, plan, choices, checks, planError, o
               <div role="radiogroup" aria-label="Machine size" className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-2.5">
                 {RESOURCE_PRESETS.map((p) => (
                   <Choice key={p.key} selected={!custom && preset?.key === p.key} onSelect={() => { setCustom(false); set({ cpus: p.cpus, memoryMb: p.memoryMb, diskSize: `${p.diskGb}G` }); }}>
-                    <strong className="flex flex-wrap items-center gap-x-1.5 pr-6 text-md">{p.label}{p.key === "balanced" && <span className="rounded-full bg-accent-soft px-1.5 py-px text-[10.5px] font-medium text-accent">Best</span>}</strong>
+                    <strong className="flex flex-wrap items-center gap-x-1.5 pr-6 text-md">{p.label}</strong>
                     <span className="font-mono text-xs">{p.cpus} CPU · {gb(p.memoryMb)} · {p.diskGb} GB</span>
                     <Sub>{p.note}</Sub>
                   </Choice>
@@ -181,11 +175,6 @@ export function InstallSetup({ options, set, plan, choices, checks, planError, o
               </Reveal>
               {(options.memoryMb ?? 0) < 2048 && <div className="mt-3"><Note tone="warn">{gb(options.memoryMb ?? 0)} installs, but agents need about 2 GB to work comfortably.</Note></div>}
             </div>
-          </>
-        )}
-
-        {step === 1 && (
-          <>
             <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
               <TextInput
                 label="Username"
@@ -201,8 +190,8 @@ export function InstallSetup({ options, set, plan, choices, checks, planError, o
                 description="Shown in the shell prompt and on the machine's network."
                 placeholder={plan?.hostname ?? "dev-vm"}
                 leftSection={<IconDeviceDesktop size={16} />}
-                value={host}
-                error={hostnameProblem(host)}
+                value={host_}
+                error={hostnameProblem(host_)}
                 onChange={(e) => set({ hostname: e.currentTarget.value.trim().toLowerCase() || null })}
               />
             </div>
@@ -211,54 +200,19 @@ export function InstallSetup({ options, set, plan, choices, checks, planError, o
               <MirrorPicker key={os?.id} os={os?.id ?? null} heading={false} autoPick={false} value={options.aptMirror ?? null}
                 onChange={(aptMirror) => { mirrorChosen.current = true; set({ aptMirror }); }} />
             </div>
-            <div className="glass rounded-xl p-3.5">
-              <Switch
-                label="Device profile"
-                description="Applies a hardware profile and verifies the runtime devices after setup."
-                checked={options.device}
-                onChange={(e) => set({ device: e.currentTarget.checked })}
-              />
-            </div>
-          </>
-        )}
-
-        {step === 2 && (
-          <>
-            <dl className="glass m-0 grid gap-px overflow-hidden rounded-xl bg-line/60 text-md">
-              {([
-                ["System", os?.name ?? "Ubuntu 24.04 LTS"],
-                ["Size", `${options.cpus} CPU · ${gb(options.memoryMb ?? 2048)} · ${diskGb(options.diskSize) ?? 20} GB disk`],
-                ["Account", `${user || plan?.username || "dev"}@${host || plan?.hostname || "dev-vm"}`],
-                ["Packages", mirrorLine],
-                ["Device profile", options.device ? "On" : "Off"],
-              ] as const).map(([label, value]) => (
-                <div key={label} className="grid grid-cols-[120px_minmax(0,1fr)] gap-3 bg-surface/70 px-4 py-2.5">
-                  <dt className="text-muted">{label}</dt><dd className="m-0 font-medium [overflow-wrap:anywhere]">{value}</dd>
-                </div>
-              ))}
-            </dl>
-            {plan && (
-              <dl className="m-0 grid grid-cols-[90px_minmax(0,1fr)] gap-x-3 gap-y-1 px-1 text-xs text-faint">
-                {([["Image", plan.imageIndex], ["QEMU", `${plan.qemuRelease}${plan.qemuInstalled ? "" : " (downloaded)"}`], ["Acceleration", plan.accel], ["Disk", plan.diskPath], ["SSH", `127.0.0.1:${plan.sshPort}`]] as const).map(([label, value]) => (
-                  <div key={label} className="contents"><dt>{label}</dt><dd className="m-0 font-mono [overflow-wrap:anywhere]">{value}</dd></div>
-                ))}
-              </dl>
+            {host?.deviceProfileSupported !== false && (
+              <div className="glass rounded-xl p-3.5">
+                <Switch
+                  label="Device profile"
+                  description="Applies a hardware profile and verifies the runtime devices after setup."
+                  checked={options.device}
+                  onChange={(e) => set({ device: e.currentTarget.checked })}
+                />
+              </div>
             )}
-            {(problem || planError) && <Note tone="bad" role="alert">{problem ?? planError}</Note>}
-          </>
-        )}
-      </section>
-
-      <footer className="flex items-center justify-between gap-3">
-        <Button variant="subtle" color="gray" leftSection={<IconArrowLeft size={16} />} style={{ visibility: step === 0 ? "hidden" : "visible" }} onClick={() => setStep(step - 1)}>Back</Button>
-        {step < STEPS.length - 1 ? (
-          <Button rightSection={<IconArrowRight size={18} />} disabled={step === 1 && accountProblem != null} onClick={() => setStep(step + 1)}>Continue</Button>
-        ) : (
-          <Button size="md" leftSection={<IconDownload size={18} />} disabled={problem != null || plan == null || planError != null || blocked} onClick={onInstall}>
-            Install
-          </Button>
-        )}
-      </footer>
+          </div>
+        </Reveal>
+      </div>
     </div>
   );
 }

@@ -16,15 +16,15 @@ export const WIZARD_STEPS: WizardStepDef[] = [
   {
     key: "image",
     title: "Download Ubuntu",
-    description: "The newest official ARM64 cloud image, checked against Ubuntu's published SHA-256.",
+    description: "The newest official Ubuntu cloud image, checked against Ubuntu's published SHA-256.",
     helper: "A verified image is kept, so a retry or a reinstall skips the download.",
     pipeline: ["image"],
   },
   {
     key: "skeleton",
     title: "Prepare the virtual machine",
-    description: "CPU, memory, network and UEFI firmware, run by the built-in QEMU.",
-    helper: "QEMU is downloaded once and reused.",
+    description: "CPU, memory, network and UEFI firmware, run by the QEMU that comes with Cabin.",
+    helper: "Nothing to install: the engine is part of Cabin.",
     pipeline: ["qemu"],
   },
   {
@@ -51,7 +51,7 @@ export const WIZARD_STEPS: WizardStepDef[] = [
   {
     key: "agentd",
     title: "Connect cabin",
-    description: "cabind is copied in, started as a service and connected over SSH.",
+    description: "Cabin's service is copied in, started and connected over SSH.",
     helper: "From here on, workspaces, sessions and agents live inside the machine.",
     pipeline: [],
   },
@@ -97,13 +97,13 @@ export function explainFailure(text: string): FailureHelp {
     return {
       title: "The system image could not be found",
       advice:
-        "Ubuntu's image index could not be read. Check the Mac's internet connection or proxy, then retry.",
+        "Ubuntu's image index could not be read. Check this computer's internet connection or proxy, then retry.",
     };
   }
   if (t.includes("qemu archive") || t.includes("macanine/qemu")) {
     return {
-      title: "The built-in QEMU could not be installed",
-      advice: "Its download or unpacking failed. Check the Mac's internet connection and free disk space, then retry; the download resumes.",
+      title: "The virtual machine engine could not be prepared",
+      advice: "Its download or unpacking failed. Check this computer's internet connection and free disk space, then retry; the download resumes.",
     };
   }
   if (t.includes("download cancelled")) {
@@ -113,7 +113,7 @@ export function explainFailure(text: string): FailureHelp {
     return {
       title: "A file could not be downloaded",
       advice:
-        "The Ubuntu image or the built-in QEMU could not be downloaded. Check the Mac's internet connection or proxy, then retry. What was already downloaded is kept and resumed.",
+        "The Ubuntu image or the bundled QEMU could not be downloaded. Check this computer's internet connection or proxy, then retry. What was already downloaded is kept and resumed.",
     };
   }
   if (t.includes('step "device-network" failed')) {
@@ -132,13 +132,13 @@ export function explainFailure(text: string): FailureHelp {
   if (t.includes("temporary failure resolving") || t.includes("could not resolve") || t.includes("network is unreachable")) {
     return {
       title: "The VM could not reach the internet",
-      advice: "Downloads from the package mirrors failed. Check the Mac's internet connection or proxy (Environment), then retry. Already downloaded files are reused.",
+      advice: "Downloads from the package mirrors failed. Check this computer's internet connection or proxy (Environment), then retry. Already downloaded files are reused.",
     };
   }
   if (t.includes("not enough free disk")) {
     return {
       title: "Not enough free disk space",
-      advice: "Free up space on the Mac or choose a smaller disk size, then retry.",
+      advice: "Free up space on this computer or choose a smaller disk size, then retry.",
     };
   }
   if (t.includes("checksum") || t.includes("sha256")) {
@@ -149,8 +149,8 @@ export function explainFailure(text: string): FailureHelp {
   }
   if (t.includes("qemu") && (t.includes("not installed") || t.includes("not found") || t.includes("missing"))) {
     return {
-      title: "The built-in QEMU is missing",
-      advice: "Retry the installation: its QEMU step downloads and unpacks it again.",
+      title: "Cabin's bundled QEMU is missing",
+      advice: "Cabin's files are damaged or incomplete. Reinstall Cabin, then open it again.",
     };
   }
   if (t.includes("timed out") || t.includes("timeout")) {

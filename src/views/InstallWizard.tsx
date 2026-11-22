@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
-import type { HostCheck, InstallPlan, MachineInstallOptions, OsChoice } from "../services/ipc/generated/core";
+import { useCallback, useEffect, useState } from "react";
+import type { HostFacts, Readiness } from "../services/ipc/generated/common";
+import type { InstallPlan, MachineInstallOptions, OsChoice } from "../services/ipc/generated/core";
 import { machineIpc } from "../services/ipc/app";
 import { toIpcError } from "../services/ipc/common";
 import { useApp } from "../state/store";
-import { chosenOs, defaultOptions, formProblem } from "../lib/installForm";
+import { chosenOs, defaultOptions, diskGb, formProblem, optionsForHost } from "../lib/installForm";
 import { InstallSetup } from "./install/InstallSetup";
 import { InstallProgress } from "./install/InstallProgress";
 import { BootPage } from "../components/Boot";
@@ -11,10 +12,13 @@ import { BootPage } from "../components/Boot";
 // The draft survives leaving the page (e.g. to check Environment) until the
 // install starts or the app restarts.
 let draft: MachineInstallOptions | null = null;
+// Host-picked defaults apply once per draft; later edits are the user's.
+let hostApplied = false;
 
 /**
- * The machine installer: one setup page (which Ubuntu, how big, advanced
- * folded away), then the install as a live progress view. An installed
+ * The machine installer: one setup screen (readiness, a summary of the
+ * defaults picked for this computer, Install, advanced folded away), then the
+ * install as a live progress view. An installed
  * machine opens on that view with automatic verification and a Resume action.
  */
 export function InstallWizard() {
@@ -24,7 +28,8 @@ export function InstallWizard() {
   const [plan, setPlan] = useState<InstallPlan | null>(null);
   const [choices, setChoices] = useState<OsChoice[]>([]);
   const [planError, setPlanError] = useState<string | null>(null);
-  const [checks, setChecks] = useState<HostCheck[] | null>(null);
+  const [readiness, setReadiness] = useState<Readiness[] | null>(null);
+  const [host, setHost] = useState<HostFacts | null>(null);
   const [editing, setEditing] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -36,9 +41,30 @@ export function InstallWizard() {
 
   useEffect(() => { draft = options; }, [options]);
 
+  // Readiness follows the chosen size. The first answer also picks the
+  // size preset and user name for this computer, unless the user already did.
+  const disk = diskGb(options.diskSize) ?? 20;
+  const memory = options.memoryMb ?? 4096;
+  const [recheck, setRecheck] = useState(0);
   useEffect(() => {
-    void machineIpc.checks().then(setChecks).catch(() => setChecks([]));
-  }, []);
+    if (showProgress) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      machineIpc.checks(disk, memory).then((report) => {
+        if (!alive) return;
+        setReadiness(report.items);
+        setHost(report.host);
+        if (!hostApplied) {
+          hostApplied = true;
+          if (draft == null || JSON.stringify(draft) === JSON.stringify(defaultOptions())) {
+            setOptions((value) => ({ ...value, ...optionsForHost(report.host), os: value.os, aptMirror: value.aptMirror }));
+          }
+        }
+      }).catch(() => { if (alive) setReadiness([]); });
+    }, 250);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [disk, memory, recheck, showProgress]);
+  const onRecheck = useCallback(() => setRecheck((n) => n + 1), []);
 
   // The plan (defaults, paths, acceleration) follows the options.
   useEffect(() => {
@@ -78,7 +104,6 @@ export function InstallWizard() {
           startedAt={startedAt}
           error={error}
           cancelled={cancelled}
-          emulated={plan?.accel.startsWith("tcg") ?? false}
           osName={chosenOs(options, choices)?.name ?? plan?.osName ?? "Ubuntu"}
           onRetry={install}
           onEdit={() => setEditing(true)}
@@ -89,7 +114,9 @@ export function InstallWizard() {
           set={(patch) => setOptions((value) => ({ ...value, ...patch }))}
           plan={plan}
           choices={choices}
-          checks={checks}
+          readiness={readiness}
+          host={host}
+          onRecheck={onRecheck}
           planError={planError}
           onInstall={() => void install()}
         />

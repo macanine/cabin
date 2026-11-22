@@ -69,15 +69,13 @@ function DownloadBar({ download }: { download: DownloadProgress }) {
  * automatically and can be resumed here.
  */
 export function InstallProgress({
-  machine, steps, startedAt, error, cancelled, emulated, osName, onRetry, onEdit,
+  machine, steps, startedAt, error, cancelled, osName, onRetry, onEdit,
 }: {
   machine: MachineStatus;
   steps: InstallStep[];
   startedAt: number | null;
   error: string | null;
   cancelled: string | null;
-  /** The install plan's accelerator is TCG, not HVF/KVM. */
-  emulated: boolean;
   osName: string;
   onRetry: () => void;
   onEdit: () => void;
@@ -197,11 +195,10 @@ export function InstallProgress({
           return (
             <BootStep key={def.key} order={index} state={stepKind(state)} title={def.title} time={state === "cached" ? "cached" : secs > 0 ? formatDuration(secs * 1000) : ""}>
               {(live || state === "failed") && <div className="text-sm text-muted">{def.description}</div>}
-              {live && emulated && def.key === "provision" && <div className="text-sm text-muted">Emulated: expect tens of minutes.</div>}
               {live && download && <DownloadBar download={download} />}
               {ticker && <Ticker title={ticker}>{ticker}</Ticker>}
               {live && def.key === "agentd" && machine.state === "running" && !connected && (
-                <Ticker>{machine.connection === "updating" ? "Copying cabind into the machine…" : machine.error ?? "Waiting for SSH…"}</Ticker>
+                <Ticker>{machine.connection === "updating" ? "Updating Cabin's service in the machine…" : machine.error ?? "Waiting for SSH…"}</Ticker>
               )}
             </BootStep>
           );
