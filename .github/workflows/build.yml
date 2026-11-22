@@ -1,0 +1,133 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The guest daemon is a static Linux binary. Linux builds both architectures
+  # reliably with cargo-zigbuild, so the desktop jobs download it instead of
+  # setting up zig on Windows or macOS.
+  guest:
+    name: guest (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            triple: aarch64-unknown-linux-musl
+          - arch: x86_64
+            triple: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+          key: guest-${{ matrix.arch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install zig and cargo-zigbuild
+        run: pip3 install ziglang cargo-zigbuild
+      - name: Test the guest crates
+        if: matrix.arch == 'x86_64'
+        run: |
+          cargo test --manifest-path core/Cargo.toml
+          cargo test --manifest-path usage/Cargo.toml
+          cargo test --manifest-path ip-detection/Cargo.toml
+      - name: Build cabind
+        run: node scripts/build-agentd.mjs --target ${{ matrix.triple }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cabind-${{ matrix.arch }}
+          path: core/target/${{ matrix.triple }}/release/cabind
+          if-no-files-found: error
+
+  app:
+    name: app (${{ matrix.name }})
+    needs: guest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            guest: aarch64
+            guest_triple: aarch64-unknown-linux-musl
+            bundles: app,dmg
+            artifact_path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            guest: x86_64
+            guest_triple: x86_64-unknown-linux-musl
+            bundles: nsis
+            artifact_path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            vm
+          key: app-${{ matrix.name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+      # Host-side crates. core is covered by the guest job. On Windows some
+      # Unix-only tests may not apply, so that run reports without failing.
+      - name: cargo test (vm, src-tauri)
+        shell: bash
+        continue-on-error: ${{ matrix.name == 'windows-x64' }}
+        run: |
+          cargo test --manifest-path vm/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Restore vendored binaries
+        id: vendor-cache
+        uses: actions/cache@v4
+        with:
+          path: build/vendor-cache
+          key: vendor-${{ matrix.name }}-${{ hashFiles('scripts/vendor.json', 'scripts/fetch-vendor.mjs') }}
+      - name: Fetch vendored binaries
+        run: node scripts/fetch-vendor.mjs --platform ${{ matrix.name }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cabind-${{ matrix.guest }}
+          path: core/target/${{ matrix.guest_triple }}/release
+      - name: Mark cabind executable
+        shell: bash
+        run: chmod +x core/target/${{ matrix.guest_triple }}/release/cabind
+
+      - name: Build the app
+        shell: bash
+        env:
+          CABIN_PREBUILT_CABIND: "1"
+        run: npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cabin-${{ matrix.name }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
