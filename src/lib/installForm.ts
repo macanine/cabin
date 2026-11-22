@@ -1,10 +1,46 @@
 // Pure logic for the install setup: presets, defaults and validation (the
 // same rules as vm/src/machine.rs and config.rs).
 import type { MachineInstallOptions, OsChoice } from "../services/ipc/generated/core";
+import type { HostFacts, Readiness } from "../services/ipc/generated/common";
 
-/** Mac checks that only matter for one optional feature. */
-export const OPTIONAL_CHECKS = ["socketVmnet"];
-export const isOptionalCheck = (id: string) => OPTIONAL_CHECKS.includes(id);
+/** Readiness items split for the panel: blockers, warnings, and what passed. */
+export function readinessView(items: Readiness[]) {
+  return {
+    blocking: items.filter((i) => !i.ok && !i.optional),
+    warnings: items.filter((i) => !i.ok && i.optional),
+    passed: items.filter((i) => i.ok),
+  };
+}
+
+/**
+ * The size preset for a host: light under 8 GB of memory, balanced under 16,
+ * roomy otherwise (8 and 16 GB machines report a little less, hence the
+ * margin). Never gives the VM more than half the memory or more CPUs than
+ * the host has. Unknown memory (0) gets balanced.
+ */
+export function pickPreset(hostMemoryMb: number, hostCpus: number): ResourcePreset {
+  const mb = hostMemoryMb > 0 ? hostMemoryMb : 8192;
+  let index = mb < 7.5 * 1024 ? 0 : mb < 15 * 1024 ? 1 : 2;
+  while (index > 0 && (RESOURCE_PRESETS[index].memoryMb > (mb / 2) * 1.05 || (hostCpus > 0 && RESOURCE_PRESETS[index].cpus > hostCpus))) index--;
+  return RESOURCE_PRESETS[index];
+}
+
+/** A host account name as a valid Linux username, or null when nothing usable remains. */
+export function sanitizeUsername(raw: string | null | undefined): string | null {
+  let name = (raw ?? "").trim().toLowerCase();
+  name = name.slice(name.lastIndexOf("\\") + 1).split("@")[0];
+  name = name.replace(/[^a-z0-9_-]+/g, "_").replace(/^_+(?=_)/, "");
+  if (name !== "" && !/^[a-z_]/.test(name)) name = `u${name}`;
+  name = name.slice(0, 32);
+  return name === "" || name === "_" || usernameProblem(name) ? null : name;
+}
+
+/** The first-run options for this host. */
+export function optionsForHost(host: HostFacts | null): MachineInstallOptions {
+  if (!host) return defaultOptions();
+  const preset = pickPreset(host.memoryMb, host.cpus);
+  return { ...defaultOptions(preset), username: sanitizeUsername(host.username) };
+}
 
 export interface ResourcePreset {
   key: string;
@@ -23,8 +59,7 @@ export const RESOURCE_PRESETS: ResourcePreset[] = [
 
 export const DEFAULT_PRESET = "balanced";
 
-export function defaultOptions(): MachineInstallOptions {
-  const preset = RESOURCE_PRESETS.find((p) => p.key === DEFAULT_PRESET)!;
+export function defaultOptions(preset: ResourcePreset = RESOURCE_PRESETS.find((p) => p.key === DEFAULT_PRESET)!): MachineInstallOptions {
   return {
     cpus: preset.cpus,
     memoryMb: preset.memoryMb,
@@ -87,6 +122,13 @@ export function formProblem(options: MachineInstallOptions): string | null {
 }
 
 const gb = (mb: number) => `${mb / 1024 % 1 === 0 ? mb / 1024 : (mb / 1024).toFixed(1)} GB`;
+
+/** "Ubuntu 24.04 LTS · Balanced (4 CPUs, 4 GB, 20 GB) · user nic" */
+export function setupSummary(options: MachineInstallOptions, os: OsChoice | null, fallbackUser: string): string {
+  const preset = matchingPreset(options);
+  const size = `${options.cpus ?? "?"} CPUs, ${gb(options.memoryMb ?? 0)}, ${diskGb(options.diskSize) ?? "?"} GB`;
+  return [os?.name ?? "Ubuntu", preset ? `${preset.label} (${size})` : `Custom (${size})`, `user ${options.username || fallbackUser}`].join(" · ");
+}
 
 /** "Ubuntu 24.04 LTS · 4 CPU · 4 GB memory · 20 GB disk" */
 export function installSummary(options: MachineInstallOptions, os: OsChoice | null): string {

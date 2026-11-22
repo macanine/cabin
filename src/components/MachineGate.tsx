@@ -72,7 +72,7 @@ export function MachineGate({ children }: { children?: ReactNode }) {
           title="Install the machine first"
           action={<Button onClick={() => uiActions.navigate({ kind: "install" })}>Open the installation wizard</Button>}
         >
-          Cabin runs Claude Code, Codex, OpenCode, Pi and Antigravity inside one Ubuntu VM on this Mac. The wizard creates it step by step.
+          Cabin runs Claude Code, Codex, OpenCode, Pi and Antigravity inside one Ubuntu VM on this computer. Setup is one screen and one Install button.
         </EmptyState>
       </div>
     );

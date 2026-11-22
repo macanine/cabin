@@ -34,7 +34,7 @@ export function recoveryFor(message: string): Recovery {
   if (/recheck timed out|could not confirm the verified public exit|tls handshake|certificate|name resolution|resolve host|no route to host/.test(text)) {
     return {
       title: "The network could not be verified",
-      tips: ["Check that the Mac is online and the selected interface or proxy is reachable.", "In Network settings, run a fresh check on the saved route."],
+      tips: ["Check that this computer is online and the selected interface or proxy is reachable.", "In Network settings, run a fresh check on the saved route."],
       actions: ["startNetwork"],
     };
   }
