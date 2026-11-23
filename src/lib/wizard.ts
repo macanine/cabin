@@ -93,7 +93,73 @@ export interface FailureHelp {
 /** Plain-language explanation of common install failures. */
 export function explainFailure(text: string): FailureHelp {
   const t = text.toLowerCase();
-  if (t.includes("could not find a") || t.includes("builds are listed") || t.includes("lists an arm64 image")) {
+  if (/not enough free (?:disk|space)|no space left on device|not enough space on the disk/.test(t)) {
+    return {
+      title: "Not enough free disk space",
+      advice: "Free up space on the volume that holds Cabin’s data or choose a smaller VM disk, then retry.",
+    };
+  }
+  if (t.includes("another vmctl operation is in progress")) {
+    return {
+      title: "Another machine operation is already running",
+      advice: "Wait for the current operation to finish, then retry.",
+    };
+  }
+  if (t.includes("tls verification or handshake failed")) {
+    return {
+      title: "Could not establish a secure download connection",
+      advice: "Check this computer’s date and time. If your network uses an inspecting proxy, check that its certificate is trusted on this computer.",
+    };
+  }
+  if (t.includes("captive portal") || t.includes("received an html page")) {
+    return {
+      title: "The network sent a sign-in page instead of the download",
+      advice: "Open a browser and sign in to the network if prompted, then retry.",
+    };
+  }
+  if (t.includes("download dns lookup failed")) {
+    return {
+      title: "Could not find the download server",
+      advice: "Check this computer’s internet connection, DNS, or proxy, then retry.",
+    };
+  }
+  if (t.includes("download stalled")) {
+    return {
+      title: "The download stopped receiving data",
+      advice: "Check this computer’s connection or proxy, then retry. Cabin can continue from the saved partial download.",
+    };
+  }
+  if (t.includes("--user must") || t.includes("--hostname must") || /(?:username|hostname) “/.test(t)) {
+    return {
+      title: "Check the VM username and hostname",
+      advice: "Use a lowercase Linux username and a hostname with lowercase letters, digits, or hyphens.",
+    };
+  }
+  if (t.includes("invalid ssh public key") || t.includes("generated ssh public key") || t.includes("ssh-keygen produced an unexpected public key")) {
+    return {
+      title: "The guest’s SSH public key could not be prepared",
+      advice: "Retry to generate a fresh key for the VM. If it fails again, open the seed step log.",
+    };
+  }
+  if (t.includes("--disk-size") || t.includes("could not check free disk space")) {
+    return {
+      title: "The VM disk size could not be checked",
+      advice: "Check the available space on the volume that holds Cabin’s data and retry with a valid disk size.",
+    };
+  }
+  if (t.includes("qemu-img") && /permission denied|access is denied|being used by another process|sharing violation/.test(t)) {
+    return {
+      title: "The VM disk file could not be opened for writing",
+      advice: "Check that Cabin can write to its data folder and that no other program is holding the file, then retry.",
+    };
+  }
+  if (t.includes("qemu-img") && (t.includes("failed (exit") || t.includes("timed out while preparing"))) {
+    return {
+      title: "The VM disk could not be prepared",
+      advice: "Check the disk step log for the tool’s error, then retry.",
+    };
+  }
+  if (t.includes("could not find a") || t.includes("builds are listed") || t.includes("lists an arm64 image") || t.includes("lists an image for this architecture") || t.includes("no valid image checksum") || t.includes("no image build is pinned")) {
     return {
       title: "The system image could not be found",
       advice:
@@ -109,7 +175,7 @@ export function explainFailure(text: string): FailureHelp {
   if (t.includes("download cancelled")) {
     return { title: "The download was cancelled", advice: "Install again to continue; the part already downloaded is kept and resumed." };
   }
-  if (t.includes("download failed after") || t.includes("could not download") || t.includes("connection reset") || /http [45]\d\d/.test(t)) {
+  if (t.includes("download failed after") || t.includes("could not download") || t.includes("download content-length") || t.includes("invalid download content-length") || t.includes("download server rejected") || t.includes("download exceeded its declared length") || t.includes("no download source") || t.includes("connection reset") || /http [45]\d\d/.test(t)) {
     return {
       title: "A file could not be downloaded",
       advice:
@@ -135,12 +201,6 @@ export function explainFailure(text: string): FailureHelp {
       advice: "Downloads from the package mirrors failed. Check this computer's internet connection or proxy (Environment), then retry. Already downloaded files are reused.",
     };
   }
-  if (t.includes("not enough free disk")) {
-    return {
-      title: "Not enough free disk space",
-      advice: "Free up space on this computer or choose a smaller disk size, then retry.",
-    };
-  }
   if (t.includes("checksum") || t.includes("sha256")) {
     return {
       title: "The downloaded image did not match its checksum",
@@ -151,6 +211,30 @@ export function explainFailure(text: string): FailureHelp {
     return {
       title: "Cabin's bundled QEMU is missing",
       advice: "Cabin's files are damaged or incomplete. Reinstall Cabin, then open it again.",
+    };
+  }
+  if (t.includes('step "disk" failed') || t.includes("could not read base image")) {
+    return {
+      title: "The VM disk could not be prepared",
+      advice: "Check the disk step log and that Cabin can write to its data folder, then retry.",
+    };
+  }
+  if (t.includes('step "seed" failed')) {
+    return {
+      title: "The VM’s initial configuration could not be prepared",
+      advice: "Open the seed step log for details, then retry.",
+    };
+  }
+  if (t.includes('step "qemu" failed')) {
+    return {
+      title: "The virtual machine engine could not be prepared",
+      advice: "Open the engine step log for details, then retry.",
+    };
+  }
+  if (t.includes('step "image" failed') || t.includes("copy embedded image failed")) {
+    return {
+      title: "The system image could not be prepared",
+      advice: "Open the image step log for details, then retry.",
     };
   }
   if (t.includes("timed out") || t.includes("timeout")) {

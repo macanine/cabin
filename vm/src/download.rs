@@ -91,6 +91,7 @@ struct Active {
     total: AtomicU64,
     verifying: AtomicBool,
     attempt: Mutex<(Instant, u64)>,
+    cancel_epoch: u64,
 }
 
 fn active() -> &'static Mutex<HashMap<PathBuf, Arc<Active>>> {
@@ -98,11 +99,11 @@ fn active() -> &'static Mutex<HashMap<PathBuf, Arc<Active>>> {
     ACTIVE.get_or_init(Default::default)
 }
 
-static CANCEL: AtomicBool = AtomicBool::new(false);
+static CANCEL: AtomicU64 = AtomicU64::new(0);
 
 /// Stop every running download; each fails with "cancelled".
 pub fn cancel_all() {
-    CANCEL.store(true, Ordering::SeqCst);
+    CANCEL.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Progress of the download into `destination`, if one is running.
@@ -133,101 +134,470 @@ impl Drop for Registered {
     }
 }
 
-pub(crate) fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .resolver(crate::ipv4::resolve)
-        .timeout_connect(Duration::from_secs(20))
-        // Per read: a stalled connection fails and is resumed.
-        .timeout_read(Duration::from_secs(60))
-        .try_proxy_from_env(true)
-        .user_agent(concat!("cabin/", env!("CARGO_PKG_VERSION")))
-        .build()
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
+fn bypasses_proxy(url: &url::Url, rules: &str) -> bool {
+    let Some(host) = url.host_str().map(|host| host.trim_end_matches('.')) else {
+        return false;
+    };
+    rules.split([',', ';']).map(str::trim).any(|rule| {
+        if rule == "*" || (rule.eq_ignore_ascii_case("<local>") && !host.contains(['.', ':'])) {
+            return true;
+        }
+        let (rule, port) = rule
+            .rsplit_once(':')
+            .filter(|(name, _)| !name.contains(':') || name.ends_with(']'))
+            .and_then(|(name, port)| Some((name, Some(port.parse::<u16>().ok()?))))
+            .unwrap_or((rule, None));
+        if port.is_some() && port != url.port_or_known_default() {
+            return false;
+        }
+        let rule = rule.trim_start_matches('.').trim_end_matches('.');
+        if rule.is_empty() {
+            return false;
+        }
+        if rule.contains('*') {
+            let pattern = regex::escape(rule).replace(r"\*", ".*");
+            return regex::Regex::new(&format!("(?i)^{pattern}$"))
+                .is_ok_and(|re| re.is_match(host));
+        }
+        let host = host.to_ascii_lowercase();
+        let rule = rule.to_ascii_lowercase();
+        host == rule
+            || host
+                .strip_suffix(&rule)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    })
 }
 
-/// One attempt: continue `part` from its current size. `Ok(())` when the
-/// server sent everything it promised.
-fn attempt(url: &str, part: &Path, state: &Active, log: &Arc<Mutex<File>>) -> Result<()> {
-    let offset = fs::metadata(part).map(|m| m.len()).unwrap_or(0);
-    let mut request = agent().get(url);
-    if offset > 0 {
-        request = request.set("Range", &format!("bytes={offset}-"));
+fn env_proxy(url: &url::Url, get: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let env = |lower: &str, upper: &str| {
+        get(lower)
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| get(upper).filter(|value| !value.trim().is_empty()))
+    };
+    let proxy = match url.scheme() {
+        "https" => env("https_proxy", "HTTPS_PROXY"),
+        "http" if get("REQUEST_METHOD").is_none() => env("http_proxy", "HTTP_PROXY"),
+        "http" => get("http_proxy").filter(|value| !value.trim().is_empty()),
+        _ => None,
+    };
+    proxy.or_else(|| env("all_proxy", "ALL_PROXY"))
+}
+
+#[cfg(any(windows, test))]
+fn manual_proxy(url: &url::Url, servers: &str, bypass: &str) -> Option<String> {
+    if bypasses_proxy(url, bypass) {
+        return None;
     }
-    let response = match request.call() {
-        // The part already holds the whole file.
-        Err(ureq::Error::Status(416, _)) if offset > 0 => return Ok(()),
-        Err(ureq::Error::Status(code, response)) => {
-            return message(format!("HTTP {code} {} for {url}", response.status_text()));
+    servers
+        .split(';')
+        .map(str::trim)
+        .find_map(|entry| match entry.split_once('=') {
+            Some((scheme, address)) if scheme.eq_ignore_ascii_case(url.scheme()) => Some(address),
+            None if !entry.is_empty() => Some(entry),
+            _ => None,
+        })
+        .map(str::to_owned)
+}
+
+#[cfg(not(windows))]
+fn system_proxy(_: &url::Url) -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+fn system_proxy(url: &url::Url) -> Option<String> {
+    // WinHTTP exposes the signed-in user's manual Windows proxy and bypass list.
+    #[repr(C)]
+    #[derive(Default)]
+    struct ProxyConfig {
+        auto_detect: i32,
+        auto_config: *mut u16,
+        proxy: *mut u16,
+        bypass: *mut u16,
+    }
+    #[link(name = "winhttp")]
+    unsafe extern "system" {
+        fn WinHttpGetIEProxyConfigForCurrentUser(config: *mut ProxyConfig) -> i32;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalFree(memory: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    }
+
+    let take_string = |ptr: *mut u16| {
+        if ptr.is_null() {
+            return String::new();
         }
-        Err(error) => return message(format!("could not connect: {error}")),
+        // WinHTTP returns NUL-terminated UTF-16 strings owned by the caller.
+        unsafe {
+            let len = (0..).find(|&index| *ptr.add(index) == 0).unwrap();
+            let value = String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len));
+            GlobalFree(ptr.cast());
+            value
+        }
+    };
+    let mut config = ProxyConfig::default();
+    let success = unsafe { WinHttpGetIEProxyConfigForCurrentUser(&mut config) } != 0;
+    let proxy = take_string(config.proxy);
+    let bypass = take_string(config.bypass);
+    let _ = take_string(config.auto_config);
+    success
+        .then(|| manual_proxy(url, &proxy, &bypass))
+        .flatten()
+}
+
+pub(crate) struct HttpOptions {
+    pub read_timeout: Duration,
+    /// A deadline for small metadata requests, including body reads.
+    pub timeout: Option<Duration>,
+}
+
+pub(crate) fn request(
+    method: &str,
+    target: &str,
+    range: Option<u64>,
+    options: &HttpOptions,
+) -> std::result::Result<ureq::Response, ureq::Error> {
+    let mut url = url::Url::parse(target)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let started = Instant::now();
+    for hop in 0..=5 {
+        let var = |name: &str| std::env::var(name).ok();
+        let bypass = var("no_proxy")
+            .or_else(|| var("NO_PROXY"))
+            .unwrap_or_default();
+        let proxy = if bypasses_proxy(&url, &bypass) {
+            None
+        } else {
+            env_proxy(&url, var).or_else(|| system_proxy(&url))
+        };
+        let remaining = options
+            .timeout
+            .map(|timeout| timeout.saturating_sub(started.elapsed()));
+        let mut builder = ureq::AgentBuilder::new()
+            .resolver(crate::ipv4::resolve)
+            .redirects(0)
+            .timeout_connect(remaining.map_or(CONNECT_TIMEOUT, |time| time.min(CONNECT_TIMEOUT)))
+            .timeout_read(options.read_timeout)
+            .try_proxy_from_env(false)
+            .user_agent(concat!("cabin/", env!("CARGO_PKG_VERSION")));
+        if let Some(timeout) = remaining {
+            if timeout.is_zero() {
+                return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
+            }
+            builder = builder.timeout(timeout);
+        }
+        if let Some(proxy) = proxy {
+            builder = builder.proxy(ureq::Proxy::new(proxy.trim())?);
+        }
+        let mut request = builder.build().request_url(method, &url);
+        if let Some(offset) = range {
+            request = request.set("Range", &format!("bytes={offset}-"));
+        }
+        let response = request.call()?;
+        if !matches!(response.status(), 301 | 302 | 303 | 307 | 308) {
+            return Ok(response);
+        }
+        let location = response.header("Location").ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "redirect is missing its Location header",
+            )
+        })?;
+        let next = url
+            .join(location)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        if url.scheme() == "https" && next.scheme() != "https" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "HTTPS download redirected to an insecure URL",
+            )
+            .into());
+        }
+        if hop == 5 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "too many download redirects",
+            )
+            .into());
+        }
+        url = next;
+    }
+    unreachable!("redirect limit enforced above");
+}
+
+pub(crate) fn http_error(error: &ureq::Error) -> String {
+    let detail = error.to_string();
+    if detail.contains("tls connection") {
+        format!(
+            "TLS verification or handshake failed. Check this computer's date and time and whether its proxy certificate is trusted: {detail}"
+        )
+    } else if error.kind() == ureq::ErrorKind::Dns {
+        format!("download DNS lookup failed: {detail}")
+    } else {
+        format!("could not connect: {detail}")
+    }
+}
+
+#[derive(Debug)]
+enum TransferError {
+    Retry(String),
+    Source(String),
+    ResetPartial(bool),
+    Local(Error),
+}
+
+impl From<std::io::Error> for TransferError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Local(error.into())
+    }
+}
+
+fn range_bounds(value: &str) -> Option<(u64, u64, u64)> {
+    let (bounds, total) = value.strip_prefix("bytes ")?.split_once('/')?;
+    let (start, end) = bounds.split_once('-')?;
+    let (start, end, total) = (start.parse().ok()?, end.parse().ok()?, total.parse().ok()?);
+    (start <= end && end < total).then_some((start, end, total))
+}
+
+pub(crate) fn is_html(response: &ureq::Response) -> bool {
+    response.header("Content-Type").is_some_and(|value| {
+        let media_type = value.split(';').next().unwrap_or("").trim();
+        media_type.eq_ignore_ascii_case("text/html")
+            || media_type.eq_ignore_ascii_case("application/xhtml+xml")
+    })
+}
+
+/// None means the prefix could still be HTML and needs another read.
+fn html_prefix(bytes: &[u8]) -> Option<bool> {
+    const BOM: &[u8] = b"\xef\xbb\xbf";
+    if bytes.len() < BOM.len() && BOM.starts_with(bytes) {
+        return None;
+    }
+    let bytes = bytes.strip_prefix(BOM).unwrap_or(bytes).trim_ascii_start();
+    let tags = [
+        b"<!doctype html".as_slice(),
+        b"<html",
+        b"<head",
+        b"<body",
+        b"<title",
+        b"<meta",
+        b"<!--",
+    ];
+    if tags.iter().any(|tag| {
+        bytes
+            .get(..tag.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(tag))
+    }) {
+        return Some(true);
+    }
+    if tags.iter().any(|tag| {
+        tag.get(..bytes.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(bytes))
+    }) {
+        return None;
+    }
+    Some(false)
+}
+
+fn check_cancelled(state: &Active) -> Result<()> {
+    if CANCEL.load(Ordering::SeqCst) != state.cancel_epoch {
+        return message("download cancelled");
+    }
+    Ok(())
+}
+
+fn read_body(
+    reader: &mut impl Read,
+    buffer: &mut [u8],
+    timeout: Duration,
+    state: &Active,
+) -> std::result::Result<usize, TransferError> {
+    check_cancelled(state).map_err(TransferError::Local)?;
+    reader.read(buffer).map_err(|error| {
+        use std::io::ErrorKind::{TimedOut, WouldBlock};
+        if matches!(error.kind(), TimedOut | WouldBlock) {
+            TransferError::Retry(format!(
+                "download stalled (no bytes received for {} seconds)",
+                timeout.as_secs_f64()
+            ))
+        } else {
+            TransferError::Retry(format!("connection dropped while downloading: {error}"))
+        }
+    })
+}
+
+/// One attempt: append only after validating the server's byte range.
+fn attempt(
+    url: &str,
+    part: &Path,
+    state: &Active,
+    log: &Arc<Mutex<File>>,
+    timeout: Duration,
+) -> std::result::Result<bool, TransferError> {
+    check_cancelled(state).map_err(TransferError::Local)?;
+    let offset = match fs::metadata(part) {
+        Ok(meta) => meta.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error.into()),
+    };
+    let response = match request(
+        "GET",
+        url,
+        (offset > 0).then_some(offset),
+        &HttpOptions {
+            read_timeout: timeout,
+            timeout: None,
+        },
+    ) {
+        Err(ureq::Error::Status(416, response)) if offset > 0 => {
+            let total = response
+                .header("Content-Range")
+                .and_then(|value| value.strip_prefix("bytes */"))
+                .and_then(|value| value.parse::<u64>().ok());
+            return Err(TransferError::ResetPartial(
+                total.is_none_or(|total| total == offset),
+            ));
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            let detail = format!("HTTP {code} {} for {url}", response.status_text());
+            return Err(if code == 408 || code == 429 || code >= 500 {
+                TransferError::Retry(detail)
+            } else {
+                TransferError::Source(detail)
+            });
+        }
+        Err(error) => return Err(TransferError::Retry(http_error(&error))),
         Ok(response) => response,
     };
-    let resumed = offset > 0 && response.status() == 206;
-    if offset > 0 && !resumed {
-        log_line(
-            log,
-            "the server does not support resuming; starting from zero",
-        );
+    let portal = || {
+        TransferError::Source(format!(
+            "download received an HTML page instead of the file from {url}; sign in to the network if it requires a captive portal"
+        ))
+    };
+    if is_html(&response) {
+        return Err(portal());
     }
-    let length: Option<u64> = response
+    let length = response
         .header("Content-Length")
-        .and_then(|v| v.parse().ok());
-    let start = if resumed { offset } else { 0 };
-    if let Some(length) = length {
-        state.total.store(start + length, Ordering::Relaxed);
-    }
+        .map(str::parse::<u64>)
+        .transpose()
+        .map_err(|_| {
+            TransferError::Source(format!("invalid download Content-Length from {url}"))
+        })?;
+    let (start, total, end) = match response.status() {
+        200 => {
+            if offset > 0 {
+                log_line(
+                    log,
+                    "the server does not support resuming; starting from zero",
+                );
+            }
+            (0, length, length)
+        }
+        206 if offset > 0 => {
+            let (start, end, total) = response
+                .header("Content-Range")
+                .and_then(range_bounds)
+                .filter(|(start, _, _)| *start == offset)
+                .ok_or(TransferError::ResetPartial(false))?;
+            if length.is_some_and(|len| len != end - start + 1) {
+                return Err(TransferError::Source(format!(
+                    "download Content-Length does not match Content-Range from {url}"
+                )));
+            }
+            (start, Some(total), Some(end + 1))
+        }
+        code => {
+            return Err(TransferError::Source(format!(
+                "unexpected HTTP {code} for {url}"
+            )));
+        }
+    };
+    state.total.store(total.unwrap_or(0), Ordering::Relaxed);
     state.done.store(start, Ordering::Relaxed);
     *state.attempt.locked() = (Instant::now(), start);
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(resumed)
-        .truncate(!resumed)
-        .open(part)?;
     let mut reader = response.into_reader();
     let mut buffer = vec![0u8; CHUNK];
-    let mut done = start;
-    let mut next_report = 10u64;
-    loop {
-        if CANCEL.load(Ordering::SeqCst) {
-            return Err(Error::Message("download cancelled".into()));
-        }
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|error| Error::Message(format!("connection dropped: {error}")))?;
-        if read == 0 {
-            break;
-        }
-        file.write_all(&buffer[..read])?;
-        done += read as u64;
-        state.done.store(done, Ordering::Relaxed);
-        if let Some(total) = length.map(|l| start + l) {
-            let percent = done * 100 / total.max(1);
-            if percent >= next_report {
-                let speed = progress_speed(state);
-                log_line(
-                    log,
-                    &format!(
-                        "{percent}% · {} of {}{}",
-                        format_bytes(Some(done)),
-                        format_bytes(Some(total)),
-                        speed
-                            .map(|s| format!(" · {}/s", format_bytes(Some(s))))
-                            .unwrap_or_default()
-                    ),
-                );
-                next_report = (percent / 10 + 1) * 10;
+    // Sniff the first bytes even if a portal omits its HTML content type or
+    // sends the markup in several packets. Inspect only the start of the file.
+    let mut read = 0;
+    if start == 0 {
+        loop {
+            let count = read_body(&mut reader, &mut buffer[read..], timeout, state)?;
+            read += count;
+            match html_prefix(&buffer[..read]) {
+                Some(true) => return Err(portal()),
+                Some(false) => break,
+                None if count == 0 || read >= 512 => break,
+                None => {}
             }
         }
     }
-    file.flush()?;
-    match length {
-        Some(length) if done < start + length => message(format!(
-            "connection closed early at {}",
-            format_bytes(Some(done))
-        )),
-        _ => Ok(()),
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(start > 0)
+        .truncate(start == 0)
+        .open(part)?;
+    let mut done = start;
+    let mut next_report = 10u64;
+    loop {
+        if read > 0 {
+            done += read as u64;
+            if end.is_some_and(|end| done > end) {
+                return Err(TransferError::Source(format!(
+                    "download exceeded its declared length from {url}"
+                )));
+            }
+            write_chunk(&mut file, &buffer[..read], part)?;
+            state.done.store(done, Ordering::Relaxed);
+            if let Some(total) = total {
+                let percent = done.saturating_mul(100) / total.max(1);
+                if percent >= next_report {
+                    let speed = progress_speed(state);
+                    log_line(
+                        log,
+                        &format!(
+                            "{percent}% · {} of {}{}",
+                            format_bytes(Some(done)),
+                            format_bytes(Some(total)),
+                            speed
+                                .map(|s| format!(" · {}/s", format_bytes(Some(s))))
+                                .unwrap_or_default()
+                        ),
+                    );
+                    next_report = (percent / 10 + 1) * 10;
+                }
+            }
+        }
+        read = read_body(&mut reader, &mut buffer, timeout, state)?;
+        if read == 0 {
+            break;
+        }
     }
+    if total.is_some_and(|total| done != total) {
+        return Err(TransferError::Retry(format!(
+            "download Content-Length mismatch or incomplete range at {}",
+            format_bytes(Some(done))
+        )));
+    }
+    // Catch deferred write errors (including a full volume) before publishing.
+    file.sync_all()?;
+    Ok(start > 0)
+}
+
+fn write_chunk(
+    file: &mut impl Write,
+    data: &[u8],
+    path: &Path,
+) -> std::result::Result<(), TransferError> {
+    file.write_all(data)
+        .map_err(|error| TransferError::Local(storage_error(error.into(), path)))
 }
 
 fn progress_speed(state: &Active) -> Option<u64> {
@@ -243,6 +613,16 @@ pub(crate) fn partial_path(destination: &Path) -> PathBuf {
     path.into()
 }
 
+fn storage_error(error: Error, destination: &Path) -> Error {
+    if matches!(&error, Error::Io(error) if error.kind() == std::io::ErrorKind::StorageFull) {
+        return Error::Message(format!(
+            "not enough free space to download to {}",
+            destination.display()
+        ));
+    }
+    error
+}
+
 /// Download `url` to `destination` and verify its checksum. An existing,
 /// verified file is reused; a partial `.part` file is resumed.
 pub fn download_verified(
@@ -251,86 +631,7 @@ pub fn download_verified(
     expected: &Checksum,
     log: &Arc<Mutex<File>>,
 ) -> Result<()> {
-    if let Some(parent) = destination.parent() {
-        crate::util::ensure_dir(parent)?;
-    }
-    let part = partial_path(destination);
-    log_line(
-        log,
-        &format!("download {url}\n  -> {}", destination.display()),
-    );
-    if destination.exists() {
-        let actual = expected.of_file(destination)?;
-        if actual == expected.hex() {
-            log_line(
-                log,
-                &format!("already present and verified: {}", destination.display()),
-            );
-            return Ok(());
-        }
-        log_line(
-            log,
-            &format!("existing file has the wrong checksum ({actual}); downloading again"),
-        );
-        let _ = fs::remove_file(destination);
-    }
-
-    CANCEL.store(false, Ordering::SeqCst);
-    let state = Arc::new(Active {
-        done: AtomicU64::new(fs::metadata(&part).map(|m| m.len()).unwrap_or(0)),
-        total: AtomicU64::new(0),
-        verifying: AtomicBool::new(false),
-        attempt: Mutex::new((Instant::now(), 0)),
-    });
-    active().locked()
-        .insert(destination.to_path_buf(), state.clone());
-    let _registered = Registered(destination.to_path_buf());
-
-    let mut last_error = None;
-    for number in 1..=ATTEMPTS {
-        match attempt(url, &part, &state, log) {
-            Ok(()) => {
-                last_error = None;
-                break;
-            }
-            // Cancelled, or a client error (404, 403…) that a retry cannot fix.
-            Err(error)
-                if error.to_string().contains("cancelled")
-                    || error.to_string().starts_with("HTTP 4") =>
-            {
-                return Err(error);
-            }
-            Err(error) => {
-                log_line(log, &format!("attempt {number}/{ATTEMPTS} failed: {error}"));
-                last_error = Some(error);
-                if number < ATTEMPTS {
-                    std::thread::sleep(Duration::from_secs(2 * number as u64));
-                }
-            }
-        }
-    }
-    if let Some(error) = last_error {
-        return message(format!(
-            "download failed after {ATTEMPTS} attempts: {error}"
-        ));
-    }
-
-    state.verifying.store(true, Ordering::Relaxed);
-    log_line(log, &format!("verifying {} …", expected.name()));
-    let actual = expected.of_file(&part)?;
-    if actual != expected.hex() {
-        let _ = fs::remove_file(&part);
-        return message(format!(
-            "checksum mismatch for {url}: expected {}, got {actual}",
-            expected.hex()
-        ));
-    }
-    fs::rename(&part, destination)?;
-    log_line(
-        log,
-        &format!("download complete, checksum ok: {}", destination.display()),
-    );
-    Ok(())
+    download_first(&[url.to_owned()], destination, expected, log).map(|_| ())
 }
 
 /// Try each candidate URL in order until one downloads and verifies. Returns
@@ -341,18 +642,131 @@ pub fn download_first(
     expected: &Checksum,
     log: &Arc<Mutex<File>>,
 ) -> Result<String> {
-    let mut last = None;
-    for url in urls {
-        match download_verified(url, destination, expected, log) {
-            Ok(()) => return Ok(url.clone()),
-            Err(error) if error.to_string().contains("cancelled") => return Err(error),
-            Err(error) => {
-                log_line(log, &format!("{url} failed: {error}"));
-                last = Some(error);
-            }
-        }
+    download_sources(
+        urls,
+        destination,
+        expected,
+        log,
+        READ_TIMEOUT,
+        Duration::from_secs(2),
+    )
+    .map_err(|error| storage_error(error, destination))
+}
+
+fn download_sources(
+    urls: &[String],
+    destination: &Path,
+    expected: &Checksum,
+    log: &Arc<Mutex<File>>,
+    read_timeout: Duration,
+    backoff: Duration,
+) -> Result<String> {
+    let Some(first) = urls.first() else {
+        return message("no download source");
+    };
+    let cancel_epoch = CANCEL.load(Ordering::SeqCst);
+    if let Some(parent) = destination.parent() {
+        crate::util::ensure_dir(parent)?;
     }
-    Err(last.unwrap_or_else(|| crate::Error::Message("no download source".to_string())))
+    let part = partial_path(destination);
+    if destination.exists() {
+        if expected.matches(destination)? {
+            log_line(
+                log,
+                &format!("already present and verified: {}", destination.display()),
+            );
+            return Ok(first.clone());
+        }
+        log_line(
+            log,
+            "existing file has the wrong checksum; downloading again",
+        );
+        fs::remove_file(destination)?;
+    }
+
+    let state = Arc::new(Active {
+        done: AtomicU64::new(fs::metadata(&part).map(|m| m.len()).unwrap_or(0)),
+        total: AtomicU64::new(0),
+        verifying: AtomicBool::new(false),
+        attempt: Mutex::new((Instant::now(), 0)),
+        cancel_epoch,
+    });
+    active()
+        .locked()
+        .insert(destination.to_path_buf(), state.clone());
+    let _registered = Registered(destination.to_path_buf());
+    let mut failures = Vec::new();
+    for url in urls {
+        log_line(
+            log,
+            &format!("download {url}\n  -> {}", destination.display()),
+        );
+        let mut last_error = String::new();
+        let mut reset = false;
+        let mut number = 1;
+        while number <= ATTEMPTS {
+            state.verifying.store(false, Ordering::Relaxed);
+            let may_be_complete = match attempt(url, &part, &state, log, read_timeout) {
+                Ok(resumed) => Some((resumed, true)),
+                Err(TransferError::ResetPartial(check_size)) => Some((true, check_size)),
+                Err(TransferError::Local(error)) => return Err(error),
+                Err(TransferError::Source(detail)) => {
+                    last_error = detail;
+                    break;
+                }
+                Err(TransferError::Retry(detail)) => {
+                    log_line(
+                        log,
+                        &format!("attempt {number}/{ATTEMPTS} failed: {detail}"),
+                    );
+                    last_error = format!("download failed after {number} attempts: {detail}");
+                    if number < ATTEMPTS {
+                        std::thread::sleep(backoff * number);
+                    }
+                    number += 1;
+                    None
+                }
+            };
+            let Some((resumed, check_size)) = may_be_complete else {
+                continue;
+            };
+            if check_size {
+                state.verifying.store(true, Ordering::Relaxed);
+                log_line(log, &format!("verifying {} …", expected.name()));
+                let actual = expected.of_file(&part)?;
+                if actual == expected.hex() {
+                    check_cancelled(&state)?;
+                    fs::rename(&part, destination)?;
+                    log_line(
+                        log,
+                        &format!("download complete, checksum ok: {}", destination.display()),
+                    );
+                    return Ok(url.clone());
+                }
+                last_error = format!(
+                    "checksum mismatch for {url}: expected {}, got {actual}",
+                    expected.hex()
+                );
+            } else {
+                last_error = format!("download server rejected the saved partial range from {url}");
+            }
+            fs::remove_file(&part)?;
+            if resumed && !reset {
+                log_line(
+                    log,
+                    &format!(
+                        "{last_error}. Discarding the saved partial and restarting from zero."
+                    ),
+                );
+                reset = true;
+                continue;
+            }
+            break;
+        }
+        log_line(log, &format!("{url} failed: {last_error}"));
+        failures.push(last_error);
+    }
+    message(failures.join(" | "))
 }
 
 #[cfg(test)]
@@ -387,8 +801,17 @@ mod tests {
                 } else {
                     "200 OK"
                 };
+                let content_range = if range > 0 {
+                    format!(
+                        "Content-Range: bytes {range}-{}/{}\r\n",
+                        body.len() - 1,
+                        body.len()
+                    )
+                } else {
+                    String::new()
+                };
                 let head = format!(
-                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{content_range}Connection: close\r\n\r\n",
                     slice.len()
                 );
                 stream.write_all(head.as_bytes()).unwrap();
@@ -492,11 +915,13 @@ mod tests {
         let wrong = serve(vec![1; 100], None);
         let good = serve(body.clone(), None);
         let destination = dir.join("image.img");
-        let used = download_first(
+        let used = download_sources(
             &[dead, wrong, good.clone()],
             &destination,
             &sha(&body),
             &log_file(&dir),
+            READ_TIMEOUT,
+            Duration::ZERO,
         )
         .unwrap();
         assert_eq!(used, good);
@@ -535,13 +960,332 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("cabin-download-{name}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn scripted(
+        count: usize,
+        handler: impl Fn(usize, String, std::net::TcpStream) + Send + 'static,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for (index, stream) in listener.incoming().take(count).enumerate() {
+                let stream = stream.unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut headers = String::new();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                    headers.push_str(&line.to_ascii_lowercase());
+                }
+                handler(index, headers, stream);
+            }
+        });
+        (format!("http://{address}/image.img"), server)
+    }
+
+    #[test]
+    fn stall_retries_and_resumes_from_the_bytes_already_received() {
+        let dir = scratch("stalled");
+        let dest = dir.join("image.img");
+        let (url, server) = scripted(2, |i, headers, mut stream| {
+            if i == 0 {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nabc",
+                    )
+                    .unwrap();
+                // Keep the socket open until the client hits its read timeout.
+                assert!(matches!(stream.read(&mut [0; 1]), Ok(0) | Err(_)));
+            } else {
+                assert!(headers.contains("range: bytes=3-"), "{headers}");
+                stream.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-7/8\r\nContent-Length: 5\r\nConnection: close\r\n\r\ndefgh").unwrap();
+            }
+        });
+        let log = log_file(&dir);
+        download_sources(
+            &[url],
+            &dest,
+            &sha(b"abcdefgh"),
+            &log,
+            Duration::from_millis(150),
+            Duration::ZERO,
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"abcdefgh");
+        assert!(
+            fs::read_to_string(dir.join("log"))
+                .unwrap()
+                .contains("download stalled (no bytes received for")
+        );
+        drop(log);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn handles_a_part_larger_than_the_target_and_servers_that_ignore_range() {
+        for (name, sends_416) in [("oversize", true), ("no-range", false)] {
+            let dir = scratch(name);
+            let dest = dir.join("image.img");
+            fs::write(partial_path(&dest), b"obsolete partial").unwrap();
+            let (url, server) = scripted(
+                if sends_416 { 2 } else { 1 },
+                move |i, headers, mut stream| {
+                    assert_eq!(headers.contains("range: bytes=16-"), i == 0, "{headers}");
+                    let reply: &[u8] = if i == 0 && sends_416 {
+                        b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */3\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    } else {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nnew"
+                    };
+                    stream.write_all(reply).unwrap();
+                },
+            );
+            download_verified(&url, &dest, &sha(b"new"), &log_file(&dir)).unwrap();
+            server.join().unwrap();
+            assert_eq!(fs::read(&dest).unwrap(), b"new");
+            assert!(!partial_path(&dest).exists());
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_captive_portal_html_before_writing_the_partial() {
+        for (name, content_type) in [
+            ("html-type", "text/html; charset=utf-8"),
+            ("html-sniff", "application/octet-stream"),
+        ] {
+            let dir = scratch(name);
+            let dest = dir.join("image.img");
+            let (url, server) = scripted(1, move |_, _, mut stream| {
+                let body = b" \r\n<!DOCTYPE html><title>Sign in</title>";
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                let _ = stream.write_all(body);
+            });
+            let error =
+                download_verified(&url, &dest, &sha(b"image"), &log_file(&dir)).unwrap_err();
+            server.join().unwrap();
+            assert!(error.to_string().contains("captive portal"), "{error}");
+            assert!(!dest.exists() && !partial_path(&dest).exists());
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_mirror_with_a_different_prefix_restarts_cleanly() {
+        let dir = scratch("mirror-switch");
+        let dest = dir.join("image.img");
+        let (first, first_server) = scripted(ATTEMPTS as usize, |i, headers, mut stream| {
+            if i == 0 {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nxyz",
+                    )
+                    .unwrap();
+            } else {
+                assert!(headers.contains("range: bytes=3-"), "{headers}");
+                stream.write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            }
+        });
+        let (second, second_server) = scripted(2, |i, headers, mut stream| {
+            if i == 0 {
+                assert!(headers.contains("range: bytes=3-"), "{headers}");
+                stream.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-7/8\r\nContent-Length: 5\r\nConnection: close\r\n\r\ndefgh").unwrap();
+            } else {
+                assert!(!headers.contains("range:"), "{headers}");
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nabcdefgh").unwrap();
+            }
+        });
+        let log = log_file(&dir);
+        let source = download_sources(
+            &[first, second.clone()],
+            &dest,
+            &sha(b"abcdefgh"),
+            &log,
+            READ_TIMEOUT,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(source, second);
+        first_server.join().unwrap();
+        second_server.join().unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"abcdefgh");
+        drop(log);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_a_range_with_a_conflicting_content_length() {
+        let dir = scratch("range-length");
+        let dest = dir.join("image.img");
+        fs::write(partial_path(&dest), b"abc").unwrap();
+        let (url, server) = scripted(1, |_, _, mut stream| {
+            stream.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-7/8\r\nContent-Length: 1\r\nConnection: close\r\n\r\nd").unwrap();
+        });
+        let error = download_verified(&url, &dest, &sha(b"abcdefgh"), &log_file(&dir)).unwrap_err();
+        server.join().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("Content-Length does not match Content-Range"),
+            "{error}"
+        );
+        assert_eq!(fs::read(partial_path(&dest)).unwrap(), b"abc");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_full_volume_while_writing_is_a_local_error() {
+        struct FullVolume {
+            remaining: usize,
+        }
+        impl Write for FullVolume {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                if self.remaining == 0 {
+                    return Err(std::io::ErrorKind::StorageFull.into());
+                }
+                let written = self.remaining.min(data.len());
+                self.remaining -= written;
+                Ok(written)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut volume = FullVolume { remaining: 3 };
+        let error = write_chunk(&mut volume, b"abcdef", Path::new("image.img.part")).unwrap_err();
+        assert!(
+            matches!(error, TransferError::Local(error) if error.to_string().contains("not enough free space to download"))
+        );
+    }
+
+    #[test]
+    fn second_install_cannot_mutate_the_same_home() {
+        use crate::machine::{InstallOptions, Machine};
+        let dir = scratch("install-lock");
+        let lock =
+            crate::lock::FileLock::acquire(&crate::paths::StatePaths::new(&dir).operation_lock())
+                .unwrap();
+        let machine = Machine::new(&dir, crate::config::default_project_root());
+        let error = machine.install(&InstallOptions::default()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("another vmctl operation is in progress"),
+            "{error}"
+        );
+        drop(lock);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scheme_proxy_overrides_all_proxy_and_no_proxy_matches_host_and_port() {
+        let get = |key: &str| match key {
+            "HTTPS_PROXY" => Some("proxy-for-https:8080".into()),
+            "ALL_PROXY" => Some("socks5://proxy-fallback:1080".into()),
+            _ => None,
+        };
+        let https = url::Url::parse("https://cdn.example.test/image.img").unwrap();
+        let http = url::Url::parse("http://cdn.example.test/image.img").unwrap();
+        assert_eq!(
+            env_proxy(&https, get).as_deref(),
+            Some("proxy-for-https:8080")
+        );
+        assert_eq!(
+            env_proxy(&http, get).as_deref(),
+            Some("socks5://proxy-fallback:1080")
+        );
+        assert!(bypasses_proxy(&https, "localhost, .example.test:443"));
+        assert!(!bypasses_proxy(&http, "localhost, .example.test:443"));
+        assert!(!bypasses_proxy(&https, "ample.test"));
+        assert!(bypasses_proxy(&https, "*"));
+    }
+
+    #[test]
+    fn windows_manual_proxy_selects_the_scheme_and_honors_the_bypass_list() {
+        let url = url::Url::parse("https://cdn.example.test/image.img").unwrap();
+        let servers = "http=proxy:8080;https=secure:8081";
+        assert_eq!(
+            manual_proxy(&url, servers, "<local>;*.internal").as_deref(),
+            Some("secure:8081")
+        );
+        assert_eq!(manual_proxy(&url, servers, "<local>;*.example.test"), None);
+        assert_eq!(
+            manual_proxy(&url, "proxy:8080", "").as_deref(),
+            Some("proxy:8080")
+        );
+    }
+
+    #[test]
+    fn tls_failure_points_to_the_clock_and_proxy_certificates() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("https://{}/image.img", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            // Reply to the TLS ClientHello with invalid TLS data.
+            let _ = stream.read(&mut [0; 4096]).unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+        });
+        let error = request(
+            "GET",
+            &url,
+            None,
+            &HttpOptions {
+                read_timeout: Duration::from_secs(3),
+                timeout: Some(Duration::from_secs(3)),
+            },
+        )
+        .unwrap_err();
+        server.join().unwrap();
+        let detail = http_error(&error);
+        assert!(
+            detail.contains("TLS verification or handshake failed"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("date and time") && detail.contains("proxy certificate"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn failed_dns_lookup_is_reported_as_such() {
+        let error = ureq::AgentBuilder::new()
+            .try_proxy_from_env(false)
+            .resolver(|_: &str| Err(std::io::Error::other("test DNS failed")))
+            .build()
+            .get("https://image.example.test/")
+            .call()
+            .unwrap_err();
+        assert!(http_error(&error).contains("download DNS lookup failed"));
+    }
+
     #[test]
     #[ignore = "requires outbound network"]
     fn real_https_download() {
-        let response = agent()
-            .get("https://cloud-images.ubuntu.com/minimal/releases/noble/release/SHA256SUMS")
-            .call()
-            .expect("HTTPS request");
+        let response = request(
+            "GET",
+            "https://cloud-images.ubuntu.com/minimal/releases/noble/release/SHA256SUMS",
+            None,
+            &HttpOptions {
+                read_timeout: READ_TIMEOUT,
+                timeout: Some(READ_TIMEOUT),
+            },
+        )
+        .expect("HTTPS request");
         let text = response.into_string().unwrap();
         assert!(text.contains("minimal-cloudimg-arm64.img"), "{text}");
     }

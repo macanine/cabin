@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Map, Value, json};
 
 use crate::Result;
@@ -10,8 +11,8 @@ use crate::device::render as device_render;
 use crate::journal::load_state;
 use crate::steps::base::{CheckResult, Step, StepContext, delete_artifacts};
 use crate::util::{
-    atomic_write_json, atomic_write_text, ensure_dir, message, now_millis, read_json,
-    read_text, remove_path, sha256_file,
+    atomic_write_json, atomic_write_text, ensure_dir, message, now_millis, read_json, remove_path,
+    sha256_file,
 };
 
 /// Installed on every new guest: the Node.js runtime library and the full
@@ -149,11 +150,32 @@ fn add_ipv4_policy(doc: &mut Map<String, Value>) {
     doc.insert("write_files".into(), Value::Array(files));
 }
 
+fn validate_ssh_public_key(key: &str) -> Result<()> {
+    let mut fields = key.split_whitespace();
+    let kind = fields.next();
+    let blob = fields
+        .next()
+        .and_then(|encoded| STANDARD.decode(encoded).ok());
+    // OpenSSH wire format: length-prefixed key type and 32-byte public key.
+    const ED25519_HEADER: &[u8] = b"\0\0\0\x0bssh-ed25519\0\0\0\x20";
+    if kind != Some("ssh-ed25519")
+        || key.chars().any(|ch| ch.is_control() && ch != '\t')
+        || !blob.is_some_and(|blob| {
+            blob.len() == ED25519_HEADER.len() + 32 && blob.starts_with(ED25519_HEADER)
+        })
+    {
+        return message("invalid SSH public key: expected one OpenSSH ed25519 public key");
+    }
+    Ok(())
+}
+
 pub fn build_user_data(
     cfg: &crate::config::Config,
     password_hash: &str,
     ssh_pubkey: &str,
 ) -> Result<Value> {
+    cfg.validate_seed_identity()?;
+    validate_ssh_public_key(ssh_pubkey)?;
     let guest_proxy = cfg.guest_proxy_url();
     let resolved = if cfg.device_enabled() {
         Some(cfg.device_resolved()?)
@@ -535,6 +557,7 @@ impl Step for SeedStep {
 
     fn apply(&self, ctx: &mut StepContext) -> Result<()> {
         let cfg = ctx.cfg.clone();
+        cfg.validate_seed_identity()?;
         let provision = load_state(&cfg.home, &cfg.name, "provision").unwrap_or(Value::Null);
         if provision.get("status").and_then(Value::as_str) == Some("applied") {
             return message(
@@ -555,20 +578,6 @@ impl Step for SeedStep {
             && let Some(existing) = existing_credentials.get("password").and_then(Value::as_str)
         {
             password = Some(existing.to_string());
-        }
-        let mut removed = Vec::new();
-        for name in SEED_FILES {
-            let path = cfg.instance_file(name);
-            if path.exists() {
-                removed.push(name.to_string());
-                remove_path(&path)?;
-            }
-        }
-        if !removed.is_empty() {
-            ctx.log(&format!(
-                "removed previous seed files: {}",
-                removed.join(", ")
-            ));
         }
         let password = match password {
             Some(password) => password,
@@ -602,11 +611,17 @@ impl Step for SeedStep {
                 true,
             )?;
             crate::util::chmod(&stage.join("id_ed25519"), 0o600)?;
-            let ssh_pubkey = read_text(&stage.join("id_ed25519.pub")).trim().to_string();
-            if !ssh_pubkey.starts_with("ssh-ed25519 ") {
-                return message("ssh-keygen produced an unexpected public key");
-            }
-            let user_data = build_user_data(&cfg, &password_hash, &ssh_pubkey)?;
+            let ssh_pubkey =
+                std::fs::read_to_string(stage.join("id_ed25519.pub")).map_err(|error| {
+                    crate::Error::Message(format!(
+                        "could not read the generated SSH public key: {error}"
+                    ))
+                })?;
+            let user_data = build_user_data(
+                &cfg,
+                &password_hash,
+                ssh_pubkey.trim_end_matches(['\r', '\n']),
+            )?;
             let user_data_text = format!(
                 "#cloud-config\n{}\n",
                 crate::py_json::dumps_pretty_with(&user_data, true)
@@ -676,6 +691,20 @@ impl Step for SeedStep {
                 &Value::Object(credentials.clone()),
                 0o600,
             )?;
+            let mut removed = Vec::new();
+            for name in SEED_FILES {
+                let path = cfg.instance_file(name);
+                if path.exists() {
+                    removed.push(name.to_string());
+                    remove_path(&path)?;
+                }
+            }
+            if !removed.is_empty() {
+                ctx.log(&format!(
+                    "removed previous seed files: {}",
+                    removed.join(", ")
+                ));
+            }
             let moves = [
                 ("seed.iso", cfg.seed_path()),
                 ("user-data", cfg.user_data_path()),
@@ -759,6 +788,52 @@ impl Step for SeedStep {
 mod apt_tests {
     use super::*;
 
+    const TEST_SSH_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f guest test";
+
+    #[test]
+    fn seed_validates_identity_and_the_ed25519_wire_format() {
+        let mut cfg = crate::config::Config {
+            username: "_guest-42".into(),
+            hostname: "9-guest".into(),
+            ..Default::default()
+        };
+        assert!(build_user_data(&cfg, "hash", TEST_SSH_KEY).is_ok());
+        for key in [
+            "ssh-ed25519",
+            "ssh-ed25519 !!!!",
+            "ssh-ed25519 YWJj",
+            &TEST_SSH_KEY.replace("AAAAC3", "AAAAD3"),
+            &TEST_SSH_KEY.replace(" guest", "\nguest"),
+            &TEST_SSH_KEY.replace(" guest", "\0guest"),
+        ] {
+            assert!(
+                build_user_data(&cfg, "hash", key)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("invalid SSH public key")
+            );
+        }
+        for username in ["", "guest\nroot", "名字", "guest user"] {
+            cfg.username = username.into();
+            assert!(
+                build_user_data(&cfg, "hash", TEST_SSH_KEY)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("--user")
+            );
+        }
+        cfg.username = "guest".into();
+        for hostname in ["-guest", "guest-", "guest.local", "名字", "guest\nsecond"] {
+            cfg.hostname = hostname.into();
+            assert!(
+                build_user_data(&cfg, "hash", TEST_SSH_KEY)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("--hostname")
+            );
+        }
+    }
+
     #[test]
     fn password_hashes_are_salted_sha512_crypt_that_verify() {
         use sha_crypt::{PasswordVerifier, ShaCrypt};
@@ -785,8 +860,13 @@ mod apt_tests {
             assert_eq!(iface["dhcp6"], false);
             assert_eq!(iface["accept-ra"], false);
             assert_eq!(iface["link-local"], json!(["ipv4"]));
-            let data = build_user_data(&cfg, "hash", "ssh-ed25519 test").unwrap();
-            let file = data["write_files"].as_array().unwrap().iter().find(|file| file["path"] == "/etc/sysctl.d/zz-cabin-ipv4.conf").unwrap();
+            let data = build_user_data(&cfg, "hash", TEST_SSH_KEY).unwrap();
+            let file = data["write_files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|file| file["path"] == "/etc/sysctl.d/zz-cabin-ipv4.conf")
+                .unwrap();
             let content = file["content"].as_str().unwrap();
             assert!(content.contains("net.ipv6.conf.default.disable_ipv6 = 1"));
             assert!(content.contains("net.ipv6.conf.lo.disable_ipv6 = 0"));
@@ -821,7 +901,7 @@ mod apt_tests {
                 root,
             )
             .unwrap();
-            let doc = build_user_data(&cfg, "test-hash", "ssh-ed25519 test-key").unwrap();
+            let doc = build_user_data(&cfg, "test-hash", TEST_SSH_KEY).unwrap();
             let files = doc["write_files"].as_array().unwrap();
             let source = files
                 .iter()
@@ -859,7 +939,7 @@ mod apt_tests {
                 root,
             )
             .unwrap();
-            let doc = build_user_data(&cfg, "test-hash", "ssh-ed25519 test-key").unwrap();
+            let doc = build_user_data(&cfg, "test-hash", TEST_SSH_KEY).unwrap();
             let packages = doc["packages"].as_array().unwrap();
             assert_eq!(
                 packages

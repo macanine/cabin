@@ -13,7 +13,7 @@ use crate::Result;
 use crate::config::Config;
 use crate::journal::{load_state, save_state};
 use crate::util::{
-    RunOptions, capture, ensure_dir, localstamp, message, now_millis, remove_path, run,
+    RunOptions, capture_env, ensure_dir, localstamp, message, now_millis, remove_path, run,
     sha256_file,
 };
 use crate::vm::{Runtime, resolve_qemu_img};
@@ -203,18 +203,24 @@ pub fn ensure_stopped(cfg: &Config, ctx: &StepContext) -> Result<()> {
     Ok(())
 }
 
-pub fn qemu_img_capture(
+fn qemu_img_capture(
     cfg: &Config,
-    args: &[String],
-    timeout: std::time::Duration,
+    disk: &Path,
+    args: &[&str],
 ) -> (i32, String) {
-    let qemu_img = match resolve_qemu_img(cfg) {
+    let executable = resolve_qemu_img(cfg).and_then(|path| Ok(std::path::absolute(path)?));
+    let qemu_img = match executable {
         Ok(path) => path,
         Err(error) => return (127, error.to_string()),
     };
+    let (Some(parent), Some(file)) = (disk.parent(), disk.file_name()) else {
+        return (127, "invalid disk path".into());
+    };
     let mut argv = vec![qemu_img.display().to_string()];
-    argv.extend(args.iter().cloned());
-    let result = capture(&argv, timeout, None);
+    argv.extend(args.iter().map(|arg| arg.to_string()));
+    argv.push(file.to_string_lossy().into_owned());
+    let cwd = (!parent.as_os_str().is_empty()).then_some(parent);
+    let result = capture_env(&argv, std::time::Duration::from_secs(120), None, cwd, None);
     (result.code, result.output)
 }
 
@@ -222,16 +228,7 @@ pub fn disk_info(cfg: &Config, disk: &Path) -> Option<Value> {
     if !disk.exists() {
         return None;
     }
-    let (rc, out) = qemu_img_capture(
-        cfg,
-        &[
-            "info".to_string(),
-            "-U".to_string(),
-            "--output=json".to_string(),
-            disk.display().to_string(),
-        ],
-        std::time::Duration::from_secs(120),
-    );
+    let (rc, out) = qemu_img_capture(cfg, disk, &["info", "-U", "--output=json"]);
     if rc != 0 {
         return None;
     }
@@ -248,16 +245,7 @@ fn legacy_snapshot_names(cfg: &Config, disk: &Path) -> Vec<String> {
     if !disk.exists() {
         return Vec::new();
     }
-    let (rc, out) = qemu_img_capture(
-        cfg,
-        &[
-            "snapshot".to_string(),
-            "-l".to_string(),
-            "-U".to_string(),
-            disk.display().to_string(),
-        ],
-        std::time::Duration::from_secs(120),
-    );
+    let (rc, out) = qemu_img_capture(cfg, disk, &["snapshot", "-l", "-U"]);
     if rc != 0 {
         return Vec::new();
     }

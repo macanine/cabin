@@ -74,3 +74,31 @@ test("install copy is platform-neutral and never tells people to install tools",
     assert.doesNotMatch(text, /\bMac\b|ARM64|install qemu|cabind/i, text);
   }
 });
+
+test("install input failures describe the cause and a recovery action", async () => {
+  const { explainFailure } = await import("../src/lib/wizard.ts");
+  for (const [error, title, advice] of [
+    ['step "image" failed: not enough free space to download to image.img.part', /disk space/, /Free up space/],
+    ['step "disk" failed: not enough free disk space at instances: 1 GiB available', /disk space/, /Free up space/],
+    ["another vmctl operation is in progress (lock owner: pid=42)", /already running/, /Wait/],
+    ["could not find a Ubuntu 24.04 LTS image: could not download index: TLS verification or handshake failed", /secure download/, /date and time/],
+    ["download received an HTML page instead of the file from https://mirror.test; sign in to the network if it requires a captive portal", /sign-in page/, /sign in/],
+    ["download failed after 5 attempts: download DNS lookup failed: Dns Failed", /find the download server/, /DNS/],
+    ["download failed after 5 attempts: download stalled (no bytes received for 30 seconds)", /stopped receiving data/, /saved partial/],
+    ["download Content-Length does not match Content-Range from https://mirror.test", /could not be downloaded/, /connection/],
+    ["download server rejected the saved partial range from https://mirror.test", /could not be downloaded/, /connection/],
+    ["could not find a Ubuntu 24.04 LTS image: no valid image checksum in https://mirror.test/SHA256SUMS", /system image/, /Ubuntu/],
+    ["checksum mismatch for https://mirror.test: expected digest, got different-digest", /checksum/, /pinned image/],
+    ['step "disk" failed: qemu-img convert failed (exit 1): Permission denied', /opened for writing/, /data folder/],
+    ["qemu-img convert failed (exit 1): The process cannot access the file because it is being used by another process", /opened for writing/, /other program/],
+    ["qemu-img resize failed (exit 1): unexpected error", /disk could not be prepared/, /disk step log/],
+    ["--user must be a valid lowercase Linux username (max 32 chars)", /username and hostname/, /lowercase/],
+    ["--hostname must be a valid RFC1123 hostname (lowercase, max 63 chars)", /username and hostname/, /lowercase/],
+    ['step "seed" failed: invalid SSH public key: expected one OpenSSH ed25519 public key', /public key could not be prepared/, /fresh key/],
+    ['step "seed" failed: the seed ISO is unreadable or its volumes disagree', /initial configuration/, /seed step log/],
+  ]) {
+    const help = explainFailure(error);
+    assert.match(help.title, title, error);
+    assert.match(help.advice, advice, error);
+  }
+});

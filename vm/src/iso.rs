@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn round_trips_the_label_names_and_content() {
-        let dir = scratch("round-trip");
+        let dir = scratch("seed round trip 世界");
         let output = dir.join("seed.iso");
         build(&output);
         assert_eq!(std::fs::metadata(&output).unwrap().len() % BLOCK as u64, 0);
