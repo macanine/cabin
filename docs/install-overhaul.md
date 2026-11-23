@@ -146,7 +146,7 @@ It does not edit files owned by another workstream in the same wave.
 - New `vm/src/readiness.rs`: `host_readiness(home, plan) -> Vec<Readiness>` with
   `{ id, label, ok, detail, fix: Option<Fix> }`, where `Fix` is one of `EnableWhpx |
   RestartHost | ReinstallApp | FreeDisk | OpenUrl(String)`. Map it in
-  `src-tauri/src/host.rs::checks`, plus a `host_fix` command. The Windows elevated `dism`
+  `src-tauri/src/host/machine.rs::checks`, plus a `host_fix` command. The Windows elevated `dism`
   runs through `ShellExecuteW` with `runas`.
 - Frontend (`src/views/InstallWizard.tsx`, `src/views/install/*`, `src/lib/installForm.ts`,
   `src/lib/wizard.ts`): a single setup screen with auto defaults and an Advanced fold, as

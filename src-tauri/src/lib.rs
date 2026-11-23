@@ -1,5 +1,5 @@
 //! Tauri shell for the Mac app: the VM (via `vm_core`) and a forwarding link
-//! to `cabind` inside it (see `host.rs`).
+//! to `cabind` inside it (see `host/`).
 
 mod app_error;
 mod global_network;
