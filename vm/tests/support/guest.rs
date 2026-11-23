@@ -93,6 +93,8 @@ fn codex(args: &[String]) -> io::Result<()> {
 fn claude(args: &[String]) {
     if args == ["--version"] {
         println!("claude 0.0.0-test");
+    } else if args == ["auth", "status", "--json"] {
+        println!("{}", r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"claude@example.test","subscriptionType":"pro"}"#);
     } else if args.starts_with(&["-p".into(), "/usage".into()])
         && args.iter().any(|arg| arg == "--no-session-persistence")
     {

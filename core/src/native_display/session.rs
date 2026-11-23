@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -179,10 +179,8 @@ impl GuestSession {
 
     fn spawn(&self, program: &Path, args: &[&str], log: &str, env: &[(&str, &str)]) -> Result<()> {
         fsx::ensure_dir(&self.state)?;
-        let log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.state.join(log))?;
+        let path = crate::paths::AppPaths::from_env().logs().join(log);
+        let log = cabin_diagnostics::open_capture(&path, cabin_diagnostics::Capture::Replace)?;
         let mut command = Command::new(program);
         command
             .args(args)
@@ -688,16 +686,8 @@ fn stop_processes(pids: &[u32]) -> Result<()> {
 }
 
 fn tail_chrome_log() -> String {
-    use std::io::{Seek, SeekFrom};
-    let result = (|| -> std::io::Result<_> {
-        let mut file = File::open("/tmp/vmctl-fp-chrome.log")?;
-        let start = file.metadata()?.len().saturating_sub(3000);
-        file.seek(SeekFrom::Start(start))?;
-        let mut tail = Vec::new();
-        file.take(3000).read_to_end(&mut tail)?;
-        Ok(format!("\n{}", String::from_utf8_lossy(&tail)))
-    })();
-    result.unwrap_or_default()
+    let tail = cabin_diagnostics::tail(&crate::browser::chrome_log_path(), 3000, 0);
+    if tail.is_empty() { tail } else { format!("\n{tail}") }
 }
 
 #[cfg(test)]

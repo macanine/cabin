@@ -1,64 +1,52 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { ChatState } from "../../services/ipc/generated/core";
 import { toIpcError } from "../../services/ipc/common";
 import { libraryIpc } from "../../services/ipc/library";
-import { queueMessage, takeQueued, type QueuedMessage } from "../../lib/agentControls";
+import type { QueuedMessage } from "../../lib/agentControls";
+import { chatQueue } from "../../lib/chatQueue";
 import { uiActions } from "../../state/ui";
 
-/**
- * Messages typed while the agent works. They go out one at a time, each once
- * the agent is idle again; steering one into the running turn is an explicit
- * action, never the default.
- */
-export function useMessageQueue({ sessionId, state, blocked, sending, setSending, onSent }: {
+export function useMessageQueue({ sessionId, state, blocked, onSent }: {
   sessionId: string;
   state: ChatState["state"];
-  /** A pending request or an open plan holds the queue. */
   blocked: boolean;
-  sending: boolean;
-  setSending: (value: boolean) => void;
   onSent: () => void;
 }) {
-  const [queue, setQueue] = useState<QueuedMessage[]>([]);
-
-  useEffect(() => setQueue([]), [sessionId]);
+  const { messages, active, failed } = useSyncExternalStore(chatQueue.subscribe, () => chatQueue.get(sessionId));
+  const canSend = !blocked && active === null;
+  const canRetry = canSend && (state === "ready" || state === "stopped" || state === "error");
+  const deliver = useCallback(async (message: QueuedMessage, mode: "auto" | "retry" | "steer") => {
+    if (!chatQueue.start(sessionId, message.id, mode !== "auto")) return;
+    try {
+      if (mode === "steer") await libraryIpc.chatSteer(sessionId, message.text, []);
+      else await libraryIpc.chatSend(sessionId, message.text, []);
+    } catch (error) {
+      chatQueue.finish(sessionId, message.id, false);
+      uiActions.toast(toIpcError(error).message, "error");
+      return;
+    }
+    chatQueue.finish(sessionId, message.id, true);
+    onSent();
+  }, [sessionId, onSent]);
 
   useEffect(() => {
-    if (state !== "ready" || blocked || sending || !queue.length) return;
-    const [next, rest] = takeQueued(queue);
-    if (!next) return;
-    setQueue(rest);
-    setSending(true);
-    libraryIpc.chatSend(sessionId, next.text, [])
-      .then(onSent)
-      .catch((error) => { setQueue((old) => [next, ...old]); uiActions.toast(toIpcError(error).message, "error"); })
-      .finally(() => setSending(false));
-  }, [state, blocked, sending, queue, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (state === "ready" && canSend && failed.length === 0 && messages[0]) void deliver(messages[0], "auto");
+  }, [state, canSend, deliver, failed, messages]);
 
-  const remove = (message: QueuedMessage) => setQueue((old) => old.filter((entry) => entry.id !== message.id));
-
+  const queue = messages.filter(({ id }) => id !== active);
   return {
     queue,
-    add: (text: string) => setQueue((old) => queueMessage(old, text)),
-    remove,
+    failed,
+    sending: active !== null,
+    add: (text: string) => chatQueue.add(sessionId, text),
+    remove: ({ id }: QueuedMessage) => chatQueue.remove(sessionId, id),
     move(from: number, to: number) {
-      setQueue((old) => {
-        const next = [...old];
-        const [moved] = next.splice(from, 1);
-        if (!moved) return old;
-        next.splice(to, 0, moved);
-        return next;
-      });
+      if (queue[from] && queue[to]) chatQueue.move(sessionId, queue[from].id, queue[to].id);
     },
-    async steer(message: QueuedMessage) {
-      remove(message);
-      try {
-        await libraryIpc.chatSteer(sessionId, message.text, []);
-        onSent();
-      } catch (error) {
-        setQueue((old) => [message, ...old]);
-        uiActions.toast(toIpcError(error).message, "error");
-      }
+    retry: canRetry ? (message: QueuedMessage) => void deliver(message, "retry") : undefined,
+    startDirect: () => chatQueue.startDirect(sessionId),
+    steer: (message: QueuedMessage) => {
+      if (canSend) void deliver(message, "steer");
     },
   };
 }

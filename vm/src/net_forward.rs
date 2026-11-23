@@ -321,21 +321,23 @@ fn wait(
     sockets: &SocketSet<'_>,
     delay: Option<smoltcp::time::Duration>,
 ) {
-    let Ok(mut ready) = Readiness::new() else { return };
-    let mut watched = ready.watch(0, listener, true, false).and(ready.watch(1, wake, true, false));
-    for (index, relay) in relays.iter().enumerate() {
-        let socket = sockets.get::<tcp::Socket>(relay.handle);
-        let read = !relay.host_eof && relay.to_guest.is_empty() && socket.may_send();
-        let write = !relay.to_host.is_empty();
-        watched = watched.and(ready.watch(index + 2, &relay.host, read, write));
-    }
     let cap = Duration::from_millis(250);
     let timeout = delay
         .map(|d| Duration::from_micros(d.total_micros()).min(cap))
         .unwrap_or(cap);
-    if watched.is_ok() {
-        let _ = ready.wait(Some(timeout));
-    } else {
+    let result = Readiness::scope(|ready| {
+        ready.watch(0, listener, true, false)?;
+        ready.watch(1, wake, true, false)?;
+        for (index, relay) in relays.iter().enumerate() {
+            let socket = sockets.get::<tcp::Socket>(relay.handle);
+            let read = !relay.host_eof && relay.to_guest.is_empty() && socket.may_send();
+            let write = !relay.to_host.is_empty();
+            ready.watch(index + 2, &relay.host, read, write)?;
+        }
+        ready.wait(Some(timeout))?;
+        Ok(())
+    });
+    if result.is_err() {
         std::thread::sleep(Duration::from_millis(5));
     }
 }

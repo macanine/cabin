@@ -163,9 +163,11 @@ export function Suggestions({ items, onPick }: { items: string[]; onPick: (text:
 
 /** Messages typed while the agent works, sent in order when it is idle.
  * Drag to reorder, edit one back into the composer, steer it now, or remove. */
-export function QueuedMessages({ queue, canSteer, onSteer, onEdit, onRemove, onMove }: {
+export function QueuedMessages({ queue, canSteer, failed, onRetry, onSteer, onEdit, onRemove, onMove }: {
   queue: QueuedMessage[];
   canSteer: boolean;
+  failed: string[];
+  onRetry?: (message: QueuedMessage) => void;
   onSteer: (message: QueuedMessage) => void;
   onEdit: (message: QueuedMessage) => void;
   onRemove: (message: QueuedMessage) => void;
@@ -189,6 +191,10 @@ export function QueuedMessages({ queue, canSteer, onSteer, onEdit, onRemove, onM
           <span className="cursor-grab text-faint" aria-hidden><IconGripVertical size={12} /></span>
           <span className="grid size-[18px] shrink-0 place-items-center rounded-full bg-hover text-[11px] text-muted tabular-nums">{index + 1}</span>
           <span className="min-w-0 flex-1 truncate" title={message.text}>{message.text}</span>
+          {failed.includes(message.id) && (
+            <button type="button" className="press rounded-md border-0 bg-hover px-2 py-0.5 text-muted disabled:opacity-50"
+              disabled={!onRetry} onClick={() => onRetry?.(message)} aria-label="Retry failed message">Retry</button>
+          )}
           <Tooltip label="Edit in the composer" openDelay={300}><button type="button" className={act} aria-label="Edit" onClick={() => onEdit(message)}><IconPencil size={13} /></button></Tooltip>
           {canSteer && <Tooltip label="Send now, into the running turn" openDelay={300}><button type="button" className={act} aria-label="Send now" onClick={() => onSteer(message)}><IconArrowUp size={13} /></button></Tooltip>}
           <Tooltip label="Remove from the queue" openDelay={300}><button type="button" className={act} aria-label="Remove" onClick={() => onRemove(message)}><IconX size={13} /></button></Tooltip>

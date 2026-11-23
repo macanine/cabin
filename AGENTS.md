@@ -1,8 +1,9 @@
 # Working on Cabin
 
-The host is a Tauri 2 desktop app for Apple Silicon. It runs one Ubuntu ARM64 VM through
-built-in QEMU and HVF. The five agent CLIs run inside the VM, where `cabind` owns
-sessions, chats, workspaces, and setup.
+The Tauri 2 desktop app runs one Ubuntu VM through QEMU. Apple Silicon uses ARM64 and
+HVF, Windows x64 uses amd64 and WHPX or TCG, and Linux development uses distro QEMU.
+The five agent CLIs run inside the VM, where `cabind` owns sessions, chats, workspaces,
+and setup.
 
 Use [README.md](README.md) for product behavior, setup, and test commands. Use
 [PLAN.md](PLAN.md) for architecture decisions and open work. This file maps implementation
@@ -48,9 +49,10 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   timestamps when reading VM step state, logs, and installer metadata.
 - `vm/src/os.rs` owns the Ubuntu LTS releases, mirrors, and kernel packages. Save the dated
   image URL and SHA-256 selected at install. Legacy Debian configurations report that they
-  need an Ubuntu reinstall. On macOS `vm/src/qemu_engine.rs` downloads the pinned
-  `macanine/qemu` release asset. Update `RELEASE` and `SHA256` together. Linux development
-  uses the distro QEMU.
+  need an Ubuntu reinstall. On macOS `vm/src/qemu_engine.rs` prefers bundled QEMU and
+  supports downloading the pinned `macanine/qemu` asset for unbundled development. Keep
+  `RELEASE` and `SHA256` in sync with `scripts/vendor.json`. Linux development uses distro
+  QEMU.
 - The `cabind` hello carries the running executable's SHA-256 as `build`.
   `Host::bundled_build` caches the bundle hash by size and mtime, and `rpc::check_hello`
   determines whether to deploy. A missing daemon or build mismatch triggers one deploy and
@@ -166,8 +168,9 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   `<home>/sync`. Reuse the SSH transport for short commands. Two-way scans both sides in
   parallel. Safe skips the guest scan when the Mac matches the base. Ignore rules include
   `.gitignore`, `.cabinignore`, configured patterns, and unticked paths.
-- Keep both versions of a conflict until `sync_resolve` selects one. Apply changes
-  atomically and preserve ignored paths. Reject writes through symlinked directories and
+- Keep both versions of a conflict until `sync_resolve` selects one. Publish regular
+  files atomically after checking the staged payload length and preserve ignored paths.
+  Reject writes through symlinked directories and
   abort unreadable scans before planning. Mirror syncs `.git` with the project. Other modes
   default to `copyOnce` so each side can commit independently. Mac permissions inspect
   selected folder access at launch and on foreground return. Two-way needs write access. An
@@ -181,8 +184,9 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   output, and its tool card uses `util::clean_terminal_text`. Reset pooled ghostty-web
   emulators with RIS (`\x1bc`) after `open()` and suppress emulator-generated `onData`
   during replay. `terminalTheme.ts` sets colors and recoloring rebuilds the emulator.
+  `terminalAppearance.ts` owns the bundled font, text-size preference, and scrollbar gutter.
   `terminalFit.ts` fits per frame and resizes the PTY when settled. Keep the 1.2 line height
-  and check the cell-metrics patch in `vite.config.ts` on ghostty-web upgrades.
+  and check the canvas patch in `vite.config.ts` on ghostty-web upgrades.
   `terminal_paste_image` saves attachments in the guest. Paste the returned path with
   bracketed-paste markers when requested by the terminal program.
 
@@ -250,7 +254,9 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   serial console, and the gateway `-netdev stream` are AF_UNIX sockets at the instance
   paths (`uds_windows` supplies the Windows `UnixStream`/`UnixListener`), and the gateway
   reaches the shoes stack through a connected loopback UDP pair waited on with `polling`
-  (see `third_party/shoes/VENDORED.txt`). Keep socket paths within about 104 bytes. The few
+  (see `third_party/shoes/VENDORED.txt`). Use `Readiness::scope` to unregister watched
+  sockets before releasing their borrows. The gateway owns and joins workers even if
+  startup fails partway through. Keep socket paths within about 104 bytes. The few
   real differences (Unix mode bits, `setsid`, the effective-owner check) live in
   `util::chmod` and `platform.rs`. The guest side of `core` stays Unix-only: the
   host links only `hello`, `model`, `sync` (host half), `store`, `proxy`, `ipv4`, `fsx`,

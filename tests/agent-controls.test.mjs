@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   EMPTY_CONTROLS, contextFill, currentLabel, groupedChoices, liveCommands, mergeCommands,
-  planProgress, queueMessage, sessionOptions, takeQueued,
+  planProgress, queueMessage, sessionOptions,
 } from "../src/lib/agentControls.ts";
 import { diffCounts, diffRows } from "../src/lib/diffLines.ts";
 
@@ -80,15 +80,11 @@ test("context fill is a clamped share, unknown without a window size", () => {
   assert.equal(contextFill({ used: 500, size: 200, costMicros: null, currency: null }), 1);
 });
 
-test("a busy agent is steered when it can be, otherwise messages queue in order", () => {
+test("queued messages are trimmed and blank messages are skipped", () => {
   let queue = queueMessage([], "  first ");
   queue = queueMessage(queue, "second");
   queue = queueMessage(queue, "   ");
   assert.deepEqual(queue.map((entry) => entry.text), ["first", "second"]);
-  const [next, rest] = takeQueued(queue);
-  assert.equal(next.text, "first");
-  assert.deepEqual(rest.map((entry) => entry.text), ["second"]);
-  assert.deepEqual(takeQueued([]), [null, []]);
 });
 
 test("diff rows carry old and new line numbers per hunk", () => {

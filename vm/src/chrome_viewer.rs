@@ -91,7 +91,6 @@ pub fn start(cfg: &Config) -> Result<String> {
         "127.0.0.1:5900".into(),
         destination,
     ]);
-    crate::util::ensure_dir(&cfg.instance_logs_dir())?;
     start_bridge(
         cfg,
         Target::Vnc {
@@ -145,6 +144,9 @@ fn start_bridge(cfg: &Config, target: Target) -> Result<String> {
     }
     if let Some(bridge) = registry.remove(&key) {
         stop_bridge(bridge);
+    }
+    if let Target::Vnc { log, .. } = &target {
+        cabin_diagnostics::open_capture(log, cabin_diagnostics::Capture::Replace)?;
     }
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     listener.set_nonblocking(true)?;
@@ -485,10 +487,7 @@ fn connect_upstream(peer: &Peer, target: &Target) -> io::Result<UpstreamIo> {
         #[cfg(not(unix))]
         Target::Spice { .. } => Err(io::Error::other("SPICE requires a Unix host")),
         Target::Vnc { ssh, log } => {
-            let stderr = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log)?;
+            let stderr = cabin_diagnostics::open_capture(log, cabin_diagnostics::Capture::Append)?;
             let mut ssh_command = Command::new(&ssh[0]);
             ssh_command.args(&ssh[1..]);
             crate::util::no_window(&mut ssh_command);

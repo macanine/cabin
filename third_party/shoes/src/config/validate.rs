@@ -1271,36 +1271,6 @@ fn validate_tun_config(
         ));
     }
 
-    // Validate that we have either Linux config (device_name/address) or mobile config (device_fd)
-    #[cfg(target_os = "linux")]
-    {
-        if config.device_fd.is_none() && (config.device_name.is_none() || config.address.is_none())
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "TUN on Linux requires either 'device_fd' or both 'device_name' and 'address'",
-            ));
-        }
-    }
-    #[cfg(target_os = "android")]
-    {
-        if config.device_fd.is_none() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "TUN on Android requires 'device_fd' from VpnService.Builder.establish()",
-            ));
-        }
-    }
-    #[cfg(target_os = "ios")]
-    {
-        if config.device_fd.is_none() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "TUN on iOS requires 'device_fd' from NEPacketTunnelProvider.packetFlow",
-            ));
-        }
-    }
-
     // Resolve rule group references
     ConfigSelection::replace_none_or_some_groups(&mut config.rules, rule_groups)?;
 

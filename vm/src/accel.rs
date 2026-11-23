@@ -69,7 +69,7 @@ pub fn classify_whpx_output(output: &str) -> Option<AccelProblem> {
     {
         return Some(AccelProblem::VirtualizationOff);
     }
-    if has("whpx:") || has("whpx ") {
+    if has("whpx:") || has("whpx ") || has("whpx_init_vcpu failed") {
         let line = output
             .lines()
             .map(str::trim)

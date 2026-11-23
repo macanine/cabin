@@ -1,6 +1,6 @@
 //! Step framework: each step has check(), apply(), rollback() and a log.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -83,10 +83,7 @@ impl StepContext {
         };
         ensure_dir(&log_dir)?;
         let log_path = log_dir.join(format!("{step_id}-{action}-{}.log", localstamp()));
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)?;
+        let mut file = cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
         let started_at = now_millis();
         writeln!(
             file,
@@ -116,11 +113,7 @@ impl StepContext {
     }
 
     pub fn log(&self, text: &str) {
-        if let Ok(mut file) = self.log_file.lock() {
-            let _ = writeln!(file, "{text}");
-            let _ = file.flush();
-        }
-        println!("[{}] {text}", self.step_id);
+        crate::util::log_line(&self.log_file, text);
     }
 
     pub fn close(&self) {

@@ -1,15 +1,15 @@
 import { Modal } from "@mantine/core";
-import { IconArrowsLeftRight, IconArrowRight, IconBrandApple, IconBrandGit, IconBolt, IconFilter, IconGitMerge, IconServer } from "@tabler/icons-react";
+import { IconArrowsLeftRight, IconArrowRight, IconFolder, IconBrandGit, IconBolt, IconFilter, IconGitMerge, IconServer } from "@tabler/icons-react";
 import type { ReactNode } from "react";
 import type { SyncMode } from "../../services/ipc/generated/core";
 import { SYNC_MODES } from "../../lib/syncForm";
 
-/** Mac ↔ machine, drawn for one mode. */
+/** Local ↔ machine, drawn for one mode. */
 export function SyncFlow({ mode, compact = false }: { mode: SyncMode; compact?: boolean }) {
   const both = mode === "twoWay";
   return (
     <span className={`sync-flow ${mode}${compact ? " compact" : ""}`} aria-hidden>
-      <span className="sync-flow-end"><IconBrandApple size={compact ? 12 : 14} />{!compact && "Mac"}</span>
+      <span className="sync-flow-end"><IconFolder size={compact ? 12 : 14} />{!compact && "Local"}</span>
       <span className="sync-flow-line">
         {both ? <IconArrowsLeftRight size={compact ? 12 : 14} /> : <IconArrowRight size={compact ? 12 : 14} />}
       </span>
@@ -67,7 +67,7 @@ export function SyncGuide({ opened, onClose }: { opened: boolean; onClose: () =>
         </ul>
         <p>
           Left-out paths are never touched on either side: a <code>node_modules</code> installed in the machine stays there, and
-          yours stays on your Mac. Install dependencies where the code runs.
+          yours stays in the local folder. Install dependencies where the code runs.
         </p>
       </Section>
 
@@ -79,7 +79,7 @@ export function SyncGuide({ opened, onClose }: { opened: boolean; onClose: () =>
           own while the code itself stays in sync. Both stay real repositories.
         </p>
         <p className="faint">
-          With <em>Exact mirror</em>, <code>.git</code> is kept in sync instead, since only your Mac writes. You can choose either way
+          With <em>Exact mirror</em>, <code>.git</code> is kept in sync instead, since changes come from your local folder. You can choose either way
           for any mode; the dialog warns about risky combinations.
         </p>
       </Section>
@@ -87,7 +87,7 @@ export function SyncGuide({ opened, onClose }: { opened: boolean; onClose: () =>
       <Section icon={<IconGitMerge size={16} />} title="Conflicts">
         <p>
           A file changed on both sides since the last sync is never overwritten. It is listed in the project's sync panel, where
-          you keep the Mac's version or the machine's. Everything else keeps syncing meanwhile.
+          you keep the local version or the machine's. Everything else keeps syncing meanwhile.
         </p>
       </Section>
     </Modal>

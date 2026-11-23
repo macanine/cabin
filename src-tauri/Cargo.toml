@@ -13,6 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+cabin-diagnostics = { path = "../diagnostics" }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -28,6 +29,9 @@ cabin-ip-detection = { path = "../ip-detection" }
 ureq = "2"
 dirs = "7"
 libc = "0.2"
+
+[target.'cfg(not(unix))'.dependencies]
+tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"

@@ -516,7 +516,7 @@ impl Host {
             "username": username,
         });
         if let Err(error) = vm_core::util::atomic_write_json(&self.install_result_path(), &report, 0o600) {
-            eprintln!("cabin: could not record the install outcome: {error}");
+            cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "install", "outcome_write_failed", format_args!("{error}"));
         }
     }
 
@@ -535,6 +535,11 @@ impl Host {
         let machine = self.status.read_lock().clone();
         let start = self.startup.locked().as_ref().map(|(_, report)| report.clone());
         let mut history = diagnostic_history(home);
+        let guest_events = self.call_guest_with_timeout(
+            "diagnostic_events",
+            serde_json::json!({}),
+            Some(std::time::Duration::from_secs(1)),
+        ).ok().filter(serde_json::Value::is_array);
         let install = vm_core::util::read_json(&self.install_result_path()).unwrap_or_default();
         let mut recorded_events = history["lastInstall"].take();
         if let Some(started_at) = install["startedAt"].as_i64()
@@ -572,6 +577,7 @@ impl Host {
             },
             "lastStart": start.as_ref().map(|report| serde_json::json!(report)).unwrap_or_else(|| history["lastStart"].take()),
             "logTails": history["logTails"].take(),
+            "events": { "host": history["events"].take(), "guest": guest_events },
         });
 
         let profile = std::env::home_dir();
@@ -614,7 +620,8 @@ mod tests {
         host.set_sink(move |event| {
             let _ = events.send(event);
         });
-        host.run_connection_loop();
+        host.run_connection_loop().unwrap();
+        host.run_connection_loop().unwrap();
         let first = loop {
             let event = wait.recv_timeout(Duration::from_secs(3)).unwrap();
             if let AppEvent::Machine { status } = event

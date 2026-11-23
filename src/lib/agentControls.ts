@@ -143,8 +143,3 @@ export function queueMessage(queue: QueuedMessage[], text: string): QueuedMessag
   queued += 1;
   return [...queue, { id: `queued-${Date.now()}-${queued}`, text: trimmed }];
 }
-
-/** The first queued message and the rest, once the agent is idle again. */
-export function takeQueued(queue: QueuedMessage[]): [QueuedMessage | null, QueuedMessage[]] {
-  return queue.length ? [queue[0], queue.slice(1)] : [null, queue];
-}

@@ -1,6 +1,6 @@
 import { Button, Modal } from "@mantine/core";
 import {
-  IconBrandApple, IconHelpCircle, IconPlayerPause, IconPlayerPlay, IconServer, IconUnlink,
+  IconFolder, IconHelpCircle, IconPlayerPause, IconPlayerPlay, IconServer, IconUnlink,
 } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import type { SyncMode, SyncRules, SyncView } from "../../services/ipc/generated/core";
@@ -38,7 +38,7 @@ export function SyncPanel({ view, opened, onClose }: { view: SyncView; opened: b
       <Modal opened={opened} onClose={onClose} title={`Sync · ${project.name}`} size="xl" centered classNames={{ body: "sp" }}>
         <section className={`sp-status ${line.tone}`}>
           <div className="sp-ends">
-            <span className="sp-end" title={project.hostPath}><IconBrandApple size={14} /><span className="truncate">{project.hostPath}</span></span>
+            <span className="sp-end" title={project.hostPath}><IconFolder size={14} /><span className="truncate">{project.hostPath}</span></span>
             <SyncFlow mode={project.mode} compact />
             <span className="sp-end" title={project.guestPath}><IconServer size={14} /><span className="truncate">{project.guestPath}</span></span>
           </div>
@@ -63,7 +63,7 @@ export function SyncPanel({ view, opened, onClose }: { view: SyncView; opened: b
                 <li key={path}>
                   <span className="mono truncate" title={path}>{path}</span>
                   <Button size="compact-xs" variant="default" loading={busy === `mac:${path}`}
-                    onClick={() => void run(`mac:${path}`, () => syncIpc.resolve(project.id, path, "mac"))}>Keep Mac</Button>
+                    onClick={() => void run(`mac:${path}`, () => syncIpc.resolve(project.id, path, "mac"))}>Keep local</Button>
                   <Button size="compact-xs" variant="default" loading={busy === `vm:${path}`}
                     onClick={() => void run(`vm:${path}`, () => syncIpc.resolve(project.id, path, "machine"))}>Keep machine</Button>
                 </li>
@@ -91,7 +91,7 @@ export function SyncPanel({ view, opened, onClose }: { view: SyncView; opened: b
 
         <footer className="np-footer">
           <Button variant="subtle" color="red" leftSection={<IconUnlink size={14} />} onClick={async () => {
-            if (!await confirmAction(`Stop syncing “${project.name}”? Files stay on your Mac and in the machine; they just stop being kept in step.`, "Stop syncing")) return;
+            if (!await confirmAction(`Stop syncing “${project.name}”? The local and machine copies will both be kept.`, "Stop syncing")) return;
             await run("remove", () => syncIpc.remove(project.id), "Sync stopped");
             onClose();
           }}>Stop syncing</Button>

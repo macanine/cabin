@@ -44,6 +44,7 @@ jobs:
         if: matrix.arch == 'x86_64'
         run: |
           cargo test --manifest-path core/Cargo.toml
+          cargo test --locked --manifest-path diagnostics/Cargo.toml
           cargo test --manifest-path usage/Cargo.toml
           cargo test --manifest-path ip-detection/Cargo.toml
       - name: Build cabind
@@ -125,6 +126,46 @@ jobs:
         env:
           CABIN_PREBUILT_CABIND: "1"
         run: npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: Install Cabin and exercise packaged QEMU on Windows
+        if: matrix.name == 'windows-x64'
+        shell: pwsh
+        timeout-minutes: 12
+        env:
+          CABIN_INSTALLER_GLOB: ${{ matrix.artifact_path }}
+        run: |
+          $installers = @(Get-ChildItem -Path $env:CABIN_INSTALLER_GLOB -File)
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer; got $($installers.Count)" }
+          $installDir = Join-Path $env:RUNNER_TEMP "cabin-smoke-$([guid]::NewGuid().ToString('N'))"
+          # NSIS requires /D to be the last argument, with no quotes even for a path with spaces.
+          $setup = Start-Process -FilePath $installers[0].FullName -ArgumentList "/S /D=$installDir" -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Cabin NSIS installer exited with $($setup.ExitCode)" }
+          if (!(Test-Path -LiteralPath (Join-Path $installDir 'cabin-desktop.exe') -PathType Leaf)) {
+            throw 'Cabin executable missing after installation'
+          }
+          $env:CABIN_VENDOR_DIR = Join-Path $installDir 'vendor'
+          $resources = @{
+            'cabind' = 'core/target/x86_64-unknown-linux-musl/release/cabind'
+            'vendor/manifest.json' = 'build/vendor/windows-x64/manifest.json'
+            'vendor/openssh/ssh.exe' = 'build/vendor/windows-x64/openssh/ssh.exe'
+            'vendor/openssh/ssh-keygen.exe' = 'build/vendor/windows-x64/openssh/ssh-keygen.exe'
+            'vendor/openssh/libcrypto.dll' = 'build/vendor/windows-x64/openssh/libcrypto.dll'
+          }
+          $repo = (Get-Location).Path
+          foreach ($dir in @('vm/config', 'vm/assets')) {
+            foreach ($file in (Get-ChildItem -LiteralPath $dir -Recurse -File)) {
+              $relative = [System.IO.Path]::GetRelativePath($repo, $file.FullName)
+              $resources[$relative] = $file.FullName
+            }
+          }
+          foreach ($resource in $resources.GetEnumerator()) {
+            $installedFile = Join-Path $installDir $resource.Key
+            if (!(Test-Path -LiteralPath $installedFile -PathType Leaf)) { throw "Missing installed file: $installedFile" }
+            if ((Get-FileHash -LiteralPath $installedFile).Hash -ne (Get-FileHash -LiteralPath $resource.Value).Hash) {
+              throw "Installed file differs from packaging input: $installedFile"
+            }
+          }
+          cargo test --locked --manifest-path vm/Cargo.toml --test windows_qemu_live -- --ignored --nocapture
 
       - uses: actions/upload-artifact@v4
         with:

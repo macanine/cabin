@@ -177,10 +177,12 @@ impl SyncManager {
 
     fn edit_project(&self, id: &str, change: impl FnOnce(&mut SyncProject)) -> Result<SyncProject, String> {
         let mut projects = self.projects.locked();
-        let project = projects.iter_mut().find(|p| p.id == id).ok_or("This synced project no longer exists")?;
+        let mut next = projects.clone();
+        let project = next.iter_mut().find(|p| p.id == id).ok_or("This synced project no longer exists")?;
         change(project);
         let updated = project.clone();
-        self.save_projects(&projects)?;
+        self.save_projects(&next)?;
+        *projects = next;
         Ok(updated)
     }
 
@@ -267,8 +269,10 @@ impl SyncManager {
                 git_copied: false,
                 created_at: now_millis(),
             };
-            projects.push(project.clone());
-            self.save_projects(&projects)?;
+            let mut next = projects.clone();
+            next.push(project.clone());
+            self.save_projects(&next)?;
+            *projects = next;
             project
         };
         self.set_status(&project.id, |s| *s = offline(&project.id));
@@ -309,12 +313,14 @@ impl SyncManager {
 
     /// Stop syncing; files stay where they are on both sides.
     pub fn remove(&self, id: &str) -> Result<(), String> {
-        self.stop(id);
         {
             let mut projects = self.projects.locked();
-            projects.retain(|p| p.id != id);
-            self.save_projects(&projects)?;
+            let mut next = projects.clone();
+            next.retain(|p| p.id != id);
+            self.save_projects(&next)?;
+            *projects = next;
         }
+        self.stop(id);
         self.statuses.locked().remove(id);
         let _ = std::fs::remove_dir_all(self.dir.join(id));
         Ok(())
@@ -588,12 +594,14 @@ impl SyncManager {
         let host = PathBuf::from(&project.host_path);
         check_folder(&host, project.mode == SyncMode::TwoWay).require(&host).map_err(err)?;
         let scope_ref = scope.as_deref();
-        let trace = std::env::var_os("CABIN_SYNC_TRACE").is_some();
         macro_rules! mark {
             ($label:expr, $started:expr) => {
-                if trace {
-                    eprintln!("[sync] {}: {:?}", $label, $started.elapsed());
-                }
+                cabin_diagnostics::event(
+                    cabin_diagnostics::Level::Debug,
+                    "sync",
+                    $label,
+                    format_args!("{} ms", $started.elapsed().as_millis()),
+                );
             };
         }
         self.set_status(&project.id, |s| {
@@ -614,10 +622,10 @@ impl SyncManager {
         let (mac, vm, base_in, base_out, files) = if project.mode == SyncMode::Safe {
             let started = Instant::now();
             let mac = to_map(agent_core::sync::scan(&host, &project.rules, scope_ref).map_err(err)?);
-            mark!("mac scan", started);
+            mark!("mac_scan", started);
             let started = Instant::now();
             let base_all = self.load_base(&project.id)?;
-            mark!("base load", started);
+            mark!("base_load", started);
             let files = base_all.len() as u64;
             let (base_in, base_out): (Base, Base) = base_all
                 .into_iter()
@@ -635,27 +643,24 @@ impl SyncManager {
             }
             let started = Instant::now();
             let vm = to_map(remote_scan(&guest, &project.guest_path, &project.rules, scope_ref)?);
-            mark!("guest scan", started);
+            mark!("guest_scan", started);
             (mac, vm, base_in, base_out, files)
         } else {
             // Mirror and Two-way need both sides on every cycle. The Mac walk
             // and the guest walk are independent; run them together.
             let started = Instant::now();
             let (mac_entries, vm_entries) = std::thread::scope(|scope| {
-                let mac = scope.spawn(|| {
-                    agent_core::sync::scan(&host, &project.rules, scope_ref).map_err(err)
-                });
-                let vm = scope.spawn(|| {
-                    remote_scan(&guest, &project.guest_path, &project.rules, scope_ref)
-                });
-                let mac = mac.join().map_err(|_| "Mac scan stopped".to_string())??;
-                let vm = vm.join().map_err(|_| "Guest scan stopped".to_string())??;
-                Ok::<_, String>((mac, vm))
+                let vm = std::thread::Builder::new().name("sync-guest-scan".into())
+                    .spawn_scoped(scope, || remote_scan(&guest, &project.guest_path, &project.rules, scope_ref))
+                    .map_err(|error| format!("Could not start the guest scan: {error}"))?;
+                let mac = agent_core::sync::scan(&host, &project.rules, scope_ref).map_err(err);
+                let vm = vm.join().map_err(|_| "Guest scan stopped".to_string())?;
+                Ok::<_, String>((mac?, vm?))
             })?;
-            mark!("parallel scans", started);
+            mark!("parallel_scans", started);
             let started = Instant::now();
             let base_all = self.load_base(&project.id)?;
-            mark!("base load", started);
+            mark!("base_load", started);
             let files = base_all.len() as u64;
             let (base_in, base_out): (Base, Base) = base_all
                 .into_iter()
@@ -715,7 +720,7 @@ impl SyncManager {
         let mut next = plan::next_base(&base_in, &mac, &vm, &applied);
         next.extend(base_out);
         self.save_base(&project.id, &next)?;
-        mark!("base write", started);
+        mark!("base_write", started);
 
         let pushed = (push.len() + delete_vm.len()) as u64;
         let pulled = (pull.len() + delete_mac.len()) as u64;
@@ -753,105 +758,124 @@ fn remote(ssh: &[String], command: &str, root: &str) -> Command {
     argv.push(format!("\"$HOME/{}\" sync {command} {}", vm_core::agentd::REMOTE_BIN, shell_quote(root)));
     let mut process = Command::new(&argv[0]);
     process.args(&argv[1..]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    vm_core::util::no_window(&mut process);
     process
 }
 
-fn finish(mut child: Child, what: &str) -> Result<Vec<u8>, String> {
-    let mut stdout = Vec::new();
-    if let Some(mut out) = child.stdout.take() {
-        out.read_to_end(&mut stdout).map_err(err)?;
+fn with_remote<T>(
+    mut command: Command,
+    what: &str,
+    transfer: impl FnOnce(&mut Child) -> Result<T, String>,
+) -> Result<(T, Vec<u8>), String> {
+    let mut child = command.spawn().map_err(err)?;
+    let errors = child.stderr.take().ok_or_else(|| std::io::Error::other("SSH has no stderr pipe"))
+        .and_then(|stderr| {
+            std::thread::Builder::new().name("sync-stderr".into())
+                .spawn(move || read_remote_errors(stderr))
+        });
+    let errors = match errors {
+        Ok(errors) => errors,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("Could not read {what} diagnostics: {error}"));
+        }
+    };
+    let result = transfer(&mut child);
+    let output = child.wait_with_output();
+    let (stderr, truncated) = errors.join().map_err(|_| format!("Reading {what} diagnostics stopped"))?.map_err(err)?;
+    let output = output.map_err(err)?;
+    if !output.status.success() {
+        return Err(remote_error(what, output.status, &stderr, truncated));
     }
-    let mut stderr = String::new();
-    if let Some(mut errors) = child.stderr.take() {
-        let _ = errors.read_to_string(&mut stderr);
+    Ok((result?, output.stdout))
+}
+
+fn read_remote_errors(mut stderr: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
+    const LIMIT: usize = 64 * 1024;
+    let mut captured = Vec::new();
+    let mut truncated = false;
+    let mut buf = [0; 8192];
+    loop {
+        match stderr.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let keep = n.min(LIMIT - captured.len());
+                captured.extend_from_slice(&buf[..keep]);
+                truncated |= keep < n;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
     }
-    let status = child.wait().map_err(err)?;
-    if !status.success() {
-        return Err(format!("{what} failed in the machine: {}", stderr.trim()));
+    Ok((captured, truncated))
+}
+
+fn remote_error(what: &str, status: std::process::ExitStatus, stderr: &[u8], truncated: bool) -> String {
+    let message = String::from_utf8_lossy(stderr);
+    let message = message.trim();
+    let suffix = if truncated { " [truncated]" } else { "" };
+    if message.is_empty() {
+        format!("{what} failed in the machine: {status}{suffix}")
+    } else {
+        format!("{what} failed in the machine: {message}{suffix}")
     }
-    Ok(stdout)
 }
 
 fn remote_scan(ssh: &[String], root: &str, rules: &SyncRules, scope: Option<&[String]>) -> Result<Vec<Entry>, String> {
     let request = ScanRequest { rules: rules.clone(), scope: scope.map(|s| s.to_vec()) };
     let request = serde_json::to_string(&request).map_err(err)?;
-    let mut child = remote(ssh, "scan", root).spawn().map_err(err)?;
-    // All three pipes must make progress independently, including when the
-    // peer exits early or writes diagnostics before reading the request.
-    let mut stdin = child.stdin.take().expect("scan stdin is piped");
-    let mut stderr = child.stderr.take().expect("scan stderr is piped");
-    let stdout = child.stdout.take().expect("scan stdout is piped");
-    let sender = std::thread::spawn(move || writeln!(stdin, "{request}"));
-    let errors = std::thread::spawn(move || -> std::io::Result<(Vec<u8>, bool)> {
-        const LIMIT: usize = 64 * 1024;
-        let mut captured = Vec::new();
-        let mut truncated = false;
-        let mut buf = [0; 8192];
-        loop {
-            match stderr.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let keep = n.min(LIMIT - captured.len());
-                    captured.extend_from_slice(&buf[..keep]);
-                    truncated |= keep < n;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error),
-            }
+    let (listing, _) = with_remote(remote(ssh, "scan", root), "Scanning", |child| {
+        // The peer can write output before consuming a large request.
+        let mut stdin = child.stdin.take().ok_or("SSH has no stdin pipe")?;
+        let stdout = child.stdout.take().ok_or("SSH has no stdout pipe")?;
+        let sender = std::thread::Builder::new().name("sync-scan-request".into())
+            .spawn(move || writeln!(stdin, "{request}"))
+            .map_err(|e| format!("Could not start sending the scan request: {e}"))?;
+        let mut stdout = BufReader::with_capacity(64 * 1024, stdout);
+        let listing = scan::read_binary(&mut stdout);
+        if listing.is_err() {
+            // Drain malformed output so the remote command can report its exit status.
+            let _ = std::io::copy(&mut stdout, &mut std::io::sink());
         }
-        Ok((captured, truncated))
-    });
-    let mut stdout = BufReader::with_capacity(64 * 1024, stdout);
-    let listing = scan::read_binary(&mut stdout);
-    if listing.is_err() {
-        // Keep draining after a malformed listing so the child can finish and
-        // report its actual exit status, without retaining the remaining data.
-        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
-    }
-    drop(stdout);
-    let status = child.wait();
-    let sent = sender.join().map_err(|_| "Sending scan request stopped".to_string())?;
-    let (stderr, truncated) = errors.join().map_err(|_| "Reading scan errors stopped".to_string())?.map_err(err)?;
-    let status = status.map_err(err)?;
-    if !status.success() {
-        let message = String::from_utf8_lossy(&stderr);
-        let message = message.trim();
-        let suffix = if truncated { " [truncated]" } else { "" };
-        return Err(if message.is_empty() {
-            format!("Scanning failed in the machine: {status}{suffix}")
-        } else {
-            format!("Scanning failed in the machine: {message}{suffix}")
-        });
-    }
-    sent.map_err(|e| format!("Could not send scan request: {e}"))?;
-    listing.map_err(|e| format!("The machine's file list was unreadable: {e}"))
+        drop(stdout);
+        sender.join().map_err(|_| "Sending scan request stopped".to_string())?
+            .map_err(|e| format!("Could not send scan request: {e}"))?;
+        listing.map_err(|e| format!("The machine's file list was unreadable: {e}"))
+    })?;
+    Ok(listing)
 }
 
 /// Delete `delete` in the machine, then write `push` from the Mac there.
 fn remote_apply(ssh: &[String], root: &str, host: &Path, delete: &[String], push: &[String]) -> Result<ApplyReport, String> {
-    let mut child = remote(ssh, "apply", root).spawn().map_err(err)?;
-    let sent = (|| -> std::io::Result<()> {
-        let mut stdin = child.stdin.take().ok_or_else(|| std::io::Error::other("no stdin"))?;
-        let header = ApplyHeader { delete: delete.to_vec() };
-        writeln!(stdin, "{}", serde_json::to_string(&header)?)?;
-        archive::pack(host, push, std::io::BufWriter::with_capacity(1 << 20, &mut stdin))?;
-        Ok(())
-    })();
-    let out = finish(child, "Writing files")?;
-    sent.map_err(|e| format!("Could not send files: {e}"))?;
+    let (_, out) = with_remote(remote(ssh, "apply", root), "Writing files", |child| {
+        let mut send = || -> std::io::Result<()> {
+            let stdin = child.stdin.take().ok_or_else(|| std::io::Error::other("SSH has no stdin pipe"))?;
+            let mut out = std::io::BufWriter::with_capacity(1 << 20, stdin);
+            let header = ApplyHeader { delete: delete.to_vec() };
+            writeln!(out, "{}", serde_json::to_string(&header)?)?;
+            archive::pack(host, push, &mut out)?;
+            out.flush()
+        };
+        send().map_err(|e| format!("Could not send files: {e}"))
+    })?;
     serde_json::from_slice(&out).map_err(|e| format!("The machine's reply was unreadable: {e}"))
 }
 
 /// Read `paths` from the machine and apply them (and `delete`) on the Mac.
 fn pull_into(ssh: &[String], root: &str, host: &Path, delete: &[String], paths: &[String]) -> Result<ApplyReport, String> {
-    let mut child = remote(ssh, "pack", root).spawn().map_err(err)?;
-    if let Some(mut stdin) = child.stdin.take() {
-        writeln!(stdin, "{}", serde_json::to_string(&PackRequest { paths: paths.to_vec() }).map_err(err)?).map_err(err)?;
-    }
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let report = archive::apply(host, delete, BufReader::with_capacity(1 << 20, stdout)).map_err(err);
-    finish(child, "Reading files")?;
-    report
+    let request = serde_json::to_string(&PackRequest { paths: paths.to_vec() }).map_err(err)?;
+    let (report, _) = with_remote(remote(ssh, "pack", root), "Reading files", |child| {
+        let mut stdin = child.stdin.take().ok_or("SSH has no stdin pipe")?;
+        writeln!(stdin, "{request}").map_err(err)?;
+        drop(stdin);
+        let stdout = child.stdout.take().ok_or("SSH has no stdout pipe")?;
+        let mut input = BufReader::with_capacity(1 << 20, stdout);
+        let report = archive::apply(host, delete, &mut input);
+        std::io::copy(&mut input, &mut std::io::sink()).map_err(err)?;
+        report.map_err(err)
+    })?;
+    Ok(report)
 }
 
 fn pull(ssh: &[String], root: &str, host: &Path, delete: &[String], paths: &[String]) -> Result<(), String> {
@@ -937,6 +961,27 @@ mod tests {
     }
 
     #[test]
+    fn remote_upload_drains_diagnostics_before_sending_archive() {
+        let host = tempfile::tempdir().unwrap();
+        std::fs::write(host.path().join("large.txt"), vec![b'x'; 512 * 1024]).unwrap();
+        let script = r#"dd if=/dev/zero bs=1024 count=256 >&2 2>/dev/null; cat >/dev/null; printf '%s' '{"written":1,"deleted":0,"failed":[]}'"#;
+        let ssh = vec!["sh".into(), "-c".into(), script.into()];
+        let report = remote_apply(&ssh, "/unused", host.path(), &[], &["large.txt".into()]).unwrap();
+        assert_eq!(report.written, 1);
+    }
+
+    #[test]
+    fn remote_download_keeps_the_exit_error_after_large_diagnostics() {
+        let host = tempfile::tempdir().unwrap();
+        let script = "IFS= read -r request; printf 'pack failed: \\377' >&2; dd if=/dev/zero bs=1024 count=256 >&2 2>/dev/null; exit 7";
+        let ssh = vec!["sh".into(), "-c".into(), script.into()];
+        let error = pull_into(&ssh, "/unused", host.path(), &[], &["file.txt".into()]).unwrap_err();
+        assert!(error.contains("Reading files failed in the machine: pack failed: �"));
+        assert!(error.ends_with("[truncated]"));
+        assert!(error.len() < 70 * 1024);
+    }
+
+    #[test]
     fn remote_scan_rejects_bad_streams_and_checks_exit_status() {
         let rules = SyncRules::default();
         let bad = "IFS= read -r request; printf 'bad data'; dd if=/dev/zero bs=1024 count=128 2>/dev/null";
@@ -982,6 +1027,41 @@ mod tests {
         assert_eq!((paused.project.mode, paused.status.state), (SyncMode::TwoWay, SyncState::Paused));
         again.remove(&view.project.id).unwrap();
         assert!(SyncManager::open(home.path().join("sync")).list().is_empty());
+    }
+
+    #[test]
+    fn failed_project_save_preserves_live_and_saved_state() {
+        let home = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let dir = home.path().join("sync");
+        let manager = SyncManager::open(dir.clone());
+        let input = |host: &Path, name: &str| SyncProjectInput {
+            workspace_id: None,
+            name: name.into(),
+            host_path: host.display().to_string(),
+            guest_path: format!("~/projects/{name}"),
+            mode: SyncMode::Safe,
+            rules: SyncRules::default(),
+        };
+        let id = manager.create(input(first.path(), "first")).unwrap().project.id;
+        let base = manager.base_path(&id);
+        std::fs::create_dir_all(base.parent().unwrap()).unwrap();
+        std::fs::write(&base, b"existing sync history").unwrap();
+        std::fs::create_dir(dir.join("projects.tmp")).unwrap();
+
+        assert!(manager.create(input(second.path(), "second")).is_err());
+        assert!(manager.update(&id, Some(SyncMode::TwoWay), None, Some(true)).is_err());
+        assert!(manager.remove(&id).is_err());
+
+        for list in [manager.list(), SyncManager::open(dir).list()] {
+            let [view] = list.as_slice() else { panic!("expected the original project") };
+            assert_eq!(view.project.id, id);
+            assert_eq!(view.project.mode, SyncMode::Safe);
+            assert!(!view.project.paused);
+            assert_eq!(view.status.state, SyncState::Offline);
+        }
+        assert_eq!(std::fs::read(base).unwrap(), b"existing sync history");
     }
 
     #[test]

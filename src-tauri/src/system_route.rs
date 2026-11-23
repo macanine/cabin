@@ -24,6 +24,7 @@ pub(crate) struct SystemRoute {
 }
 
 /// `gateway:` and `interface:` from `route -n get <destination>`.
+#[cfg(any(target_os = "macos", test))]
 fn parse_route_get(output: &str) -> (Option<String>, Option<std::net::Ipv4Addr>) {
     let field = |name: &str| {
         output.lines().find_map(|line| {
@@ -34,12 +35,14 @@ fn parse_route_get(output: &str) -> (Option<String>, Option<std::net::Ipv4Addr>)
     (field("interface"), field("gateway").and_then(|value| value.parse().ok()))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn is_tunnel_name(name: &str) -> bool {
     ["utun", "ipsec", "ppp", "tun", "tap", "wg", "gif"]
         .iter()
         .any(|prefix| name.starts_with(prefix))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn classify(internet: &str, default: &str) -> SystemRoute {
     let (internet_interface, gateway) = parse_route_get(internet);
     let (default_interface, _) = parse_route_get(default);

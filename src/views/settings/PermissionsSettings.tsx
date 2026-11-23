@@ -15,11 +15,11 @@ export function PermissionsSettings() {
   const ordered = projects?.slice().sort((a, b) => Number(a.access.state === "available") - Number(b.access.state === "available"));
 
   return (
-    <SettingsPage title="Mac permissions" subtitle="Access to the Mac folders you use for project sync.">
+    <SettingsPage title="Folder permissions" subtitle="Access to the local folders you use for project sync.">
       <Section title="Project folders">
         {error && <p className="m-0 text-sm text-bad" role="alert">{error}</p>}
         {!projects && checking && <p className="m-0 text-sm text-muted" role="status">Checking access…</p>}
-        {projects?.length === 0 && <p className="m-0 text-sm text-muted">No Mac folders are configured. A project that lives only in the machine needs no Mac folder access.</p>}
+        {projects?.length === 0 && <p className="m-0 text-sm text-muted">No local folders are configured for project sync.</p>}
         {ordered?.map(({ id, name, path, needsWrite, access }) => (
           <div key={id} className="grid gap-2 border-b border-line/60 py-3 first:pt-0 last:border-b-0 last:pb-0">
             <div className="flex flex-wrap items-center justify-between gap-2">

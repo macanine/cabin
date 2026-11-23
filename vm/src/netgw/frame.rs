@@ -316,6 +316,9 @@ pub(super) fn read_frame_until(stream: &mut impl Read, buffer: &mut Vec<u8>, sto
 fn fill(stream: &mut impl Read, buffer: &mut [u8], stop: &AtomicBool) -> std::io::Result<()> {
     let mut filled = 0;
     while filled < buffer.len() {
+        if stop.load(Ordering::Relaxed) {
+            return Err(std::io::ErrorKind::Interrupted.into());
+        }
         match stream.read(&mut buffer[filled..]) {
             Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
             Ok(read) => filled += read,
@@ -323,12 +326,7 @@ fn fill(stream: &mut impl Read, buffer: &mut [u8], stop: &AtomicBool) -> std::io
                 if matches!(
                     error.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted
-                ) =>
-            {
-                if stop.load(Ordering::Relaxed) {
-                    return Err(std::io::ErrorKind::Interrupted.into());
-                }
-            }
+                ) => {}
             Err(error) => return Err(error),
         }
     }

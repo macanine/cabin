@@ -232,13 +232,13 @@ fn account_import_export_and_limits_over_guest_ssh() {
         .find(|a| a["kind"] == "claude")
         .unwrap();
     assert_eq!(claude["authenticated"], true);
-    assert!(
-        claude["authDetail"]
-            .as_str()
-            .unwrap()
-            .contains("claude@example.test")
-    );
-    let usage = rpc.call("claude_usage", json!({}));
+    let login = &claude["claudeLogin"];
+    assert_eq!(login["state"], "active");
+    let account = &login["account"];
+    assert_eq!(account["email"], "claude@example.test");
+    assert_eq!(account["verified"], true);
+    let account_id = account["id"].as_str().expect("identified Claude subscription seat");
+    let usage = rpc.call("claude_usage", json!({ "accountId": account_id }));
     assert_eq!(usage["windows"][0]["usedPercent"], 37.5);
     assert_eq!(usage["windows"][0]["resetsAt"], 1_900_000_000_000i64);
     assert_eq!(usage["windows"][1]["usedPercent"], 18.0);

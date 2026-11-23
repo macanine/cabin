@@ -35,6 +35,37 @@ fn a_taken_ssh_port_moves_the_relay_to_a_free_one() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn gateway_stops_with_a_partial_frame_and_can_restart() {
+    let dir = crate::sockets::test_dir();
+    let socket = dir.join("net.sock");
+    let ssh = (Ipv4Addr::LOCALHOST, 0).into();
+    let gateway = Gateway::start_closed(&socket, Vec::new(), None, ssh).unwrap();
+    let mut guest = UnixStream::connect(&socket).unwrap();
+    // Announce a frame but leave its payload incomplete and the connection open.
+    guest.write_all(&[0, 0, 0, 64, 0]).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !gateway.connected() {
+        assert!(Instant::now() < deadline, "gateway did not accept the guest");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let (stopped, done) = std::sync::mpsc::channel();
+    let shutdown = std::thread::spawn(move || {
+        drop(gateway);
+        stopped.send(()).unwrap();
+    });
+    done.recv_timeout(Duration::from_secs(5))
+        .expect("gateway did not stop while the guest was still connected");
+    shutdown.join().unwrap();
+    assert!(!socket.exists());
+    drop(guest);
+
+    let restarted = Gateway::start_closed(&socket, Vec::new(), None, ssh).unwrap();
+    drop(restarted);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn accept_proxy(listener: &TcpListener) -> TcpStream {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut stream = loop {

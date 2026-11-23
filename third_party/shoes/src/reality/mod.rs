@@ -5,6 +5,7 @@
 mod common;
 mod reality_aead;
 mod reality_auth;
+#[cfg(test)]
 mod reality_certificate;
 mod reality_cipher_suite;
 mod reality_client_connection;
@@ -12,8 +13,8 @@ mod reality_client_verify;
 mod reality_io_state;
 mod reality_reader_writer;
 mod reality_records;
+#[cfg(test)]
 mod reality_server_connection;
-mod reality_server_handler;
 mod reality_tls13_keys;
 mod reality_tls13_messages;
 mod reality_util;
@@ -28,7 +29,7 @@ pub use reality_client_connection::{
     RealityClientConfig, RealityClientConnection, feed_reality_client_connection,
 };
 pub use reality_reader_writer::{RealityReader, RealityWriter};
+#[cfg(test)]
 pub use reality_server_connection::{
     RealityServerConfig, RealityServerConnection, feed_reality_server_connection,
 };
-pub use reality_server_handler::{RealityServerTarget, setup_reality_server_stream};

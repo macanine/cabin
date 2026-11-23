@@ -29,12 +29,15 @@ mod h2mux_client_session;
 mod h2mux_client_stream;
 mod h2mux_padding;
 pub mod h2mux_protocol;
+#[cfg(test)]
 mod h2mux_server_session;
+#[cfg(test)]
 mod h2mux_server_stream;
 mod h2mux_stream;
 
 // Re-exports for external use
 pub use h2mux_client_handler::H2MuxClientHandler;
+#[cfg(test)]
 pub use h2mux_server_session::handle_h2mux_session;
 
 // Reserved for future use (e.g., session pooling, direct stream access)
@@ -42,6 +45,7 @@ pub use h2mux_server_session::handle_h2mux_session;
 pub use h2mux_client_session::H2MuxClientSession;
 #[allow(unused_imports)]
 pub use h2mux_padding::H2MuxPaddingStream;
+#[cfg(test)]
 #[allow(unused_imports)]
 pub use h2mux_server_session::{H2MuxServerSession, InboundStream};
 #[allow(unused_imports)]

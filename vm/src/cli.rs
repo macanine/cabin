@@ -120,6 +120,7 @@ fn bool_flags() -> BTreeSet<&'static str> {
         "last",
         "force",
         "serial",
+        "events",
         "list",
         "follow",
         "yes",
@@ -788,9 +789,22 @@ pub fn cmd_ssh(args: &Args) -> Result<i32> {
 }
 
 pub fn cmd_logs(args: &Args) -> Result<i32> {
-    let cfg = cfg_for_existing(args)?;
-    let runner = Runner::new(cfg.clone())?.with_agentd(crate::agentd::default_binary());
-    let files = runner.logs(args.value("step"), args.has("serial"));
+    let files = if args.has("events") {
+        let home = resolve_home(args.value("home"));
+        let path = crate::paths::StatePaths::new(home).logs().join(cabin_diagnostics::EVENT_FILE);
+        if !args.has("list") && !args.has("follow") {
+            let records = cabin_diagnostics::recent_records(&path, 128 * 1024);
+            for record in &records[records.len().saturating_sub(200)..] {
+                println!("{record}");
+            }
+            return Ok(if records.is_empty() { 1 } else { 0 });
+        }
+        vec![path]
+    } else {
+        let cfg = cfg_for_existing(args)?;
+        let runner = Runner::new(cfg)?.with_agentd(crate::agentd::default_binary());
+        runner.logs(args.value("step"), args.has("serial"))
+    };
     if files.is_empty() {
         println!("no logs found");
         return Ok(1);
@@ -804,7 +818,7 @@ pub fn cmd_logs(args: &Args) -> Result<i32> {
     let target = &files[0];
     if args.has("follow") {
         let status = std::process::Command::new("tail")
-            .args(["-n", "200", "-f"])
+            .args(["-n", "200", if args.has("events") { "-F" } else { "-f" }])
             .arg(target)
             .status()?;
         return Ok(status.code().unwrap_or(0));
@@ -1314,29 +1328,32 @@ pub fn print_report(report: &Value, group: Option<&str>) {
 }
 
 pub fn run(argv: &[String]) -> Result<i32> {
-    let args = parse_args(argv)?;
+    run_parsed(&parse_args(argv)?)
+}
+
+fn run_parsed(args: &Args) -> Result<i32> {
     if args.has("help") || args.command == "help" {
         print_help();
         return Ok(0);
     }
     match args.command.as_str() {
-        "plan" => cmd_plan(&args),
-        "apply" => cmd_apply(&args),
-        "status" => cmd_status(&args),
-        "rollback" => cmd_rollback(&args),
-        "start" => cmd_start(&args),
-        "stop" => cmd_stop(&args),
-        "console" => cmd_console(&args),
-        "ssh" => cmd_ssh(&args),
-        "logs" => cmd_logs(&args),
-        "credentials" => cmd_credentials(&args),
-        "reconfigure" => cmd_reconfigure(&args),
-        "destroy" => cmd_destroy(&args),
-        "show-config" => cmd_show_config(&args),
-        "doctor" => cmd_doctor(&args),
-        "proxy" => cmd_proxy(&args),
-        "bridge-setup" => cmd_bridge_setup(&args),
-        "device" => cmd_device(&args),
+        "plan" => cmd_plan(args),
+        "apply" => cmd_apply(args),
+        "status" => cmd_status(args),
+        "rollback" => cmd_rollback(args),
+        "start" => cmd_start(args),
+        "stop" => cmd_stop(args),
+        "console" => cmd_console(args),
+        "ssh" => cmd_ssh(args),
+        "logs" => cmd_logs(args),
+        "credentials" => cmd_credentials(args),
+        "reconfigure" => cmd_reconfigure(args),
+        "destroy" => cmd_destroy(args),
+        "show-config" => cmd_show_config(args),
+        "doctor" => cmd_doctor(args),
+        "proxy" => cmd_proxy(args),
+        "bridge-setup" => cmd_bridge_setup(args),
+        "device" => cmd_device(args),
         other => message(format!(
             "unknown command {other:?}; run 'vmctl --help' (commands: plan, apply, status, rollback, start, stop, console, ssh, logs, credentials, reconfigure, destroy, show-config, doctor, proxy, bridge-setup, device)"
         )),
@@ -1358,7 +1375,7 @@ pub fn print_help() {
     println!("  start / stop      control the VM (QMP + SSH)");
     println!("  console           attach to the guest serial console (--start)");
     println!("  ssh [command]     open SSH or run a guest command");
-    println!("  logs              list/tail step or serial logs (--list, --follow)");
+    println!("  logs              list/tail logs (--step ID, --serial, --events, --list, --follow)");
     println!("  credentials       print the generated guest login");
     println!("  reconfigure       rename user / change host, timezone, locale (--yes)");
     println!("  destroy           stop and remove an instance (--yes, --all)");
@@ -1378,9 +1395,17 @@ pub fn print_help() {
 }
 
 pub fn main(argv: &[String]) -> i32 {
-    match run(argv) {
+    let parsed = parse_args(argv);
+    if let Ok(args) = &parsed
+        && !args.has("help") && args.command != "help"
+    {
+        let home = resolve_home(args.value("home"));
+        cabin_diagnostics::init(&crate::paths::StatePaths::new(home).logs(), "vmctl");
+    }
+    match parsed.and_then(|args| run_parsed(&args)) {
         Ok(code) => code,
         Err(error) => {
+            cabin_diagnostics::event(cabin_diagnostics::Level::Error, "vm", "command_failed", format_args!("VM command returned an error"));
             eprintln!("error: {error}");
             1
         }

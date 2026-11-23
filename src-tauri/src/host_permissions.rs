@@ -1,4 +1,4 @@
-//! Effective access to Mac folders selected for project sync.
+//! Effective access to host folders selected for project sync.
 
 use std::io;
 use std::path::Path;
@@ -48,7 +48,11 @@ impl FolderAccess {
         let (state, message) = match error.kind() {
             io::ErrorKind::NotFound => (
                 FolderAccessState::Missing,
-                "The folder could not be found on this Mac.".into(),
+                "The folder could not be found on this computer.".into(),
+            ),
+            io::ErrorKind::NotADirectory => (
+                FolderAccessState::Unavailable,
+                "Choose a folder on this computer.".into(),
             ),
             io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem if write => (
                 FolderAccessState::WriteDenied,
@@ -84,10 +88,16 @@ impl FolderAccess {
     }
 }
 
-/// Effective access without opening the folder: opening would bring up the
-/// macOS consent dialog. POSIX `access` answers from permissions alone, and
-/// Windows has no `access`, so a read is checked through the metadata and a
-/// write through a small probe file inside the folder.
+fn require_directory(path: &Path) -> io::Result<()> {
+    if path.metadata()?.is_dir() {
+        Ok(())
+    } else {
+        Err(io::Error::from(io::ErrorKind::NotADirectory))
+    }
+}
+
+/// POSIX `access` checks permissions before inspecting the folder, which could
+/// bring up the macOS consent dialog.
 #[cfg(unix)]
 mod probe {
     use std::io;
@@ -106,7 +116,8 @@ mod probe {
     }
 
     pub fn read(path: &Path) -> io::Result<()> {
-        access(path, libc::R_OK | libc::X_OK)
+        access(path, libc::R_OK | libc::X_OK)?;
+        super::require_directory(path)
     }
 
     pub fn write(path: &Path) -> io::Result<()> {
@@ -120,19 +131,12 @@ mod probe {
     use std::path::Path;
 
     pub fn read(path: &Path) -> io::Result<()> {
-        if path.to_string_lossy().contains('\0') {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid folder path"));
-        }
-        Ok(())
+        super::require_directory(path)?;
+        std::fs::read_dir(path)?.next().transpose().map(|_| ())
     }
 
     pub fn write(path: &Path) -> io::Result<()> {
-        let probe = path.join(".cabin-access-probe");
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
-            Ok(_) => std::fs::remove_file(&probe),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-            Err(error) => Err(error),
-        }
+        tempfile::tempfile_in(path).map(|_| ())
     }
 }
 
@@ -141,16 +145,6 @@ mod probe {
 pub(crate) fn check_folder(path: &Path, write: bool) -> FolderAccess {
     if let Err(error) = probe::read(path) {
         return FolderAccess::failed(error, false);
-    }
-    match path.metadata() {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => {
-            return FolderAccess::failed(
-                io::Error::new(io::ErrorKind::NotADirectory, "Choose a folder on this Mac."),
-                false,
-            );
-        }
-        Err(error) => return FolderAccess::failed(error, false),
     }
     if write && let Err(error) = probe::write(path) {
         return FolderAccess::failed(error, true);
@@ -264,6 +258,25 @@ mod tests {
         }
         assert_eq!(path.read_dir().unwrap().count(), 0);
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn checks_write_access_with_an_independent_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join(".cabin-access-probe");
+        std::fs::write(&existing, b"user file").unwrap();
+
+        assert_eq!(
+            check_folder(dir.path(), true).state,
+            FolderAccessState::Available
+        );
+        assert_eq!(std::fs::read(&existing).unwrap(), b"user file");
+        assert_eq!(dir.path().read_dir().unwrap().count(), 1);
+        assert_eq!(
+            check_folder(&existing, false).state,
+            FolderAccessState::Unavailable
+        );
     }
 
     #[test]

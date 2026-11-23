@@ -2,7 +2,8 @@
 
 // Public API
 pub mod vless_client_handler;
-pub mod vless_server_handler;
+#[cfg(test)]
+mod vless_server_handler;
 
 // Internal implementation details
 mod tls_fuzzy_deframer;

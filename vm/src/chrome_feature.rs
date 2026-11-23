@@ -183,10 +183,10 @@ for i in $(seq 1 90); do
 done
 echo 'Chrome did not become ready' >&2
 cat "$status" 2>/dev/null || true
-tail -n 30 /tmp/vmctl-fp-chrome.log 2>/dev/null || true
+{} browser log-tail 2>/dev/null || true
 journalctl -u sway-autologin.service -n 30 --no-pager 2>/dev/null || true
 exit 1
-"#, crate::agentd::HELPER_BIN);
+"#, crate::agentd::HELPER_BIN, crate::agentd::HELPER_BIN);
     let (code, output) = runtime.ssh_capture(&script, Duration::from_secs(120));
     ctx.log(&output);
     if code != 0 {

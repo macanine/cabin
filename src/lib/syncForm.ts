@@ -1,13 +1,13 @@
 // Pure logic for project sync in the UI: the modes as people read them,
 // default rules, warnings and summaries. The rules themselves are applied
-// by the Mac app and cabind (core/src/sync).
+// by the host app and cabind (core/src/sync).
 import type { GitHandling, SyncMode, SyncPreview, SyncRules, SyncStatus } from "../services/ipc/generated/core";
 import { formatBytes, formatInteger } from "./format.ts";
 
 export interface ModeInfo {
   mode: SyncMode;
   label: string;
-  /** "Mac → machine" or "Mac ⇄ machine". */
+  /** "Local → machine" or "Local ⇄ machine". */
   flow: string;
   summary: string;
   /** What happens to an agent's edits. */
@@ -18,23 +18,23 @@ export const SYNC_MODES: ModeInfo[] = [
   {
     mode: "twoWay",
     label: "Two-way",
-    flow: "Mac ⇄ machine",
-    summary: "Changes flow both ways: agents' edits appear on your Mac, yours in the machine.",
-    agentEdits: "Copied back to your Mac. A file changed on both sides is a conflict for you to settle.",
+    flow: "Local ⇄ machine",
+    summary: "Changes flow both ways. Agents' edits appear locally, and yours appear in the machine.",
+    agentEdits: "Copied back to your local folder. A file changed on both sides is a conflict for you to settle.",
   },
   {
     mode: "safe",
-    label: "Mac → machine",
-    flow: "Mac → machine",
-    summary: "Your Mac's changes flow into the machine. Files agents change or add there are kept, never overwritten.",
+    label: "Local → machine",
+    flow: "Local → machine",
+    summary: "Local changes flow into the machine. Files agents change or add there are kept, never overwritten.",
     agentEdits: "Kept in the machine. A file changed on both sides is shown as a conflict for you to settle.",
   },
   {
     mode: "mirror",
     label: "Mirror",
-    flow: "Mac → machine",
-    summary: "The machine always holds exactly what your Mac has. Simplest; good for reading and running.",
-    agentEdits: "Replaced by your Mac's version on the next change. Use for projects agents only read.",
+    flow: "Local → machine",
+    summary: "The machine mirrors your local folder. Simplest; good for reading and running.",
+    agentEdits: "Replaced by your local version on the next change. Use for projects agents only read.",
   },
 ];
 
@@ -62,7 +62,7 @@ export function defaultRules(mode: SyncMode = DEFAULT_SYNC_MODE): SyncRules {
 export function gitWarning(mode: SyncMode, git: GitHandling): string | null {
   if (git !== "sync") return null;
   if (mode === "twoWay") {
-    return "Two-way syncing .git can break the repository if git runs on your Mac and in the machine at the same time. “Copy once” is safer.";
+    return "Two-way syncing .git can break the repository if git runs locally and in the machine at the same time. “Copy once” is safer.";
   }
   if (mode === "safe") {
     return "With agent edits kept, .git can end up mixing both sides' state. “Copy once” is safer.";
@@ -75,7 +75,7 @@ export function slug(name: string): string {
   return name.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-/** Where a Mac folder lands in the machine by default. */
+/** Where a local folder lands in the machine by default. */
 export function guestPathFor(name: string): string {
   const base = slug(name) || "project";
   return `~/projects/${base}`;
@@ -83,7 +83,8 @@ export function guestPathFor(name: string): string {
 
 /** The folder's own name from a path. */
 export function folderName(path: string): string {
-  return path.replace(/\/+$/, "").split("/").pop() ?? path;
+  const separator = /^(?:[a-z]:|\\\\)/i.test(path) ? /[\\/]/ : /\//;
+  return path.split(separator).filter(Boolean).pop() ?? "";
 }
 
 /** Tick or untick a top-level item. */

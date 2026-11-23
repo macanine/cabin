@@ -5,8 +5,6 @@ use std::mem::ManuallyDrop;
 
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
-#[cfg(target_family = "unix")]
-use std::path::Path;
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
@@ -150,46 +148,6 @@ mod interface_tests {
     }
 }
 
-#[cfg(all(test, unix, feature = "ffi"))]
-mod protection_tests {
-    use super::*;
-    use std::sync::Arc;
-
-    #[tokio::test]
-    async fn outbound_protection_fails_closed_without_affecting_listeners() {
-        struct Restore(Arc<dyn crate::tun::SocketProtector>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                crate::tun::set_global_socket_protector(self.0.clone());
-            }
-        }
-        let _restore = Restore(crate::tun::get_global_socket_protector());
-        let owner = std::thread::current().id();
-        crate::tun::set_global_socket_protector(Arc::new(crate::tun::FnSocketProtector::new(
-            move |_| {
-                if std::thread::current().id() == owner {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "protection denied",
-                    ))
-                } else {
-                    Ok(())
-                }
-            },
-        )));
-        assert!(new_tcp_socket(None, false).is_err());
-        assert!(new_udp_socket(false, None).is_err());
-        assert!(
-            new_outbound_socket2_udp_socket(false, None, Some("0.0.0.0:0".parse().unwrap()))
-                .is_err()
-        );
-        assert!(new_tcp_listener("0.0.0.0:0".parse().unwrap(), 10, None).is_ok());
-        assert!(
-            new_socket2_udp_socket(false, None, Some("0.0.0.0:0".parse().unwrap()), false).is_ok()
-        );
-    }
-}
-
 pub fn new_udp_socket(
     is_ipv6: bool,
     bind_interface: Option<String>,
@@ -208,10 +166,7 @@ pub fn new_outbound_socket2_udp_socket(
     bind_interface: Option<String>,
     bind_address: Option<SocketAddr>,
 ) -> std::io::Result<Socket> {
-    let socket = new_socket2_udp_socket(is_ipv6, bind_interface, bind_address, false)?;
-    #[cfg(any(target_os = "android", target_os = "ios", all(unix, feature = "ffi")))]
-    crate::tun::protect_socket(socket.as_raw_fd())?;
-    Ok(socket)
+    new_socket2_udp_socket(is_ipv6, bind_interface, bind_address, false)
 }
 
 fn get_unspecified_socket_addr(is_ipv6: bool) -> SocketAddr {
@@ -293,8 +248,6 @@ pub fn new_tcp_socket(
     } else {
         tokio::net::TcpSocket::new_v4()?
     };
-    #[cfg(any(target_os = "android", target_os = "ios", all(unix, feature = "ffi")))]
-    crate::tun::protect_socket(tcp_socket.as_raw_fd())?;
 
     if let Some(interface) = bind_interface {
         validate_interface(&interface)?;
@@ -372,24 +325,4 @@ pub fn new_tcp_listener(
 
     let std_listener: std::net::TcpListener = socket.into();
     tokio::net::TcpListener::from_std(std_listener)
-}
-
-#[cfg(target_family = "unix")]
-pub fn new_unix_listener<P: AsRef<Path>>(
-    path: P,
-    backlog: u32,
-) -> std::io::Result<tokio::net::UnixListener> {
-    let path = path.as_ref();
-
-    let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
-    socket.set_nonblocking(true)?;
-
-    let addr = SockAddr::unix(path)?;
-    socket.bind(&addr)?;
-
-    let backlog = backlog.try_into().unwrap_or(4096);
-    socket.listen(backlog)?;
-
-    let std_listener: std::os::unix::net::UnixListener = socket.into();
-    tokio::net::UnixListener::from_std(std_listener)
 }

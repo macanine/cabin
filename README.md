@@ -19,9 +19,10 @@ npm run app:dev
 ```
 
 In the installer, choose Ubuntu 24.04 or 26.04 LTS and size the VM, set the guest account,
-then review the configuration. The app downloads its pinned QEMU build and a dated Ubuntu
-cloud image, verifies their checksums, and provisions the guest. The installer shows
-progress and logs and offers cancel and retry.
+then review the configuration. The app uses the bundled QEMU when available. A macOS
+development build without vendored QEMU can download the pinned engine during setup. The
+installer downloads and verifies a dated Ubuntu cloud image, provisions the guest, and
+shows progress and logs with cancel and retry controls.
 [Architecture and release inputs](PLAN.md#architecture)
 
 ## Workspaces and sessions
@@ -39,8 +40,9 @@ progress and logs and offers cancel and retry.
   worktree and commits retained by a branch or tag. Archiving a session keeps its checkout.
 - **Chat and terminals.** Chat shows turns, approvals, questions, plans, delegated work, and
   file changes. Send a message to resume a saved conversation. Terminal opens a login shell
-  or the agent's native CLI and restores recent output on reconnect. Paste an image with
-  Command-V to save it as a guest attachment and paste its path. The session workbench opens
+  or the agent's native CLI and restores recent output on reconnect. Use the terminal footer
+  or Command/Ctrl with `+`, `-`, or `0` to change or reset its saved text size. Paste an image
+  with Command-V to save it as a guest attachment and paste its path. The session workbench opens
   files, shows Git changes, and previews a guest loopback service.
 - **Commands, skills, and MCP.** Use `/` for the agent's commands, `$` for skills, and `@`
   for workspace files. The **MCP** page imports or creates servers and updates each agent's
@@ -112,7 +114,24 @@ project folders.
 
 **Settings → Storage** shows the VM disk, images, QEMU, application bundle, logs, settings,
 and WebKit data. With the VM stopped, **Clean up** can remove leftover downloads, redundant
-QEMU archives, and diagnostic logs older than 30 days.
+QEMU archives, and eligible diagnostic captures older than 30 days.
+
+### Diagnostics
+
+Cabin stores host logs in `<host data>/vm/logs` and guest logs in `<guest data>/logs`.
+`events.jsonl` holds structured events with UTC Unix milliseconds, severity, process,
+component, and event name. On the host, `operations.jsonl` records VM operations used by
+installation recovery. Both streams rotate at 2 MiB and keep three previous segments.
+Set `CABIN_LOG_LEVEL=debug` on a process to include debug events such as sync timings.
+The default level is `info`. The `warn` and `error` levels reduce logging. Read the
+recent host stream with `vmctl --home <host-data>/vm logs --events`.
+
+QEMU serial output and installer output are available through the startup report and
+`vmctl logs`. Raw captures use files scoped to the operation or process. The serial and
+QEMU stderr captures start fresh when QEMU launches, and Storage can clean old captures
+with the VM stopped. Machine diagnostics include bounded excerpts and recent events
+from the host and, when connected, the guest. The export redacts known local paths,
+account names, and URL credentials. Review raw excerpts before sharing a report.
 
 ## Development
 
@@ -123,10 +142,13 @@ QEMU archives, and diagnostic logs older than 30 days.
 | Run frontend tests | `npm test` |
 | Type-check and bundle the frontend | `npm run build` |
 | Run Chromium smoke tests with mocked IPC | `npm run test:ui` |
-| Run Rust tests | `cargo test --manifest-path <crate>/Cargo.toml` for `core`, `usage`, `vm`, `src-tauri`, and `ip-detection` |
+| Run Rust tests | `cargo test --manifest-path <crate>/Cargo.toml` for `core`, `diagnostics`, `usage`, `vm`, `src-tauri`, and `ip-detection` |
 | Build the Linux ARM64 guest daemon | `npm run build:agentd` |
 
-Set `CHROME` to a Chromium or Chrome executable for `npm run test:ui`.
+Set `CHROME` to a Chromium or Chrome executable for `npm run test:ui`. On a fresh
+macOS or Windows checkout, run `npm run vendor` and `npm run build:agentd` before
+running the `src-tauri` tests directly. Tauri validates both resources while compiling
+the test binary.
 
 `app:dev` and `app:build` run `scripts/tauri.mjs`, the one launcher for every host. It puts
 Cargo on `PATH`, checks the guest daemon toolchain (Rust musl target, Zig, `cargo-zigbuild`)
@@ -141,8 +163,8 @@ while `npm ci` replaces the dependency directory.
 
 Linux development uses the distribution's QEMU with KVM or TCG. Use `npm run tauri dev` for
 the Linux development shell or `npm run tauri build` for Linux packages. Tauri builds the
-guest daemon before running or packaging the app. The macOS bundle includes the daemon, VM
-configuration, and assets. The app downloads the pinned QEMU build during setup.
+guest daemon before running or packaging the app. The macOS bundle includes the daemon,
+VM configuration, assets, and vendored QEMU.
 
 ### Windows host
 
@@ -157,13 +179,13 @@ Then run `npm ci` and `npm run app:dev`, the same commands as on macOS. QEMU and
 from `npm run vendor` (pinned and hash-checked, see [Packaging](#packaging)). The app never
 uses a QEMU on `PATH`, and prefers the bundled `ssh` over the system one.
 
-Windows specifics: QEMU control channels use loopback TCP ports recorded per instance in
-`sockets.json`, the seed ISO is written in-process (no ISO tooling required), gateway
-networking runs through a loopback TCP datapath with the same shoes proxy stack, and the
-seed ISO password hash uses the same `$6$` SHA-512 format. Adapter-scoped routes
-(`bind_interface`) and SPICE are not available on Windows; guest networking otherwise
-behaves the same. `tauri.windows.conf.json` builds the NSIS installer with the daemon and
-VM resources bundled.
+Windows shares the AF_UNIX transport used by the other hosts for QMP, the guest agent,
+the serial console, and the QEMU gateway stream. Inside the gateway, connected loopback
+UDP sockets carry IP packets to the shoes proxy stack. If setup reports that a VM socket
+path is too long, set `CABIN_HOME` to a shorter local data directory before restarting Cabin.
+Windows uses system routing. Adapter binding and SPICE require a supported Unix host. `tauri.windows.conf.json` builds
+the NSIS installer with the daemon and VM resources bundled. See
+[host platform contracts](AGENTS.md#host-platforms).
 
 ### Opt-in verification
 
@@ -175,6 +197,14 @@ relay still listening.
 CABIN_TEST_INTERFACE=en0 cargo test --manifest-path vm/Cargo.toml \
   --test gateway_interface_live -- --ignored --nocapture
 ```
+
+Before uploading the Windows installer, CI installs it silently into a temporary directory,
+checks the installed executable and resource hashes, and runs the native QEMU tests against
+that installation's `vendor` directory. The tests cover QMP, gateway AF_UNIX, and shutdown
+on whichever accelerator the runner selects; they do not guarantee coverage of both WHPX
+and TCG. To run them locally on Windows, set `CABIN_VENDOR_DIR` to the installed `vendor`
+directory or the staged `build/vendor/windows-x64` directory and run
+`cargo test --manifest-path vm/Cargo.toml --test windows_qemu_live -- --ignored --nocapture`.
 
 The [VM integration tests](vm/tests/) document their prerequisites. The account test uses a
 disposable Ubuntu VM, the installed QEMU engine, a freshly built daemon, and synthetic
@@ -192,7 +222,8 @@ CABIN_LIVE_OPENCODE=1 CABIN_OPENCODE2_BIN=/path/to/opencode2 \
 
 ### Packaging
 
-Release builds ship everything the app needs, so end users install nothing. `scripts/vendor.json`
+Release builds bundle QEMU and the guest daemon. On Windows, the NSIS installer downloads
+WebView2 if the runtime is missing, which requires internet access. `scripts/vendor.json`
 pins QEMU for macOS arm64 and Windows x64, and Win32-OpenSSH for Windows x64 (url, sha256,
 version, license, source URL). `npm run vendor` (also run by Tauri's `beforeDevCommand` and
 `beforeBuildCommand`) downloads the pins into `build/vendor-cache/`, verifies the hashes, and
@@ -218,12 +249,15 @@ CABIN_UPDATE_IPC_BINDINGS=1 cargo test --manifest-path src-tauri/Cargo.toml ipc_
 
 ## State and project documentation
 
-The app and guest each resolve their data directory from `CABIN_HOME`, then
-`XDG_DATA_HOME/cabin`, then `~/.local/share/cabin`. The Mac owns VM files and
-network settings. The guest owns workspace and session data, tool state, configuration
+The desktop app uses `CABIN_HOME` when set. Its defaults are
+`~/Library/Application Support/cabin` on macOS, `%APPDATA%\cabin` on Windows, and
+`$XDG_DATA_HOME/cabin-host` or `~/.local/share/cabin-host` on Linux. This directory holds VM
+files and host settings.
+
+The guest resolves its own data directory from `CABIN_HOME`, then `XDG_DATA_HOME/cabin`,
+then `~/.local/share/cabin`. It holds workspace and session data, tool state, configuration
 backups, and `usage.sqlite3`. Agent configuration stays under the guest user's home. Guest
-Node.js builds default to `/opt/node`, with `CABIN_NODE_ROOT` available as an
-override.
+Node.js builds default to `/opt/node`, with `CABIN_NODE_ROOT` available as an override.
 
 - [AGENTS.md](AGENTS.md) maps features to source files and records implementation contracts.
 - [PLAN.md](PLAN.md) describes the architecture, design tradeoffs, and open work.

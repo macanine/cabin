@@ -267,21 +267,26 @@ impl Shared {
     }
 
     pub(super) fn run_down(&self) {
-        let Ok(mut ready) = Readiness::new() else { return };
-        for lane in [Lane::Ordinary, Lane::Verification] {
-            if ready.watch(lane as usize, &self.paths[lane as usize].host, true, false).is_err() {
-                return;
+        let _ = Readiness::scope(|ready| {
+            let lanes = [Lane::Ordinary, Lane::Verification];
+            for lane in lanes {
+                ready.watch(lane as usize, &self.paths[lane as usize].host, true, false)?;
             }
-        }
-        let mut packet = vec![0u8; 65_536];
-        while !self.stop.load(Ordering::Relaxed) {
-            let Ok(events) = ready.wait(Some(Duration::from_millis(500))) else { continue };
-            for lane in [Lane::Ordinary, Lane::Verification] {
-                if events.iter().any(|event| event.key == lane as usize && event.readable) {
-                    self.receive_ip(lane, &mut packet);
+            let mut packet = vec![0u8; 65_536];
+            while !self.stop.load(Ordering::Relaxed) {
+                let Ok(events) = ready.wait(Some(Duration::from_millis(500))) else {
+                    // A persistent poller error can return immediately on every wait.
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                };
+                for lane in lanes {
+                    if events.iter().any(|event| event.key == lane as usize && event.readable) {
+                        self.receive_ip(lane, &mut packet);
+                    }
                 }
             }
-        }
+            Ok(())
+        });
     }
 
     pub(super) fn run_held(self: &Arc<Self>) {
@@ -427,11 +432,15 @@ impl GatewayStacks {
                 *slot = Some(started?);
             }
         }
+        let stack = mode.lane().map(|lane| {
+            self.active[lane as usize].as_ref()
+                .ok_or_else(|| Error::Message("No network stack for the selected egress mode".into()))
+        }).transpose()?;
         self.ordinary_opened |= mode == EgressMode::Open;
         let mut egress = shared.egress.locked();
         egress.mode = mode;
-        if let Some(lane) = mode.lane() {
-            self.active[lane as usize].as_ref().unwrap().gate.resume();
+        if let Some(stack) = stack {
+            stack.gate.resume();
             egress.dns_gate.resume();
             if let (Some(ticket), Some(resolver)) = (egress.dns_gate.ticket(), shared.resolver.locked().clone())
                 && resolver.warm_on_resume

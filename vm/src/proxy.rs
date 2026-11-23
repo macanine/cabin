@@ -3,7 +3,6 @@
 //! shoes is the only proxy engine. Its binary and default configuration live
 //! with the project resources; runtime state and logs live under vmctl home.
 
-use std::fs::OpenOptions;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -431,10 +430,7 @@ fn start_unlocked(home: &Path) -> Result<ProxyStatus> {
         )));
     }
     ensure_dir(&proxy_dir(home))?;
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path(home))?;
+    let log = cabin_diagnostics::open_capture(&log_path(home), cabin_diagnostics::Capture::Replace)?;
     let log_err = log.try_clone()?;
     let child = Command::new(&binary)
         .arg(&selected_config)

@@ -200,17 +200,22 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
                 let tmp = full.with_file_name(format!(".vasync-{}.tmp", uuid::Uuid::new_v4()));
                 let mut options = fs::OpenOptions::new();
                 options.write(true).create_new(true);
-                match options.open(&tmp).and_then(|file| {
-                    crate::fsx::set_mode(&tmp, 0o600)?;
-                    Ok(file)
-                }) {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                match options.open(&tmp) {
                     Ok(file) => break (tmp, file),
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                     Err(error) => return Err(error),
                 }
             };
             let written = (|| {
-                io::copy(entry, &mut file)?;
+                let expected = entry.size();
+                if io::copy(entry, &mut file)? != expected {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "archive file ended before its declared size"));
+                }
                 crate::fsx::set_mode(&tmp, mode)?;
                 file.set_times(times)?;
                 drop(file);
@@ -406,6 +411,24 @@ mod tests {
                 assert_eq!(fs::read_dir(dst.path()).unwrap().count(), usize::from(existing || !fail));
             }
         }
+    }
+
+    #[test]
+    fn truncated_tar_payload_preserves_the_existing_file() {
+        let dst = tempfile::tempdir().unwrap();
+        let path = dst.path().join("file");
+        fs::write(&path, b"original contents").unwrap();
+        let mut builder = tar::Builder::new(Vec::new());
+        append_file(&mut builder, "file", b"replacement contents");
+        let stream = builder.into_inner().unwrap();
+
+        let result = apply(dst.path(), &[], &stream[..515]);
+        if let Ok(report) = result {
+            assert_eq!(report.written, 0);
+            assert_eq!(report.failed[0].0, "file");
+        }
+        assert_eq!(fs::read(&path).unwrap(), b"original contents");
+        assert_eq!(fs::read_dir(dst.path()).unwrap().count(), 1);
     }
 
     #[test]

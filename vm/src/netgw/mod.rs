@@ -62,7 +62,7 @@ pub struct GatewayTraffic {
 
 /// The gateway: listens on `socket` for QEMU and runs the proxy stack.
 pub struct Gateway {
-    socket: PathBuf,
+    _socket_path: RemoveOnDrop,
     shared: Arc<Shared>,
     /// The Mac's SSH port, relayed to the guest.
     forward: Option<Arc<crate::net_forward::SshForward>>,
@@ -105,15 +105,16 @@ impl Gateway {
         if let Some(parent) = socket.parent() {
             crate::util::ensure_dir(parent)?;
         }
+        // On early failure, close the listener before removing its path.
+        let socket_path;
         let listener = UnixListener::bind(socket).map_err(|error| {
             Error::Message(format!(
                 "Could not open the VM's network socket {}: {error}",
                 socket.display()
             ))
         })?;
-        // Until the gateway is up, a failure removes the socket again, so
-        // QEMU never finds a dead one.
-        let mut cleanup = RemoveOnDrop(Some(socket.to_path_buf()));
+        socket_path = RemoveOnDrop(socket.to_path_buf());
+        listener.set_nonblocking(true)?;
         let resolver = upstream.map(Resolver::start).transpose()?.map(Arc::new);
         let dns_gate = RelayGate::default();
         dns_gate.suspend(|| {});
@@ -172,23 +173,21 @@ impl Gateway {
             })
         };
 
-        let mut threads = Vec::new();
-        // Stack → VM.
+        // Own the workers before starting any of them. A later startup
+        // failure then stops and joins the workers already started.
+        let mut gateway = Self {
+            _socket_path: socket_path,
+            shared,
+            forward: Some(forward.clone()),
+            stacks: Mutex::new(stacks),
+            threads: Vec::new(),
+        };
+        // Move the listener into the first worker so it closes before the
+        // gateway removes its socket path, even if spawning fails.
+        // QEMU can reconnect after an app restart.
         {
-            let shared = shared.clone();
-            threads.push(
-                std::thread::Builder::new()
-                    .name("vm-net-down".into())
-                    .spawn(move || shared.run_down())?,
-            );
-        }
-        // VM → gateway / stack. One QEMU connection at a time; QEMU
-        // reconnects after an app restart.
-        {
-            let shared = shared.clone();
-            let forward = forward.clone();
-            listener.set_nonblocking(true)?;
-            threads.push(std::thread::Builder::new().name("vm-net-up".into()).spawn(
+            let shared = gateway.shared.clone();
+            gateway.threads.push(std::thread::Builder::new().name("vm-net-up".into()).spawn(
                 move || {
                     while !shared.stop.load(Ordering::Relaxed) {
                         let stream = match listener.accept() {
@@ -198,13 +197,22 @@ impl Gateway {
                                 continue;
                             }
                         };
-                        let _ = stream.set_nonblocking(false);
-                        // One handle shared by this reader and the writers:
-                        // no socket duplication, the same on every host.
-                        let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
-                        let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
+                        // A blocking stream without timeouts could prevent shutdown.
+                        if stream.set_nonblocking(false)
+                            .and_then(|()| stream.set_read_timeout(Some(Duration::from_millis(250))))
+                            .and_then(|()| stream.set_write_timeout(Some(Duration::from_millis(200))))
+                            .is_err()
+                        {
+                            continue;
+                        }
                         let stream = Arc::new(stream);
-                        *shared.guest.locked() = Some(stream.clone());
+                        {
+                            let mut guest = shared.guest.locked();
+                            if shared.stop.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            *guest = Some(stream.clone());
+                        }
                         let mut frame = Vec::new();
                         while !shared.stop.load(Ordering::Relaxed) {
                             match read_frame_until(&mut &*stream, &mut frame, &shared.stop) {
@@ -234,19 +242,21 @@ impl Gateway {
                 },
             )?);
         }
+        // Stack → VM.
         {
-            let held = shared.clone();
-            threads.push(std::thread::Builder::new().name("vm-net-held".into())
+            let shared = gateway.shared.clone();
+            gateway.threads.push(
+                std::thread::Builder::new()
+                    .name("vm-net-down".into())
+                    .spawn(move || shared.run_down())?,
+            );
+        }
+        {
+            let held = gateway.shared.clone();
+            gateway.threads.push(std::thread::Builder::new().name("vm-net-held".into())
                 .spawn(move || held.run_held())?);
         }
-        cleanup.0 = None;
-        Ok(Self {
-            socket: socket.to_path_buf(),
-            shared,
-            forward: Some(forward),
-            stacks: Mutex::new(stacks),
-            threads,
-        })
+        Ok(gateway)
     }
 
     /// Switch the upstream (another node, or direct). Flows in progress are
@@ -379,22 +389,24 @@ impl Gateway {
     }
 }
 
-/// Removes a path when dropped, unless disarmed.
-struct RemoveOnDrop(Option<PathBuf>);
+/// Removes the gateway socket path after the listener has closed.
+struct RemoveOnDrop(PathBuf);
 
 impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_file(path);
-        }
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
 impl Drop for Gateway {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Relaxed);
+        {
+            // The held worker checks stop under this same mutex before waiting.
+            let _egress = self.shared.egress.locked();
+            self.shared.stop.store(true, Ordering::Relaxed);
+            self.shared.held_ready.notify_one();
+        }
         self.set_egress_mode(EgressMode::Closed);
-        self.shared.held_ready.notify_one();
         *self
             .shared
             .resolver
@@ -411,7 +423,6 @@ impl Drop for Gateway {
             let _ = thread.join();
         }
         self.forward = None;
-        let _ = std::fs::remove_file(&self.socket);
     }
 }
 

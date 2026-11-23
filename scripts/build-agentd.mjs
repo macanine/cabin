@@ -41,9 +41,10 @@ function pickTarget(argv, env) {
 
 const target = pickTarget(process.argv.slice(2), process.env);
 // CI builds the guest daemon once on Linux and drops it at the Cargo output
-// path. CABIN_PREBUILT_CABIND=1 then skips the rebuild when that file exists.
+// path. CABIN_PREBUILT_CABIND=1 then skips the rebuild for a nonempty file.
 const output = new URL(`../core/target/${target}/release/cabind`, import.meta.url);
-if (process.env.CABIN_PREBUILT_CABIND && fs.existsSync(output)) {
+const prebuilt = process.env.CABIN_PREBUILT_CABIND && fs.statSync(output, { throwIfNoEntry: false });
+if (prebuilt && prebuilt.isFile() && prebuilt.size > 0) {
   console.log(`build-agentd: using prebuilt ${target} cabind`);
   process.exit(0);
 }

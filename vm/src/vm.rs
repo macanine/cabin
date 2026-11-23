@@ -84,8 +84,13 @@ pub fn resolve_qemu_img(cfg: &Config) -> Result<PathBuf> {
     Ok(crate::qemu_engine::require(&cfg.home)?.qemu_img)
 }
 
+// QEMU's comma-separated option syntax uses two commas for a literal comma.
+fn qemu_path(path: &Path) -> String {
+    path.to_string_lossy().replace(',', ",,")
+}
+
 fn spice_args(cfg: &Config) -> Vec<String> {
-    let socket = cfg.spice_socket().to_string_lossy().replace(',', ",,");
+    let socket = qemu_path(&cfg.spice_socket());
     let mut args = vec![
         "-spice".into(),
         format!(
@@ -247,24 +252,24 @@ pub fn build_qemu_args(
         "-drive".to_string(),
         format!(
             "if=pflash,format=raw,unit=0,readonly=on,file={}",
-            resolved.firmware_code.display()
+            qemu_path(&resolved.firmware_code)
         ),
         "-drive".to_string(),
         format!(
             "if=pflash,format=raw,unit=1,file={}",
-            cfg.efi_vars_path().display()
+            qemu_path(&cfg.efi_vars_path())
         ),
         "-drive".to_string(),
         format!(
             "if=none,id=disk,format=qcow2,file={},cache=writeback",
-            cfg.disk_path().display()
+            qemu_path(&cfg.disk_path())
         ),
         "-device".to_string(),
         "virtio-blk-pci,drive=disk,bootindex=0".to_string(),
         "-drive".to_string(),
         format!(
             "if=none,id=seed,format=raw,file={},readonly=on",
-            cfg.seed_path().display()
+            qemu_path(&cfg.seed_path())
         ),
         "-device".to_string(),
         "virtio-blk-pci,drive=seed,bootindex=2".to_string(),
@@ -277,7 +282,7 @@ pub fn build_qemu_args(
         "-chardev".to_string(),
         format!(
             "socket,path={},server=on,wait=off,id=qga0",
-            cfg.qga_socket().display()
+            qemu_path(&cfg.qga_socket())
         ),
         "-device".to_string(),
         "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0".to_string(),
@@ -325,13 +330,13 @@ pub fn build_qemu_args(
         "-chardev".to_string(),
         format!(
             "socket,id=console0,path={},server=on,wait=off,logfile={},logappend=on",
-            cfg.console_socket().display(),
-            serial_log.display()
+            qemu_path(&cfg.console_socket()),
+            qemu_path(&serial_log)
         ),
         "-serial".to_string(),
         "chardev:console0".to_string(),
         "-qmp".to_string(),
-        format!("unix:{},server=on,wait=off", cfg.qmp_socket().display()),
+        format!("unix:{},server=on,wait=off", qemu_path(&cfg.qmp_socket())),
         "-pidfile".to_string(),
         cfg.pidfile().display().to_string(),
     ]);
@@ -353,7 +358,7 @@ pub fn build_qemu_args(
                 "-netdev".to_string(),
                 format!(
                     "stream,id=data,server=off,addr.type=unix,addr.path={},{}",
-                    cfg.net_socket().display(),
+                    qemu_path(&cfg.net_socket()),
                     stream_reconnect_option(&args[0])
                 ),
                 "-device".to_string(),
@@ -705,8 +710,11 @@ impl Runtime {
         args: &[String],
         serial_log: &Path,
     ) -> Result<()> {
-        let stderr_path = self.cfg.instance_file("qemu-stderr.log");
-        let stderr = File::create(&stderr_path)?;
+        // QEMU opens the serial capture itself. Prepare its directory and
+        // permissions before passing the path to the chardev.
+        cabin_diagnostics::open_capture(serial_log, cabin_diagnostics::Capture::Replace)?;
+        let stderr_path = self.cfg.instance_logs_dir().join("qemu-stderr.log");
+        let stderr = cabin_diagnostics::open_capture(&stderr_path, cabin_diagnostics::Capture::Replace)?;
         log_line(
             log,
             &format!("launching QEMU (stderr: {})", stderr_path.display()),
@@ -777,96 +785,85 @@ impl Runtime {
         let serial_log = serial_log
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.cfg.serial_log_path());
-        let launch = (|| -> Result<()> {
-            let _gate = self.lifecycle.lock();
-            self.lifecycle.check()?;
-            if self.recorded_pid()?.is_some() {
-                return self.previous_vm_error();
-            }
-            validate_socket_paths(&self.cfg)?;
-            if let Some(error) = ssh_port_conflict(&self.cfg) {
-                return message(error);
-            }
-            ensure_dir(&self.cfg.instance_dir())?;
-            self.cleanup_stale();
-            migrate_legacy_sockets(&self.cfg.instance_dir())?;
-            let engine = resolve_qemu(&self.cfg)?.qemu_bin;
-            crate::accel::restore_start_fallback(&self.cfg.home, Path::new(&engine));
-            let launch = || {
-                let setup_error = |error| (error, None);
-                prepare_qemu_sockets(&self.cfg).map_err(setup_error)?;
-                let args =
-                    build_qemu_args(&self.cfg, false, Some(&serial_log), phase, display_mode)
-                        .map_err(setup_error)?;
-                let whpx = args
-                    .windows(2)
-                    .any(|pair| pair[0] == "-accel" && pair[1].starts_with("whpx,"));
-                self.launch_qemu(log, &args, &serial_log).map_err(|error| {
-                    let reason = if whpx && matches!(self.recorded_pid(), Ok(None)) {
-                        whpx_start_failure(&error.to_string())
-                    } else {
-                        None
-                    };
-                    (error, reason)
-                })
-            };
-            crate::accel::retry_start_with_tcg(launch, |error, reason| {
-                log_line(
-                    log,
-                    &format!("WHPX start failed ({reason:?}); retrying under TCG: {error}"),
-                );
-                crate::accel::remember_start_fallback(
-                    &self.cfg.home,
-                    Path::new(&engine),
-                    reason,
-                    log,
-                );
-                self.cleanup_stale();
-            })
-        })();
-        if let Err(error) = launch {
-            let spawned = self.foreground_child().is_some();
-            if spawned {
-                self.stop(log, Duration::from_secs(10));
-                if let Some(mut child) = self.foreground_child().take() {
-                    thread::spawn(move || {
-                        let _ = child.wait();
-                    });
+        self.lifecycle.check()?;
+        let engine = resolve_qemu(&self.cfg)?.qemu_bin;
+        let engine = Path::new(&engine);
+        let stderr_path = self.cfg.instance_logs_dir().join("qemu-stderr.log");
+        let boot = || {
+            let setup_error = |error| (error, None);
+            let launch = || -> Result<Vec<String>> {
+                self.lifecycle.check()?;
+                if self.recorded_pid()?.is_some() {
+                    return self.previous_vm_error();
                 }
+                validate_socket_paths(&self.cfg)?;
+                if let Some(error) = ssh_port_conflict(&self.cfg) {
+                    return message(error);
+                }
+                ensure_dir(&self.cfg.instance_dir())?;
+                self.cleanup_stale();
+                migrate_legacy_sockets(&self.cfg.instance_dir())?;
+                crate::accel::restore_start_fallback(&self.cfg.home, engine);
+                prepare_qemu_sockets(&self.cfg)?;
+                build_qemu_args(&self.cfg, false, Some(&serial_log), phase, display_mode)
+            };
+            let gate = self.lifecycle.lock();
+            let args = launch().map_err(setup_error)?;
+            let whpx = args
+                .windows(2)
+                .any(|pair| pair[0] == "-accel" && pair[1].starts_with("whpx,"));
+            let exited_whpx = || {
+                whpx && self.lifecycle.check().is_ok() && matches!(self.recorded_pid(), Ok(None))
+            };
+            if let Err(error) = self.launch_qemu(log, &args, &serial_log) {
+                let reason = exited_whpx()
+                    .then(|| whpx_start_failure(&error.to_string()))
+                    .flatten();
+                drop(gate);
+                if self.foreground_child().is_some() {
+                    self.stop(log, Duration::from_secs(10));
+                    self.reap_in_background();
+                }
+                return Err((error, reason));
             }
-            return Err(error);
-        }
-        // A foreground client/QEMU must not become a zombie when the command
-        // returns; hand the child to a detached reaper now that startup has
-        // been verified through the pidfile/QMP.
-        let reaped = self.foreground_child().take();
-        if let Some(mut child) = reaped {
-            thread::spawn(move || {
-                let _ = child.wait();
-            });
-        }
-        log_line(
-            log,
-            &format!(
-                "QEMU running, pid {:?}, serial log {}",
-                self.pid(),
-                serial_log.display()
-            ),
-        );
-        if let Some(attempt) = attempt {
-            if let Some(pid) = self.pid() {
-                attempt.add_fact("QEMU pid", pid.to_string());
+            drop(gate);
+            // The reaper owns the child now that its PID and monitor are verified.
+            self.reap_in_background();
+            log_line(
+                log,
+                &format!(
+                    "QEMU running, pid {:?}, serial log {}",
+                    self.pid(),
+                    serial_log.display()
+                ),
+            );
+            if let Some(attempt) = attempt {
+                if let Some(pid) = self.pid() {
+                    attempt.add_fact("QEMU pid", pid.to_string());
+                }
+                attempt.accelerator_fact();
+                attempt.complete(Phase::Qemu, "QEMU monitor is ready");
+                attempt.begin(Phase::Boot);
             }
-            attempt.accelerator_fact();
-            attempt.complete(Phase::Qemu, "QEMU monitor is ready");
-        }
-        if let Some(attempt) = attempt {
-            attempt.begin(Phase::Boot);
-        }
-        if let Err(error) = self.wait_for_ssh(log, ssh_timeout) {
-            self.stop(log, Duration::from_secs(30));
-            return Err(error);
-        }
+            if let Err(error) = self.wait_for_ssh(log, ssh_timeout) {
+                // A vCPU can fail after the monitor first answers. Only a
+                // confirmed WHPX exit in this launch's stderr warrants a retry.
+                let reason = exited_whpx()
+                    .then(|| crate::startup::log_tail(&stderr_path))
+                    .and_then(|lines| lines.into_iter().rfind(|line| !line.trim().is_empty()))
+                    .and_then(|line| crate::accel::classify_whpx_output(&line));
+                self.stop(log, Duration::from_secs(30));
+                return Err((error, reason));
+            }
+            Ok(())
+        };
+        crate::accel::retry_start_with_tcg(boot, |error, reason| {
+            log_line(
+                log,
+                &format!("WHPX start failed ({reason:?}); retrying under TCG: {error}"),
+            );
+            crate::accel::remember_start_fallback(&self.cfg.home, engine, reason, log);
+        })?;
         self.lifecycle.check()?;
         if self.cfg.device_enabled() {
             let (rc, out) = self.ssh_capture(
@@ -882,6 +879,14 @@ impl Runtime {
             attempt.complete(Phase::Boot, "Authenticated SSH is ready");
         }
         Ok(())
+    }
+
+    fn reap_in_background(&self) {
+        if let Some(mut child) = self.foreground_child().take() {
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
     }
 
     pub fn stop(&self, log: &Arc<Mutex<File>>, timeout: Duration) -> bool {
@@ -1490,6 +1495,10 @@ qemu: Failed to get \"write\" lock";
             whpx_start_failure(error),
             Some(crate::accel::AccelProblem::HypervisorConflict)
         );
+        assert!(matches!(
+            whpx_start_failure("QEMU exited during startup: whpx_init_vcpu failed: 80070057"),
+            Some(crate::accel::AccelProblem::ProbeFailed(_))
+        ));
     }
 
     #[test]

@@ -30,6 +30,12 @@ export async function invokeIpc<T>(command: IpcCommand, args: Record<string, unk
   }
 }
 
+type FrontendDiagnostic = "viewCrash" | "subscriberCrash" | "scriptError" | "unhandledRejection";
+
+export function reportFrontendDiagnostic(kind: FrontendDiagnostic): void {
+  void invokeIpc<void>("frontend_diagnostic", { kind }).catch(() => {});
+}
+
 /** Invoke a long-running command that reports its result on a channel. */
 export function invokeTask<T>(command: IpcCommand, args: Record<string, unknown> = {}): Promise<T> {
   return new Promise((resolve, reject) => {

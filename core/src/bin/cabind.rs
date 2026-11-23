@@ -183,18 +183,20 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("serve") => {
+            cabin_diagnostics::init(&paths.logs(), "guest");
             let app = match App::open(paths.clone()) {
                 Ok(app) => Arc::new(app),
                 Err(error) => {
-                    eprintln!("cabind: {error}");
+                    cabin_diagnostics::event(cabin_diagnostics::Level::Error, "daemon", "state_open_failed", format_args!("{error}"));
                     return ExitCode::FAILURE;
                 }
             };
             app.start_services();
+            cabin_diagnostics::event(cabin_diagnostics::Level::Info, "daemon", "services_started", format_args!("{}", agent_core::rpc::VERSION));
             match agent_core::rpc::serve(app, &socket(&paths)) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
-                    eprintln!("cabind: {error}");
+                    cabin_diagnostics::event(cabin_diagnostics::Level::Error, "daemon", "serve_failed", format_args!("{error}"));
                     ExitCode::FAILURE
                 }
             }

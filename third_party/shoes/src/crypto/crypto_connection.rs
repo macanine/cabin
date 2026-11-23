@@ -5,10 +5,9 @@
 
 use std::io::{self, Read, Write};
 
-use crate::reality::{
-    RealityClientConnection, RealityServerConnection, feed_reality_client_connection,
-    feed_reality_server_connection,
-};
+use crate::reality::{RealityClientConnection, feed_reality_client_connection};
+#[cfg(test)]
+use crate::reality::{RealityServerConnection, feed_reality_server_connection};
 
 use crate::rustls_connection_util::{feed_rustls_client_connection, feed_rustls_server_connection};
 
@@ -24,6 +23,7 @@ pub enum CryptoConnection {
     /// rustls client-side connection
     RustlsClient(rustls::ClientConnection),
     /// REALITY server-side connection
+    #[cfg(test)]
     RealityServer(RealityServerConnection),
     /// REALITY client-side connection
     RealityClient(RealityClientConnection),
@@ -41,6 +41,7 @@ impl CryptoConnection {
     }
 
     /// Create a new REALITY server connection
+    #[cfg(test)]
     pub fn new_reality_server(conn: RealityServerConnection) -> Self {
         CryptoConnection::RealityServer(conn)
     }
@@ -52,10 +53,12 @@ impl CryptoConnection {
 
     /// Check if this is a server-side connection
     pub fn is_server(&self) -> bool {
-        matches!(
-            self,
-            CryptoConnection::RustlsServer(_) | CryptoConnection::RealityServer(_)
-        )
+        match self {
+            CryptoConnection::RustlsServer(_) => true,
+            #[cfg(test)]
+            CryptoConnection::RealityServer(_) => true,
+            _ => false,
+        }
     }
 
     /// Check if this is a client-side connection
@@ -76,6 +79,7 @@ impl CryptoConnection {
             CryptoConnection::RustlsServer(conn) => conn.alpn_protocol(),
             CryptoConnection::RustlsClient(conn) => conn.alpn_protocol(),
             // REALITY doesn't have real TLS ALPN negotiation
+            #[cfg(test)]
             CryptoConnection::RealityServer(_) => None,
             CryptoConnection::RealityClient(_) => None,
         }
@@ -86,10 +90,12 @@ impl CryptoConnection {
     /// REALITY connections have already authenticated the client during
     /// the handshake, so they can be trusted for protocol handling.
     pub fn is_reality(&self) -> bool {
-        matches!(
-            self,
-            CryptoConnection::RealityServer(_) | CryptoConnection::RealityClient(_)
-        )
+        match self {
+            CryptoConnection::RealityClient(_) => true,
+            #[cfg(test)]
+            CryptoConnection::RealityServer(_) => true,
+            _ => false,
+        }
     }
 
     /// Read TLS messages from `rd` into internal buffers
@@ -100,6 +106,7 @@ impl CryptoConnection {
         match self {
             CryptoConnection::RustlsServer(conn) => conn.read_tls(rd),
             CryptoConnection::RustlsClient(conn) => conn.read_tls(rd),
+            #[cfg(test)]
             CryptoConnection::RealityServer(conn) => conn.read_tls(rd),
             CryptoConnection::RealityClient(conn) => conn.read_tls(rd),
         }
@@ -131,6 +138,7 @@ impl CryptoConnection {
 
                 Ok(state.plaintext_bytes_to_read())
             }
+            #[cfg(test)]
             CryptoConnection::RealityServer(conn) => {
                 let state = conn.process_new_packets().map_err(|e| {
                     io::Error::new(
@@ -162,6 +170,7 @@ impl CryptoConnection {
         match self {
             CryptoConnection::RustlsServer(conn) => CryptoReader::Rustls(conn.reader()),
             CryptoConnection::RustlsClient(conn) => CryptoReader::Rustls(conn.reader()),
+            #[cfg(test)]
             CryptoConnection::RealityServer(conn) => CryptoReader::Reality(conn.reader()),
             CryptoConnection::RealityClient(conn) => CryptoReader::Reality(conn.reader()),
         }
@@ -175,6 +184,7 @@ impl CryptoConnection {
         match self {
             CryptoConnection::RustlsServer(conn) => CryptoWriter::Rustls(conn.writer()),
             CryptoConnection::RustlsClient(conn) => CryptoWriter::Rustls(conn.writer()),
+            #[cfg(test)]
             CryptoConnection::RealityServer(conn) => CryptoWriter::Reality(conn.writer()),
             CryptoConnection::RealityClient(conn) => CryptoWriter::Reality(conn.writer()),
         }
@@ -188,6 +198,7 @@ impl CryptoConnection {
         match self {
             CryptoConnection::RustlsServer(conn) => conn.write_tls(wr),
             CryptoConnection::RustlsClient(conn) => conn.write_tls(wr),
+            #[cfg(test)]
             CryptoConnection::RealityServer(conn) => conn.write_tls(wr),
             CryptoConnection::RealityClient(conn) => conn.write_tls(wr),
         }
@@ -200,6 +211,7 @@ impl CryptoConnection {
         match self {
             CryptoConnection::RustlsServer(conn) => conn.wants_write(),
             CryptoConnection::RustlsClient(conn) => conn.wants_write(),
+            #[cfg(test)]
             CryptoConnection::RealityServer(conn) => conn.wants_write(),
             CryptoConnection::RealityClient(conn) => conn.wants_write(),
         }
@@ -212,6 +224,7 @@ impl CryptoConnection {
         match self {
             CryptoConnection::RustlsServer(conn) => conn.wants_read(),
             CryptoConnection::RustlsClient(conn) => conn.wants_read(),
+            #[cfg(test)]
             CryptoConnection::RealityServer(conn) => conn.wants_read(),
             CryptoConnection::RealityClient(conn) => conn.wants_read(),
         }
@@ -225,6 +238,7 @@ impl CryptoConnection {
         match self {
             CryptoConnection::RustlsServer(conn) => conn.is_handshaking(),
             CryptoConnection::RustlsClient(conn) => conn.is_handshaking(),
+            #[cfg(test)]
             CryptoConnection::RealityServer(conn) => conn.is_handshaking(),
             CryptoConnection::RealityClient(conn) => conn.is_handshaking(),
         }
@@ -238,6 +252,7 @@ impl CryptoConnection {
         match self {
             CryptoConnection::RustlsServer(conn) => conn.send_close_notify(),
             CryptoConnection::RustlsClient(conn) => conn.send_close_notify(),
+            #[cfg(test)]
             CryptoConnection::RealityServer(conn) => conn.send_close_notify(),
             CryptoConnection::RealityClient(conn) => conn.send_close_notify(),
         }
@@ -252,6 +267,7 @@ pub fn feed_crypto_connection(
     match connection {
         CryptoConnection::RustlsServer(conn) => feed_rustls_server_connection(conn, data),
         CryptoConnection::RustlsClient(conn) => feed_rustls_client_connection(conn, data),
+        #[cfg(test)]
         CryptoConnection::RealityServer(conn) => feed_reality_server_connection(conn, data),
         CryptoConnection::RealityClient(conn) => feed_reality_client_connection(conn, data),
     }

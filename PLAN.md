@@ -12,12 +12,28 @@ contracts.
 
 | Area | Decision |
 |---|---|
-| VM and release inputs | On Apple Silicon, setup downloads the pinned macanine/qemu engine for HVF. Windows x64 runs a native amd64 guest with the installed QEMU, and Linux uses its distribution's QEMU. Setup records the Ubuntu 24.04 or 26.04 LTS image's dated URL and SHA-256. Ubuntu's generic kernel supplies the required 9p and display drivers. |
-| Host and guest transport | Tauri commands run on the host. Guest commands use newline-delimited JSON RPC and typed events over `ssh ... cabind connect`. The per-machine SSH key authenticates the relay. The app compares the daemon's hello build hash with its Linux binary for the guest architecture and deploys it when needed. |
+| VM and release inputs | On Apple Silicon, Cabin runs an ARM64 guest under HVF with the bundled QEMU or the pinned macanine/qemu download for unbundled development. Windows x64 uses bundled QEMU with WHPX and can fall back to TCG. Linux uses its distribution's QEMU. Setup records the Ubuntu 24.04 or 26.04 LTS image's dated URL and SHA-256. Ubuntu's generic kernel supplies the required 9p and display drivers. |
+| Host and guest transport | Tauri commands run on the host. Guest commands use newline-delimited JSON RPC and typed events over `ssh ... cabind connect`. The per-machine SSH key authenticates the relay. The app compares the daemon's hello build hash with its Linux binary for the guest architecture and deploys it when needed. QMP, the guest agent, the serial console, and QEMU's gateway stream use per-instance AF_UNIX sockets on every host. |
 | Lifecycle and recovery | The installer collects System, Account, and Review before it starts provisioning. Guest system changes prepare, apply, verify, and roll back through the operation journal. Machine startup reports each phase and keeps its logs. A first-install rollback removes its incomplete disk, while repair uses the existing disk. |
 | Desktop and tools | Sway is the guest desktop. noVNC over SSH is the default viewer. SPICE uses the same desktop through a private QEMU socket on supported machines. Node.js, Python, uv, and agent tooling are installed in the guest. |
 | UI and data flow | The React window consumes a startup snapshot and typed events. Host and guest report authoritative process and operation state. Visible reads refresh on entry, foreground return, updates, or bounded polling where events are unavailable. Settings use one column with the most relevant state and actions at the top. |
 | Project data | Agents work on the VM's local disk. Mac projects sync against a saved base. The VM supports 9p for optional live mounts outside project sync. |
+
+## Diagnostics
+
+`cabin-diagnostics` supplies one event format and file policy to the desktop, `vmctl`,
+and `cabind`. Host and guest each write to local storage so a broken SSH connection
+still leaves diagnostics on both sides. The support report requests a bounded guest
+event tail with a deadline and remains available without the guest. The renderer
+submits allowlisted event identifiers and the host rate-limits them.
+
+The operation journal uses the same rotating writer with durable appends. Recovery
+reads its legacy location as well as the current journal. Keep raw captures for QEMU,
+SSH, provisioning and managed desktop processes where a consumer needs the original
+output. Open them with the shared capture API and use bounded reads in reports.
+CLI stdout, protocol streams, and user terminal and agent output keep their own
+contracts. App events should carry operational context and omit user content,
+credentials, request payloads, and complete command arguments.
 
 ## Network routing and recovery
 
@@ -81,14 +97,16 @@ routes with backoff. Checks retain their evidence and history for the Network Ch
 The Mac and guest scan both sides as needed and reconcile against a per-project base. Safe
 applies Mac edits while keeping independent guest edits. Two-way reconciles both directions.
 Mirror makes the guest match the Mac. Both-side edits in Safe or Two-way become explicit
-conflicts. The excluded set is outside the sync plan and archive writes use atomic apply.
-The scanner rejects unreadable snapshots before reconciliation.
+conflicts. The excluded set is outside the sync plan. Regular files are staged and
+published atomically after the archive payload length is verified. The scanner rejects
+unreadable snapshots before reconciliation.
 
 FSEvents and inotify trigger scoped batches. A full cycle runs every ten minutes. Short
 requests share one SSH transport, scan listings and bases use compact binary forms, and each
-direction transfers its batch as a tar stream. Two-way scans concurrently. Safe skips the
-guest scan when the Mac matches the base. Safe and Two-way default to a one-time `.git`
-copy. Mirror includes `.git` in normal sync.
+direction transfers its batch as a tar stream. The host drains remote diagnostics alongside
+scan and transfer streams and retains up to 64 KiB per command for error reporting.
+Two-way scans concurrently. Safe skips the guest scan when the Mac matches the base.
+Safe and Two-way default to a one-time `.git` copy. Mirror includes `.git` in normal sync.
 
 ## Agent Client Protocol design
 

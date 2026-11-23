@@ -6,6 +6,7 @@
 
 mod cdp;
 mod process;
+pub(crate) use process::chrome_log_path;
 mod profile;
 
 use std::fs;
@@ -72,12 +73,17 @@ pub fn main(args: &[String]) -> std::result::Result<i32, Box<dyn std::error::Err
             println!("{}", serde_json::to_string(&status())?);
             Ok(0)
         }
+        "log-tail" => {
+            let log = cabin_diagnostics::tail(&chrome_log_path(), 8 * 1024, 0);
+            print!("{log}");
+            Ok(0)
+        }
         "ready" => Ok(if status().get("ready") == Some(&json!(true)) {
             0
         } else {
             1
         }),
-        _ => Err("usage: browser run|verify|audit|navigate|paste|close|status|ready".into()),
+        _ => Err("usage: browser run|verify|audit|navigate|paste|close|status|ready|log-tail".into()),
     }
 }
 

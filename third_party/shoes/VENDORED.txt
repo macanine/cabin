@@ -33,13 +33,15 @@ Local changes (keep this list exact when upgrading):
   policy. DNS tries supplied IP-literal servers in order over cleartext UDP, with
   a two-second timeout per server and no system resolver or hosts file fallback;
   embedded targets remain IPv4-only.
-  Bound listener mode supports HTTP, SOCKS and mixed TCP listeners with IP-literal
-  bind addresses, and rejects custom DNS configuration.
+  Embedded listener mode supports HTTP, SOCKS and mixed over TCP with loopback
+  IP-literal bind addresses.
 - src/lib.rs: `pub mod embed;`
 - Cargo.toml: bin and test targets removed (the library builds as rlib only).
 - Removed from the published crate: android/, examples/, scripts/, include/, tests/.
+  The unit test that enumerated the upstream examples is removed with its fixtures.
 - src/main.rs and the tikv-jemallocator dependency removed (binary only).
-- src/embed.rs parses YAML itself because upstream gates load_config_str behind the ffi feature.
+- src/embed.rs parses YAML in process. The mobile FFI, socket protector, standalone
+  config loaders and FFI logging are removed, along with the Android dependencies.
 - src/obfs.rs added: client-side simple-obfs for Shadowsocks (`plugin: obfs`), the
   fake HTTP request / TLS ClientHello written below the Shadowsocks stream.
   Upstream has no plugin support at all.
@@ -56,7 +58,8 @@ Local changes (keep this list exact when upgrading):
   also clears SIO_UDP_CONNRESET). Entry points: `embed::run_tun_controlled(config,
   shutdown, gate, device)` and `run_tun_controlled_with_bound_dns(.., bound, device)`.
   The TUN config's `device_fd` is only the schema tag that marks a TUN config; its
-  value is ignored.
+  value is ignored. Legacy device fields are accepted for YAML compatibility.
+  MTU defaults and packet stack validation are platform-independent.
   * src/tun/wake.rs: `Wake` is a loopback UDP pair, and `WakeReceiver::wait` waits on
     the wake socket and the packet socket with the `polling` crate (level-triggered
     epoll, kqueue or wepoll). `loopback_udp_pair` lives here.
@@ -66,12 +69,15 @@ Local changes (keep this list exact when upgrading):
     device creation, `raw_fd`, `close_fd_on_drop`, `packet_information`, interface
     naming, `start_tun_server` and `run_tun_from_config` are removed, and so is the
     `tun` crate dependency.
-  * src/tcp/tcp_server.rs, src/ffi/common.rs: a TUN server in the config-driven path
-    and mobile TUN descriptors return `Unsupported`.
   * Tests that used Unix socket pairs use UDP pairs; the EOF-shutdown and
     packet-information tests are removed.
-- Cargo.toml: `polling` added and `tun` removed;
+- Cargo.toml: `polling` added, `tun` and the `smoltcp` TUN/TAP feature removed;
   `[target.'cfg(windows)'.dependencies] windows-sys` (Foundation, WinSock) is used
   for SIO_UDP_CONNRESET.
-- src/tcp/tcp_server.rs: `PathBuf` and the Unix socket path binding are unused on
-  Windows, so they carry the matching cfg to keep the build warning-free.
+- Embedded listener validation rejects non-loopback binds, Unix paths, non-TCP
+  transports and other inbound protocols before startup. Removed QUIC, Hysteria2,
+  TUIC, TLS, REALITY, AnyTLS and NaiveProxy inbound listeners and the server
+  handlers for PortForward, Shadowsocks, Snell, Trojan, VMess and WebSocket.
+  ShadowTLS keeps the ServerHello parser used by its client and VLESS Vision.
+  REALITY, VLESS, H2Mux and XUDP peer fixtures compile in tests only. The outbound protocol
+  implementations, QUIC clients, and the VM TCP/UDP packet stack are retained.

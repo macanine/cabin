@@ -4,9 +4,8 @@ import { gridFor, MIN_GRID, settledSender } from "../src/lib/terminalFit.ts";
 
 const cell = { width: 7.8, height: 17 };
 
-test("whole cells that fit the box; no scrollbar strip reserved", () => {
-  // 780 px is exactly 100 columns (ghostty-web's FitAddon gave 98: it keeps
-  // 15 px free for a scrollbar it draws as an overlay anyway).
+test("the content area is filled with whole cells", () => {
+  // The caller provides the width after subtracting the scrollbar gutter.
   assert.deepEqual(gridFor(780, 510, cell), { cols: 100, rows: 30 });
   assert.deepEqual(gridFor(785, 520, cell), { cols: 100, rows: 30 });
 });

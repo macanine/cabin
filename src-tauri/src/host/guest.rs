@@ -297,6 +297,10 @@ impl Host {
             .map_err(|error| unreachable(error.to_string()))?;
         let stderr = attempt
             .and_then(|attempt| attempt.log_file())
+            .or_else(|| {
+                let path = runtime.cfg.instance_logs_dir().join("guest-link.log");
+                cabin_diagnostics::open_capture(&path, cabin_diagnostics::Capture::Replace).ok()
+            })
             .map_or_else(Stdio::null, Stdio::from);
         let mut command = Command::new(&argv[0]);
         command
@@ -308,13 +312,20 @@ impl Host {
         let mut child = command
             .spawn()
             .map_err(|e| unreachable(format!("could not run {}: {e}", argv[0])))?;
-        let stdout = child.stdout.take().expect("piped stdout");
-        let stdin = child.stdin.take().expect("piped stdin");
+        let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(unreachable("SSH did not provide the cabind handshake pipes".into()));
+        };
         let (hello_tx, hello_rx) = mpsc::channel();
-        std::thread::spawn(move || {
+        if let Err(error) = std::thread::Builder::new().name("guest-hello".into()).spawn(move || {
             let mut lines = BufReader::new(stdout).lines();
             let _ = hello_tx.send((lines.next(), lines));
-        });
+        }) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(unreachable(format!("Could not start reading the cabind handshake: {error}")));
+        }
         let timeout = Duration::from_secs(20) * vm_core::platform::slowdown();
         let deadline = Instant::now() + timeout;
         let hello = match hello_rx.recv_timeout(timeout) {
@@ -437,14 +448,21 @@ impl Host {
         let alive = Arc::new(AtomicBool::new(true));
         let worker_alive = alive.clone();
         let me = self.clone();
-        let load = std::thread::spawn(move || {
+        let load = match std::thread::Builder::new().name("guest-snapshot".into()).spawn(move || {
             let result =
                 me.load_guest(generation, &worker_alive, attempt.as_ref(), version, daemon);
             if result.is_err() {
                 me.disconnect();
             }
             result
-        });
+        }) {
+            Ok(load) => load,
+            Err(error) => {
+                self.disconnect();
+                self.fail_pending("The connection to the machine dropped");
+                return Err(format!("Could not start loading the guest snapshot: {error}"));
+            }
+        };
 
         for line in lines {
             if generation != self.generation.load(Ordering::SeqCst) {
@@ -499,21 +517,13 @@ impl Host {
     }
 
     /// Start an installed machine once per app launch, then maintain its link.
-    pub fn run_connection_loop(self: &Arc<Self>) {
-        let kick_rx = self
-            .kick_rx.locked()
-            .take()
-            .expect("connection loop started once");
-        let launch = self
-            .machine
-            .installed()
-            .then(|| self.begin_start().ok())
-            .flatten();
+    pub fn run_connection_loop(self: &Arc<Self>) -> Result<(), AppError> {
         let me = self.clone();
         std::thread::Builder::new()
             .name("guest-link".into())
             .spawn(move || {
-                if let Some(attempt) = launch {
+                let Some(kick_rx) = me.kick_rx.locked().take() else { return };
+                if me.machine.installed() && let Ok(attempt) = me.begin_start() {
                     let _ = me.start_machine(&attempt);
                 }
                 let mut backoff = Duration::from_millis(250);
@@ -598,7 +608,8 @@ impl Host {
                     backoff = (backoff * 2).min(Duration::from_secs(5));
                 }
             })
-            .expect("spawn guest link thread");
+            .map_err(|error| unavailable(format!("Could not start the guest connection: {error}")))?;
+        Ok(())
     }
 }
 

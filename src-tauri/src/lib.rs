@@ -33,6 +33,7 @@ macro_rules! with_commands {
             app_quit,
             app_background,
             guest_invoke,
+            frontend_diagnostic,
             machine_checks,
             machine_diagnostics,
             host_fix,
@@ -140,16 +141,42 @@ fn agentd_binary(resources: Option<PathBuf>) -> PathBuf {
         .unwrap_or_else(|| candidates[0].clone())
 }
 
+/// The renderer sends a fixed event identifier, without any exception text,
+/// stack, page URL, or user data. Rate-limit each identifier at the receiver.
+#[tauri::command]
+fn frontend_diagnostic(kind: &str) {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    static LAST: Mutex<[Option<Instant>; 4]> = Mutex::new([None; 4]);
+    let (index, event) = match kind {
+        "viewCrash" => (0, "view_crash"),
+        "subscriberCrash" => (1, "subscriber_crash"),
+        "scriptError" => (2, "script_error"),
+        "unhandledRejection" => (3, "unhandled_rejection"),
+        _ => return,
+    };
+    let Ok(mut last) = LAST.lock() else { return };
+    if last[index].is_some_and(|at| at.elapsed() < Duration::from_secs(10)) {
+        return;
+    }
+    last[index] = Some(Instant::now());
+    drop(last);
+    cabin_diagnostics::event(cabin_diagnostics::Level::Error, "frontend", event, format_args!(""));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let home = data_dir().join("vm");
+    cabin_diagnostics::init(&vm_core::paths::StatePaths::new(&home).logs(), "desktop");
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             lifecycle::show_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .on_window_event(lifecycle::on_window_event)
-        .setup(|app| {
+        .setup(move |app| {
             let lock = lifecycle::acquire_owner_lock(&data_dir()).map_err(std::io::Error::other)?;
             app.manage(lock);
             let resources = app.path().resource_dir().ok();
@@ -165,38 +192,46 @@ pub fn run() {
             }
             let agentd = agentd_binary(resources);
             let machine = vm_core::machine::Machine::new(
-                data_dir().join("vm"),
+                home,
                 vm_core::paths::default_project_root(),
             )
             .with_agentd(&agentd);
             let host = host::Host::new(machine, agentd)
                 .map_err(|error| std::io::Error::other(error.message))?;
+            app.manage(host.clone());
+            lifecycle::install_tray(app.handle())?;
             #[cfg(target_os = "macos")]
             host.install_network_power_watch();
-            host.run_connection_loop();
-            app.manage(host);
-            lifecycle::install_tray(app.handle())?;
+            host.run_connection_loop()
+                .map_err(|error| std::io::Error::other(error.message))?;
             Ok(())
         })
         .invoke_handler(with_commands!(handler))
-        .build(tauri::generate_context!())
-        .expect("error while building the tauri application")
-        .run(|handle, event| match event {
-            // ⌘Q and the Dock's Quit ask first; only the dialog's answer leaves.
-            RunEvent::ExitRequested { api, code, .. } if code.is_none() && !lifecycle::is_quitting() => {
-                api.prevent_exit();
-                lifecycle::request_quit(handle);
+        .build(tauri::generate_context!());
+    let app = match app {
+        Ok(app) => app,
+        Err(error) => {
+            cabin_diagnostics::event(cabin_diagnostics::Level::Error, "lifecycle", "startup_failed", format_args!("{error}"));
+            std::process::exit(1);
+        }
+    };
+    cabin_diagnostics::event(cabin_diagnostics::Level::Info, "lifecycle", "desktop_ready", format_args!("{}", env!("CARGO_PKG_VERSION")));
+    app.run(|handle, event| match event {
+        // ⌘Q and the Dock's Quit ask first; only the dialog's answer leaves.
+        RunEvent::ExitRequested { api, code, .. } if code.is_none() && !lifecycle::is_quitting() => {
+            api.prevent_exit();
+            lifecycle::request_quit(handle);
+        }
+        // A Dock click brings the hidden window back.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => lifecycle::show_main(handle),
+        RunEvent::Exit => {
+            if let Some(host) = handle.try_state::<task::Shared>() {
+                host.shutdown();
             }
-            // A Dock click brings the hidden window back.
-            #[cfg(target_os = "macos")]
-            RunEvent::Reopen { .. } => lifecycle::show_main(handle),
-            RunEvent::Exit => {
-                if let Some(host) = handle.try_state::<task::Shared>() {
-                    host.shutdown();
-                }
-            }
-            _ => {}
-        });
+        }
+        _ => {}
+    });
 }
 
 #[cfg(test)]

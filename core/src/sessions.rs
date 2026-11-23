@@ -523,11 +523,12 @@ fn supervise(id: &str, generation: u32, slot: &Slot, sink: &EventSink, process: 
     loop {
         {
             let mut state = lock(slot);
-            if state.generation != generation || state.live.is_none() {
+            let current = state.generation == generation;
+            let Some(live) = state.live.as_mut().filter(|_| current) else {
                 drop(state);
                 let _ = child.wait();
                 return;
-            }
+            };
             if exit.is_none() {
                 exit = match child.try_wait() {
                     Ok(Some(code)) => Some(SessionStatus::Exited {
@@ -539,7 +540,7 @@ fn supervise(id: &str, generation: u32, slot: &Slot, sink: &EventSink, process: 
                     }),
                 };
                 if exit.is_some() {
-                    state.live.as_mut().unwrap().killer = None;
+                    live.killer = None;
                 }
             }
             if (!reader_open || tail >= 128)

@@ -374,10 +374,15 @@ impl Config {
         self.spice_dir().join("s.sock")
     }
     pub fn provision_serial_log(&self) -> PathBuf {
-        self.instance_paths().provision_serial()
+        self.instance_logs_dir().join("serial-provision.log")
     }
     pub fn serial_log_path(&self) -> PathBuf {
-        self.instance_file("serial.log")
+        self.instance_logs_dir().join("serial.log")
+    }
+    pub(crate) fn running_serial_log_path(&self) -> PathBuf {
+        let path = self.serial_log_path();
+        let legacy = self.instance_file("serial.log");
+        if !path.is_file() && legacy.is_file() { legacy } else { path }
     }
     pub fn logs_dir(&self) -> PathBuf {
         StatePaths::new(&self.home).logs()

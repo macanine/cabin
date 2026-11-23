@@ -9,7 +9,7 @@ const base = `http://127.0.0.1:${PORT}/tests/ui`;
 const vite = spawn("npx", ["vite", "--port", String(PORT), "--strictPort", "--host", "127.0.0.1"], { stdio: "ignore" });
 for (let i = 0; i < 60; i++) { try { await fetch(`${base}/harness8.html`); break; } catch { await sleep(300); } }
 
-async function page(url, { reducedMotion = false, mac = false } = {}) {
+async function page(url, { reducedMotion = false, mac = false, windows = false } = {}) {
   const port = 9700 + Math.floor(Math.random() * 200);
   const chrome = spawn(CHROME, ["--headless=new", "--no-sandbox", "--disable-gpu", `--remote-debugging-port=${port}`, `--user-data-dir=/tmp/ui-${port}`, "about:blank"], { stdio: "ignore" });
   let list;
@@ -25,15 +25,18 @@ async function page(url, { reducedMotion = false, mac = false } = {}) {
   };
   const send = (method, params = {}) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
   await send("Runtime.enable"); await send("Page.enable");
-  await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 860, deviceScaleFactor: 1, mobile: false });
+  const resize = (width, height, deviceScaleFactor = 1) =>
+    send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor, mobile: false });
+  await resize(1280, 860);
   // Pin the media preferences: CI machines may have Reduce Motion or Reduce
   // Transparency on, which would silently switch the UI to lite effects.
   await send("Emulation.setEmulatedMedia", { features: [
     { name: "prefers-reduced-motion", value: reducedMotion ? "reduce" : "no-preference" },
     { name: "prefers-reduced-transparency", value: "no-preference" },
   ] });
-  if (mac) {
-    await send("Emulation.setUserAgentOverride", { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" });
+  if (mac || windows) {
+    const platform = mac ? "Macintosh; Intel Mac OS X 10_15_7" : "Windows NT 10.0; Win64; x64";
+    await send("Emulation.setUserAgentOverride", { userAgent: `Mozilla/5.0 (${platform})` });
   }
   await send("Page.navigate", { url }); await sleep(3000);
   const evalJs = async (e) => (await send("Runtime.evaluate", { expression: e, returnByValue: true })).result?.result?.value;
@@ -55,7 +58,7 @@ async function page(url, { reducedMotion = false, mac = false } = {}) {
     await sleep(250);
   }
   const close = () => { ws.close(); chrome.kill(); };
-  return { text, click, type, escape, errors, close, eval: evalPage };
+  return { text, click, type, escape, errors, close, resize, eval: evalPage };
 }
 
 let failed = 0;
@@ -144,8 +147,8 @@ for (const mode of ["stopped", "paused"]) {
     if ((await p.text()).includes("Save interface")) throw new Error("Saved interface remained a draft");
   });
 }
-await test("Mac permissions rechecks folder access on foreground return", `${base}/harness8.html?v=permissions`, async (p, has) => {
-  await has("Mac permissions", "Read access needed", "Read and write", "Open System Settings");
+await test("Folder permissions rechecks folder access on foreground return", `${base}/harness8.html?v=permissions`, async (p, has) => {
+  await has("Folder permissions", "Read access needed", "Read and write", "Open System Settings");
   if ((await p.text()).includes("Check again")) throw new Error("Unexpected permissions refresh button");
   await p.eval(`window.dispatchEvent(new Event('focus'))`);
   await p.click("button", "Open System Settings");
@@ -163,6 +166,17 @@ await test("new Mac project shows access recovery with sync options folded", `${
   await p.click("button", "Request access");
   if (await disabled()) throw new Error("Project creation did not become available after the folder recheck");
 });
+await test("Windows project creation uses the picked folder name", `${base}/harness8.html?v=new&windows`, async (p, has) => {
+  await p.click('button[aria-label="Settings and machine"]');
+  await has("Folder permissions");
+  await p.escape();
+  await p.click("main button", "New project");
+  await has("Local folder");
+  await p.click("button", "Choose a folder");
+  await p.click("button", "Sync options");
+  const inputs = await p.eval(`[...document.querySelectorAll('[role=dialog] input')].filter(input => input.type === 'text').map(input => input.value)`);
+  if (!inputs.includes("site") || !inputs.includes("~/projects/site")) throw new Error(JSON.stringify(inputs));
+}, { windows: true });
 await test("Node versions load automatically for the selected mirror", `${base}/harness8.html?v=settings&tab=tools`, async (p, has) => {
   await p.click("button", "Install Node.js");
   await has("Node.js versions", "Continue");
@@ -244,6 +258,73 @@ await test("running chat keeps the composer compact and the activity mark still"
     };
   })()`);
   if (state.working || !state.stopOnRight || !state.flatMeter || state.animation !== "breathe" || state.rings) throw new Error(JSON.stringify(state));
+});
+await test("terminal zoom, Retina backing and IME keep a consistent character grid", `${base}/harness4.html?m=terminal&theme=dark`, async (p, has) => {
+  const geometry = () => p.eval(`(() => {
+    const canvas = document.querySelector('.terminal-host canvas');
+    const slot = document.querySelector('.terminal-slot');
+    const input = document.querySelector('.terminal-host textarea');
+    const { cols, rows } = __terminalTest.sizes.at(-1);
+    return {
+      cols, rows, backingWidth: canvas.width, backingHeight: canvas.height,
+      canvasWidth: canvas.clientWidth, canvasHeight: canvas.clientHeight,
+      slotWidth: slot.clientWidth, slotHeight: slot.clientHeight,
+      cellWidth: parseFloat(input.style.width), cellHeight: parseFloat(input.style.lineHeight),
+      font: input.style.fontSize, loaded: document.fonts.check('14px "JetBrains Mono"'),
+    };
+  })()`);
+  await has("Running", "14 px");
+  const initial = await geometry();
+  if (!initial?.loaded || initial.font !== "14px") throw new Error("the bundled terminal font was not loaded");
+  await p.click('[aria-label="Increase terminal text size"]');
+  await has("15 px");
+  const zoomed = await geometry();
+  if (zoomed.font !== "15px" || zoomed.cellHeight <= initial.cellHeight || zoomed.rows >= initial.rows) {
+    throw new Error("zoom did not update the renderer, input and PTY together");
+  }
+  await p.resize(380, 620, 1.5);
+  await sleep(350);
+  const narrow = await geometry();
+  if (narrow.cols >= zoomed.cols || narrow.canvasWidth > narrow.slotWidth || narrow.canvasHeight > narrow.slotHeight ||
+      narrow.canvasWidth - narrow.cols * narrow.cellWidth !== 14 || narrow.canvasHeight !== narrow.rows * narrow.cellHeight ||
+      narrow.backingWidth !== Math.round(narrow.canvasWidth * 1.5) || narrow.backingHeight !== Math.round(narrow.canvasHeight * 1.5)) {
+    throw new Error(`narrow terminal grid or backing size mismatch: ${JSON.stringify(narrow)}`);
+  }
+  await p.eval(`(() => {
+    const input = document.querySelector('.terminal-host textarea');
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: '0', ctrlKey: true, bubbles: true, cancelable: true }));
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    input.dispatchEvent(new CompositionEvent('compositionupdate', { data: '你', bubbles: true }));
+    input.dispatchEvent(new CompositionEvent('compositionend', { data: '你', bubbles: true }));
+  })()`);
+  await sleep(250);
+  await has("14 px");
+  if (await p.eval("__terminalTest.writes.join('')") !== "你") throw new Error("IME text was not sent exactly once");
+});
+
+await test("Git checks Commit all against current staging and ignores an older poll", `${base}/harness4.html?m=git`, async (p, has) => {
+  await has("Commit all", "notes.txt");
+  await p.click(".wb-commit textarea");
+  await p.type("Update notes");
+  const buttonEnabled = await p.eval("!document.querySelector('.wb-commit-btn').disabled");
+  if (!buttonEnabled) throw new Error("commit stayed disabled after entering the message");
+  const pollStarted = await p.eval(`(() => {
+    __gitTest.defer = true;
+    window.dispatchEvent(new Event('focus'));
+    return Boolean(__gitTest.release);
+  })()`);
+  if (!pollStarted) throw new Error("the older status request did not start");
+  await p.eval("__gitTest.stage()");
+  await p.click(".wb-commit-btn", "Commit all");
+  await has("STAGED CHANGES");
+  if (await p.eval("__gitTest.commits.length")) throw new Error("Commit all proceeded after staging changed");
+  await p.eval("__gitTest.release()");
+  await sleep(100);
+  await has("STAGED CHANGES");
+  await p.click(".wb-commit-btn", "Commit");
+  await has("Working tree clean");
+  if (await p.eval("JSON.stringify(__gitTest.commits)") !== "[false]") throw new Error("expected one staged-only commit");
 });
 await test("markdown code uses one frame and a compact copy control", `${base}/harness4.html`, async (p, has) => {
   await has("export default defineConfig");

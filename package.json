@@ -20,6 +20,7 @@
     "check:win": "node scripts/check-windows.mjs"
   },
   "dependencies": {
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@git-diff-view/react": "^0.1.8",
     "@headless-tree/core": "^1.8.0",
     "@headless-tree/react": "^1.8.0",

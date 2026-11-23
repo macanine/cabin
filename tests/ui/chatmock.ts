@@ -93,10 +93,70 @@ export const snapshot = () => ({
   items: mode === "plan" ? [...items, ...items2.slice(0, 1)] : mode === "ask" ? [...items, ...items2.slice(0, 3), ...ask] : mode === "run" ? [...items, ...items2] : mode === "empty" ? [] : items, plans: mode === "plan" ? [plan] : [], subagents: [], tasks: [],
   state: { state: mode === "run" || mode === "ask" ? "running" : "ready", message: null }, model: "claude-sonnet-5-5", permission: "approval-required", usage: [{ turnId: "u1", usage: { input: 12000, cached: 8000, cacheWrite: 0, output: 1800, reasoning: 300, generationMs: 9000, costMicros: 12000 } }], controls: ctl,
 });
+const gitFile = { path: "notes.txt", origPath: null, status: "M", additions: 1, deletions: 0 };
+const gitStatus = { repository: true, branch: "main", head: "abcdef0", ahead: 0, behind: 0,
+  staged: [] as typeof gitFile[], unstaged: [gitFile], untracked: [], conflicted: [], truncated: false };
+const gitTest = {
+  status: gitStatus,
+  defer: false,
+  release: null as (() => void) | null,
+  commits: [] as boolean[],
+  stage() { this.status = { ...gitStatus, staged: [gitFile], unstaged: [] }; },
+};
+if (mode === "git") (window as any).__gitTest = gitTest;
+
+const terminalData = [
+  "\x1b[36mnic@cabin\x1b[0m \x1b[34m~/projects/cabin\x1b[0m % git status --short",
+  " \x1b[33mM\x1b[0m src/components/Terminal.tsx",
+  " \x1b[33mM\x1b[0m src/styles/session.css",
+  "",
+  "\x1b[36mnic@cabin\x1b[0m \x1b[34m~/projects/cabin\x1b[0m % npm test",
+  "\x1b[1;32m✓\x1b[0m Terminal metrics and resize",
+  "\x1b[1;32m✓\x1b[0m Shell input and Unicode",
+  "",
+  "┌──────────────────────┐",
+  "│  UTF-8 你好  日本語  │",
+  "└──────────────────────┘",
+  "",
+  "\x1b[36mnic@cabin\x1b[0m \x1b[34m~/projects/cabin\x1b[0m % ",
+].join("\r\n");
+const terminalTest = {
+  status: { state: "running", pid: 1 } as import("../../src/services/ipc/generated/core").SessionStatus,
+  sizes: [] as { cols: number; rows: number }[],
+  writes: [] as string[],
+  snapshot() {
+    return { generation: 1, status: this.status, startOffset: 0,
+      endOffset: new TextEncoder().encode(terminalData).length, data: terminalData };
+  },
+};
+if (mode === "terminal") (window as any).__terminalTest = terminalTest;
+
 (window as any).__TAURI_INTERNALS__ = {
   transformCallback: () => 1, unregisterCallback: () => {},
   invoke: async (cmd: string, args: any) => {
     if (cmd === "guest_invoke") {
+      if (mode === "git" && args.method === "git_status") {
+        const status = gitTest.status;
+        if (gitTest.defer) {
+          gitTest.defer = false;
+          await new Promise<void>((resolve) => { gitTest.release = resolve; });
+        }
+        return status;
+      }
+      if (mode === "git" && args.method === "git_commit") {
+        gitTest.commits.push(args.params.all);
+        gitTest.status = { ...gitStatus, head: "abcdef1", unstaged: [] };
+        return { head: "abcdef1", summary: "Update notes" };
+      }
+      if (mode === "terminal") {
+        if (args.method === "terminal_snapshot") return terminalTest.snapshot();
+        if (args.method === "terminal_attach") {
+          terminalTest.status = { state: "running", pid: 1 };
+          return terminalTest.snapshot();
+        }
+        if (args.method === "session_resize") terminalTest.sizes.push(args.params);
+        if (args.method === "session_write") terminalTest.writes.push(args.params.data);
+      }
       if (args.method === "chat_snapshot") return snapshot();
       if (args.method === "agent_chat_capabilities") return [{ agent: "claude", permissionModes: ["approval-required", "auto-accept-edits", "auto", "plan", "full-access"] }];
       if (args.method === "agent_models") return [

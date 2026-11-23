@@ -108,7 +108,9 @@ export function ChatComposer({
       <QueuedMessages
         queue={queue.queue}
         canSteer={canSteer}
-        onSteer={(message) => void queue.steer(message)}
+        failed={queue.failed}
+        onRetry={queue.retry}
+        onSteer={queue.steer}
         onEdit={queue.onEdit}
         onMove={queue.move}
         onRemove={queue.remove}

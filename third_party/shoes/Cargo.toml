@@ -39,7 +39,6 @@ repository = "https://github.com/cfal/shoes/"
 [features]
 default = []
 external-network-tests = ["integration-tests"]
-ffi = []
 integration-tests = []
 optional-peer-tests = ["integration-tests"]
 privileged-tests = ["integration-tests"]
@@ -49,17 +48,6 @@ stress-tests = ["integration-tests"]
 name = "shoes"
 crate-type = ["rlib"]
 path = "src/lib.rs"
-
-
-["integration-tests"]
-
-["external-network-tests"]
-
-["optional-peer-tests"]
-
-["privileged-tests"]
-
-["stress-tests"]
 
 [dependencies.async-trait]
 version = "0.1.92"
@@ -95,12 +83,6 @@ version = "0.3.34"
 [dependencies.h2]
 version = "0.4.19"
 
-[dependencies.h3]
-version = "0.0.8"
-
-[dependencies.h3-quinn]
-version = "0.0.10"
-
 [dependencies.hickory-resolver]
 version = "0.26.3"
 features = [
@@ -113,24 +95,6 @@ default-features = false
 
 [dependencies.http]
 version = "1.5.0"
-
-[dependencies.http-body-util]
-version = "0.1.5"
-
-[dependencies.hyper]
-version = "1.11.1"
-features = [
-    "server",
-    "http1",
-    "http2",
-]
-
-[dependencies.hyper-util]
-version = "0.1.21"
-features = [
-    "tokio",
-    "server",
-]
 
 [dependencies.indexmap]
 version = "2.14.2"
@@ -154,12 +118,6 @@ version = "0.11.0"
 [dependencies.memchr]
 version = "2.8.3"
 
-[dependencies.mime_guess]
-version = "2.0.5"
-
-[dependencies.notify]
-version = "8.2.0"
-
 [dependencies.parking_lot]
 version = "0.12.5"
 
@@ -181,14 +139,6 @@ version = "0.10.3"
 
 [dependencies.rand_core]
 version = "0.10.1"
-
-[dependencies.rcgen]
-version = "0.14.10"
-features = [
-    "aws_lc_rs",
-    "pem",
-]
-default-features = false
 
 [dependencies.rust-argon2]
 version = "3.0.0"
@@ -225,7 +175,6 @@ features = [
     "socket-udp",
     "socket-tcp",
     "socket-tcp-cubic",
-    "phy-tuntap_interface",
     "assembler-max-segment-count-32",
 ]
 default-features = false
@@ -292,15 +241,6 @@ features = ["test-util"]
 
 [dev-dependencies.tokio-rustls]
 version = "0.26.6"
-
-[target.'cfg(target_os = "android")'.dependencies.android_logger]
-version = "0.15.1"
-
-[target.'cfg(target_os = "android")'.dependencies.jni]
-version = "0.22.4"
-
-[target.'cfg(target_os = "android")'.dependencies.ndk-sys]
-version = "0.6.0"
 
 [profile.release]
 opt-level = 3

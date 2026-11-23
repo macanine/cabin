@@ -6,6 +6,20 @@ import test from "node:test";
 import { Ghostty } from "ghostty-web";
 import { resolveConfig } from "vite";
 import { captureViewport, restoreViewport } from "../src/lib/terminalViewport.ts";
+import { paintTerminalGlyph } from "../src/lib/terminalGlyphs.ts";
+
+test("TUI rules join across cell edges at fractional scale", () => {
+  const rects = [];
+  const ctx = { fillRect: (...rect) => rects.push(rect) };
+  const scale = 1.5;
+  assert.equal(paintTerminalGlyph(ctx, 0x250c, 0, 0, 9, 17, scale), true);
+  assert.equal(paintTerminalGlyph(ctx, 0x2500, 9, 0, 9, 17, scale), true);
+  assert.equal(paintTerminalGlyph(ctx, 0x2502, 0, 17, 9, 17, scale), true);
+  const [cornerVertical, cornerHorizontal, horizontal, verticalTop] = rects;
+  assert.equal(cornerHorizontal[0] + cornerHorizontal[2], horizontal[0]);
+  assert.equal(cornerVertical[1] + cornerVertical[3], verticalTop[1]);
+  assert.equal(paintTerminalGlyph(ctx, 0x4f60, 0, 0, 9, 17, scale), false);
+});
 
 test("Ghostty font metrics are patched for versioned dev module URLs", async () => {
   const root = fileURLToPath(new URL("..", import.meta.url));

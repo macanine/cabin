@@ -1,5 +1,5 @@
 import { Button, Modal, SegmentedControl, TextInput } from "@mantine/core";
-import { IconBrandApple, IconChevronRight, IconFolder, IconServer } from "@tabler/icons-react";
+import { IconChevronRight, IconFolder, IconServer } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import type { SyncMode, SyncPreview, SyncRules, Workspace } from "../services/ipc/generated/core";
 import { libraryIpc } from "../services/ipc/library";
@@ -15,12 +15,12 @@ import { SyncFiles } from "./sync/SyncFiles";
 import { Reveal } from "./motion";
 import { Note } from "./Boot";
 
-type Source = "mac" | "machine";
+type Source = "local" | "machine";
 
 /**
- * A new project: either a folder on this Mac kept in sync with a copy in the
+ * A new project: either a local folder kept in sync with a copy in the
  * machine (the usual case), or an empty folder that lives only in the
- * machine. For a Mac folder: its name, where it lands, which way changes
+ * machine. For a local folder, its name, where it lands, which way changes
  * flow, and which files take part.
  */
 export function NewWorkspaceModal({
@@ -33,7 +33,7 @@ export function NewWorkspaceModal({
   /** Defaults to opening the new project. */
   onCreated?: (workspace: Workspace) => void;
 }) {
-  const [source, setSource] = useState<Source>("mac");
+  const [source, setSource] = useState<Source>("local");
   const [hostPath, setHostPath] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [guestPath, setGuestPath] = useState("");
@@ -49,7 +49,7 @@ export function NewWorkspaceModal({
 
   useEffect(() => {
     if (!opened) return;
-    setSource("mac"); setHostPath(null); setName(""); setGuestPath(""); setGuestTouched(false);
+    setSource("local"); setHostPath(null); setName(""); setGuestPath(""); setGuestTouched(false);
     setMode(DEFAULT_SYNC_MODE); setRules(defaultRules(DEFAULT_SYNC_MODE)); setPreview(null); setError(null); setPreviewError(null); setAdvanced(false);
   }, [opened]);
 
@@ -81,17 +81,17 @@ export function NewWorkspaceModal({
     setError(null);
     let workspace: Workspace | null = null;
     try {
-      if (source === "mac" && hostPath) {
+      if (source === "local" && hostPath) {
         const access = await macPermissionsIpc.checkFolder(hostPath, mode === "twoWay");
         if (access.state !== "available") {
           throw new IpcError({
             code: access.privacySettings ? "mac_folder_privacy" : "mac_folder_access",
-            message: access.message ?? "The Mac folder is unavailable.",
+            message: access.message ?? "The local folder is unavailable.",
           });
         }
       }
       workspace = await libraryIpc.createWorkspace(name.trim(), folder.trim());
-      if (source === "mac" && hostPath) {
+      if (source === "local" && hostPath) {
         await syncIpc.create({ workspaceId: workspace.id, name: name.trim(), hostPath, guestPath: workspace.path, mode, rules });
         await refreshSyncs();
       }
@@ -102,16 +102,16 @@ export function NewWorkspaceModal({
       }
     } catch (err) {
       // A project without its sync would look synced and not be: undo it.
-      if (workspace && source === "mac") await libraryIpc.deleteWorkspace(workspace.id).catch(() => undefined);
+      if (workspace && source === "local") await libraryIpc.deleteWorkspace(workspace.id).catch(() => undefined);
       setError(toIpcError(err));
     } finally {
       setBusy(false);
     }
   }
 
-  const mac = source === "mac";
-  const problem = error ?? (mac ? previewError : null);
-  const folderProblem = mac && hostPath && problem && isFolderAccessError(problem) ? problem : null;
+  const local = source === "local";
+  const problem = error ?? (local ? previewError : null);
+  const folderProblem = local && hostPath && problem && isFolderAccessError(problem) ? problem : null;
   function retryFolder() {
     setError(null);
     setPreview(null);
@@ -131,17 +131,17 @@ export function NewWorkspaceModal({
           value={source}
           onChange={(value) => setSource(value as Source)}
           data={[
-            { value: "mac", label: <span className="inline-flex items-center gap-1.5"><IconBrandApple size={14} />Mac folder</span> },
+            { value: "local", label: <span className="inline-flex items-center gap-1.5"><IconFolder size={14} />Local folder</span> },
             { value: "machine", label: <span className="inline-flex items-center gap-1.5"><IconServer size={14} />Machine only</span> },
           ]}
         />
         <p className="m-0 text-xs leading-normal text-muted [&_code]:font-mono">
-          {mac
-            ? "Edit on your Mac, run agents in the machine. Both copies stay in sync."
+          {local
+            ? "Edit locally and run agents in the machine. Both copies stay in sync."
             : <>An empty folder in the machine, for a fresh start or a <code>git clone</code>.</>}
         </p>
 
-        {mac && (
+        {local && (
           <button type="button" className={`press flex w-full cursor-pointer items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-md hover:border-accent hover:bg-accent-soft ${hostPath ? "border-accent/45 bg-accent/7 text-fg" : "border-dashed border-line bg-surface/50 text-muted"}`} onClick={() => void pick()}>
             <IconFolder size={18} stroke={1.6} className="shrink-0 text-accent" />
             {hostPath
@@ -151,11 +151,11 @@ export function NewWorkspaceModal({
           </button>
         )}
 
-        {(!mac || hostPath) && (
+        {(!local || hostPath) && (
           <TextInput label="Name" placeholder="api-server" value={name} onChange={(e) => setName(e.currentTarget.value)} data-autofocus />
         )}
 
-        {mac && hostPath && (
+        {local && hostPath && (
           <>
             <button type="button" className="flex cursor-pointer items-center gap-1.5 border-0 bg-transparent px-0 py-0.5 text-left text-md font-medium text-fg" aria-expanded={advanced} onClick={() => setAdvanced((v) => !v)}>
               <IconChevronRight size={13} className={`transition-transform duration-300 ease-out ${advanced ? "rotate-90" : ""}`} />
@@ -188,14 +188,14 @@ export function NewWorkspaceModal({
           </>
         )}
 
-        {!mac && slug(name) && <p className="m-0 text-xs leading-normal text-muted [&_code]:font-mono">Created at <code>{folder}</code></p>}
+        {!local && slug(name) && <p className="m-0 text-xs leading-normal text-muted [&_code]:font-mono">Created at <code>{folder}</code></p>}
         {hostPath && folderProblem ? (
           <FolderAccessHelp key={hostPath} path={hostPath} needsWrite={mode === "twoWay"} message={folderProblem.message}
             privacy={folderProblem.code === "mac_folder_privacy"} onCheck={retryFolder} />
         ) : problem && <Note tone="bad">{problem.message}</Note>}
         <footer className="mt-1 flex justify-end gap-2 border-t border-line/70 pt-3">
           <Button variant="default" onClick={onClose}>Cancel</Button>
-          <Button type="submit" loading={busy} disabled={!ready}>{mac ? "Create and sync" : "Create project"}</Button>
+          <Button type="submit" loading={busy} disabled={!ready}>{local ? "Create and sync" : "Create project"}</Button>
         </footer>
       </form>
     </Modal>

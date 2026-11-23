@@ -512,12 +512,11 @@ impl Machine {
     }
 
     fn install_overrides(&self, options: &InstallOptions) -> Value {
-        let mut overrides = json!({
-            "home": self.home.display().to_string(),
-            "name": NAME,
-            "ssh_port": SSH_PORT,
-        });
-        let map = overrides.as_object_mut().expect("object");
+        let mut map = serde_json::Map::from_iter([
+            ("home".into(), json!(self.home.display().to_string())),
+            ("name".into(), json!(NAME)),
+            ("ssh_port".into(), json!(SSH_PORT)),
+        ]);
         // The app's VM is isolated: its internet goes only through the Mac
         // gateway (see `netgw`). Device brings its own network profile.
         map.insert("network_mode".into(), json!("gateway"));
@@ -558,7 +557,7 @@ impl Machine {
             // the LAN (no socket_vmnet bridge).
             map.insert("device".into(), json!({ "enabled": true }));
         }
-        overrides
+        Value::Object(map)
     }
 
     /// Configuration used by a new install, including its network socket.
@@ -693,12 +692,12 @@ impl Machine {
             let cfg = cfg.clone();
             let done = done.clone();
             let on_progress = on_progress.clone();
-            std::thread::spawn(move || {
+            std::thread::Builder::new().name("install-progress".into()).spawn(move || {
                 while !done.load(Ordering::Relaxed) {
                     on_progress(progress(&cfg, since));
-                    std::thread::sleep(Duration::from_millis(1000));
+                    std::thread::sleep(Duration::from_secs(1));
                 }
-            })
+            }).map_err(|error| crate::Error::Message(format!("Could not start reporting installation progress: {error}")))?
         };
         let _stop = StopPoller(done.clone());
         let result = self.lifecycle.check().and_then(|()| work());
@@ -822,10 +821,7 @@ impl Machine {
             let _ = crate::util::ensure_dir(parent);
         }
         // Logging failures must not leave QEMU running.
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path);
+        let log = cabin_diagnostics::open_capture(&path, cabin_diagnostics::Capture::Replace);
         match log {
             Ok(log) => {
                 runtime.stop(&Arc::new(std::sync::Mutex::new(log)), timeout);
@@ -871,7 +867,7 @@ impl Machine {
                 crate::accel::restore_start_fallback(&cfg.home, Path::new(&qemu.qemu_bin));
             }
             attempt.machine_facts(&cfg);
-            attempt.follow_serial(cfg.serial_log_path());
+            attempt.follow_serial(cfg.running_serial_log_path(), true);
             if let Some(pid) = runtime.pid() {
                 attempt.add_fact("QEMU pid", pid.to_string());
             }
@@ -976,7 +972,7 @@ impl Machine {
         // with user files, and other processes need the same lock inode.
         for path in [
             paths.instances(), paths.images(), paths.engines(), paths.logs(), paths.tmp(),
-            paths.journal(), paths.global_state(), paths.proxy(),
+            paths.legacy_journal(), paths.global_state(), paths.proxy(),
             self.home.join("network"), self.home.join("sync"), self.home.join("destroy.log"),
         ] {
             crate::util::remove_path(&path).map_err(|error| crate::Error::Message(format!(

@@ -2,11 +2,11 @@ import type { NetworkRoute, NetworkStatus } from "../../src/services/ipc/generat
 import { initialState } from "../../src/state/reducer";
 
 // Plausible guest/host replies for page work. Anything unknown answers null.
-export function mockIpc(networkMode?: string | null) {
+export function mockIpc(networkMode?: string | null, windows = false) {
   const now = Date.now();
   const kinds = ["claude", "codex", "opencode", "pi", "antigravity"];
-  const folder = "/Users/dev/Documents/site";
-  let allowed = false;
+  const folder = windows ? String.raw`C:\Users\dev\Documents\site` : "/Users/dev/Documents/site";
+  let allowed = windows;
   let usageImported = false;
   let rejectApply = networkMode === "reject";
   const running = networkMode !== "stopped";

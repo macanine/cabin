@@ -400,7 +400,7 @@ pub fn disk_free_bytes(path: &Path) -> u64 {
 }
 
 pub fn tail_file(path: &Path, lines: usize) -> String {
-    let text = read_text(path);
+    let text = cabin_diagnostics::tail(path, 128 * 1024, 0);
     let all: Vec<&str> = text.lines().collect();
     let start = all.len().saturating_sub(lines);
     all[start..].join("\n")
@@ -557,11 +557,9 @@ pub fn run(argv: &[String], log: &Arc<Mutex<File>>, options: RunOptions<'_>) -> 
     if argv.is_empty() {
         return message("command not found: <empty>");
     }
-    if let Ok(mut handle) = log.lock() {
-        let rendered: Vec<String> = argv.iter().map(|part| shell_quote(part)).collect();
-        let _ = writeln!(handle, "$ {}", rendered.join(" "));
-        let _ = handle.flush();
-    }
+    // Command arguments can carry scripts, environment values, and secrets.
+    let program = Path::new(&argv[0]).file_name().unwrap_or_default().to_string_lossy();
+    log_line(log, &format!("$ {program}"));
     let started = Instant::now();
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
@@ -633,14 +631,10 @@ pub fn run(argv: &[String], log: &Arc<Mutex<File>>, options: RunOptions<'_>) -> 
         let _ = handle.flush();
     }
     if timed_out {
-        return message(format!("command timed out: {}", argv[0]));
+        return message(format!("command timed out: {program}"));
     }
     if options.check && code != 0 {
-        let rendered: Vec<String> = argv.iter().map(|part| shell_quote(part)).collect();
-        return message(format!(
-            "command failed (exit {code}): {}",
-            rendered.join(" ")
-        ));
+        return message(format!("{program} failed (exit {code})"));
     }
     Ok(code)
 }

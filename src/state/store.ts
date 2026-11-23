@@ -1,3 +1,4 @@
+import { reportFrontendDiagnostic } from "../services/ipc/common";
 import { useRef, useSyncExternalStore } from "react";
 import { noteChatState, noteOutput } from "./unread";
 import type { AppEvent, HostSnapshot } from "../services/ipc/generated/core";
@@ -29,7 +30,7 @@ function set(next: AppState) {
   state = next;
   // One failing subscriber must not stop the others (React's included).
   listeners.forEach((listener) => {
-    try { listener(); } catch (error) { console.error(error); }
+    try { listener(); } catch { reportFrontendDiagnostic("subscriberCrash"); }
   });
 }
 

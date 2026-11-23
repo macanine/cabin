@@ -1,5 +1,4 @@
 import { IconAdjustments, IconDeviceDesktop, IconDeviceSdCard, IconShieldLock, IconTool, IconWorld } from "@tabler/icons-react";
-import { IS_MAC } from "../components/Sidebar";
 import { useMacPermissions } from "../state/macPermissions";
 import { PermissionsSettings } from "./settings/PermissionsSettings";
 import type { ReactNode } from "react";
@@ -19,7 +18,7 @@ const TABS: Record<SettingsTab, { label: string; icon: typeof IconAdjustments; g
   tools: { label: "Tools", icon: IconTool, guest: true },
   machine: { label: "Machine", icon: IconDeviceDesktop, guest: false },
   storage: { label: "Storage", icon: IconDeviceSdCard, guest: false },
-  permissions: { label: "Mac permissions", icon: IconShieldLock, guest: false },
+  permissions: { label: "Folder permissions", icon: IconShieldLock, guest: false },
 };
 
 /** Tabs that need the user's attention get a dot; everything else stays quiet. */
@@ -63,7 +62,7 @@ export function SettingsView({ tab = "general" }: { tab?: SettingsTab }) {
     <div className="flex min-h-0 flex-1 max-[760px]:flex-col">
       <nav className="flex w-52 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-line/70 px-2.5 py-6 max-[760px]:w-auto max-[760px]:flex-row max-[760px]:overflow-x-auto max-[760px]:border-r-0 max-[760px]:border-b max-[760px]:py-2.5" aria-label="Settings">
         <h1 className="mx-2.5 mb-2.5 text-[13px] font-semibold text-muted max-[760px]:hidden">Settings</h1>
-        {SETTINGS_TABS.filter((key) => IS_MAC || key !== "permissions").map((key) => {
+        {SETTINGS_TABS.map((key) => {
           const { label, icon: Icon } = TABS[key];
           const active = key === tab;
           return (

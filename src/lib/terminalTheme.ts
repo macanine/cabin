@@ -1,10 +1,6 @@
 /**
- * Terminal colours that follow the app's light/dark scheme. Background and
- * foreground match the content card (`--terminal-bg` / `--terminal-fg` in
- * styles/base.css), so the terminal reads as part of the page rather than a black
- * box; the 16 ANSI colours are tuned per scheme so CLI output (prompts, diffs,
- * agent UIs) stays legible on either background. `tests/terminalTheme.test.mjs`
- * checks the contrast.
+ * Light and dark console palettes, shared by the canvas and its surrounding
+ * surface. Keep ANSI output and the input caret readable in both schemes.
  */
 
 export type ColorScheme = "light" | "dark";
@@ -34,12 +30,12 @@ export interface TerminalColors extends AnsiPalette {
   cursor: string;
   cursorAccent: string;
   selectionBackground: string;
+  selectionForeground: string;
 }
 
-/** Fallbacks matching styles/base.css, used when the CSS variables are unavailable. */
 export const BASE: Record<ColorScheme, { background: string; foreground: string; accent: string }> = {
-  light: { background: "#fbfbfa", foreground: "#1d1c1a", accent: "#c2622d" },
-  dark: { background: "#1c1b19", foreground: "#ecebe8", accent: "#e0814b" },
+  light: { background: "#f8fafb", foreground: "#222d39", accent: "#266a78" },
+  dark: { background: "#171b21", foreground: "#e0e8ef", accent: "#82c8cf" },
 };
 
 export const ANSI: Record<ColorScheme, AnsiPalette> = {
@@ -94,7 +90,8 @@ export function terminalColors(
     foreground,
     cursor: accent,
     cursorAccent: background,
-    selectionBackground: scheme === "light" ? "rgba(194, 98, 45, 0.22)" : "rgba(224, 129, 75, 0.35)",
+    selectionForeground: foreground,
+    selectionBackground: scheme === "light" ? "rgba(38, 106, 120, 0.23)" : "rgba(130, 200, 207, 0.36)",
   };
 }
 

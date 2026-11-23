@@ -111,7 +111,7 @@ impl Step for BrowserStep {
             runtime.start(
                 &ctx.log_file,
                 Boot {
-                    serial_log: Some(&cfg.instance_file("serial-browser-install.log")),
+                    serial_log: Some(&cfg.instance_logs_dir().join("serial-browser-install.log")),
                     phase: Some("install"),
                     display_mode: Some("none"),
                     ..Boot::new(std::time::Duration::from_secs(300))
@@ -188,7 +188,7 @@ impl Step for BrowserStep {
             Ok(())
         })();
         if result.is_err() {
-            let path = cfg.instance_file("serial-browser-install.log");
+            let path = cfg.instance_logs_dir().join("serial-browser-install.log");
             if path.exists() {
                 let text = read_text(&path);
                 let tail: String = text

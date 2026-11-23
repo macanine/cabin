@@ -236,19 +236,27 @@ impl Host {
         self.emit_network()?;
 
         let observed = std::thread::scope(|scope| {
-            let exits = scope.spawn(|| self.network.exit_samples());
-            let route_check = scope.spawn(|| {
-                if candidate_check.is_some() || !route.enabled {
-                    Ok(candidate_check)
-                } else {
-                    self.network.check(route).map(Some)
-                }
-            });
-            let probe = self.guest_network_probe(attempt.checks_closed_boundary(), Duration::from_secs(20))?;
-            let browser = self.browser_environment(&probe);
-            let exits = exits.join().map_err(|_| unavailable("Exit sampling stopped"))??;
-            let route_check = route_check.join().map_err(|_| unavailable("Route checking stopped"))??;
-            Ok::<_, AppError>((probe, browser, exits, route_check))
+            let exits = std::thread::Builder::new().name("network-exit-samples".into())
+                .spawn_scoped(scope, || self.network.exit_samples());
+            let route_check = std::thread::Builder::new().name("network-route-check".into())
+                .spawn_scoped(scope, || {
+                    if candidate_check.is_some() || !route.enabled {
+                        Ok(candidate_check)
+                    } else {
+                        self.network.check(route).map(Some)
+                    }
+                });
+            let probe = self.guest_network_probe(attempt.checks_closed_boundary(), Duration::from_secs(20));
+            let browser = probe.as_ref().ok().and_then(|probe| self.browser_environment(probe));
+            // Join both before propagating an error. An unjoined panic would
+            // otherwise unwind the scope and leave the gate in checking mode.
+            let exits = exits
+                .map_err(|error| unavailable(format!("Could not start exit sampling: {error}")))
+                .and_then(|worker| worker.join().map_err(|_| unavailable("Exit sampling stopped"))?);
+            let route_check = route_check
+                .map_err(|error| unavailable(format!("Could not start route checking: {error}")))
+                .and_then(|worker| worker.join().map_err(|_| unavailable("Route checking stopped"))?);
+            Ok::<_, AppError>((probe?, browser, exits?, route_check?))
         });
         let (mut probe, browser, mut exits, route_check) = match observed {
             Ok(observed) => observed,
@@ -442,7 +450,7 @@ impl Host {
             let _ = self.emit_network();
         }
         if due && let Err(error) = self.network.route().and_then(|route| self.verify_route(&route, false, "automaticCheck")) {
-            eprintln!("cabin: automatic network check: {}", error.message);
+            cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "network", "automatic_check_failed", format_args!("{}", error.code));
         }
     }
 
@@ -459,8 +467,8 @@ impl Host {
         });
     }
 
-    pub(super) fn start_network_recovery(self: &Arc<Self>) {
-        self.start_network_health();
+    pub(super) fn start_network_recovery(self: &Arc<Self>) -> Result<(), AppError> {
+        self.start_network_health()?;
         let weak = Arc::downgrade(self);
         std::thread::Builder::new()
             .name("network-authorization".into())
@@ -472,13 +480,13 @@ impl Host {
                     std::thread::sleep(Duration::from_secs(2));
                 }
             })
-            .expect("spawn network authorization thread");
+            .map_err(|error| unavailable(format!("Could not start network authorization: {error}")))?;
+        Ok(())
     }
 
-    fn start_network_health(self: &Arc<Self>) {
+    fn start_network_health(self: &Arc<Self>) -> Result<(), AppError> {
         let weak = Arc::downgrade(self);
         let (sender, signal) = mpsc::sync_channel(1);
-        self.network.set_health_wake(sender);
         std::thread::Builder::new()
             .name("network-connectivity".into())
             .spawn(move || {
@@ -544,7 +552,9 @@ impl Host {
                     }
                 }
             })
-            .expect("spawn network connectivity thread");
+            .map_err(|error| unavailable(format!("Could not start network monitoring: {error}")))?;
+        self.network.set_health_wake(sender);
+        Ok(())
     }
 
     fn stop_chats_after_hold(&self) {

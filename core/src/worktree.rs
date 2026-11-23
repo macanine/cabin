@@ -118,6 +118,8 @@ impl Step for Create {
             .destination
             .to_str()
             .ok_or_else(|| Error::invalid("Invalid worktree path"))?;
+        let commit = self.commit.as_deref()
+            .ok_or_else(|| Error::Internal("Missing worktree commit".into()))?;
         ctx.log(format!("Checking out {}", self.base));
         git(
             repository,
@@ -127,7 +129,7 @@ impl Step for Create {
                 "--detach",
                 "--",
                 destination,
-                self.commit.as_deref().unwrap_or(""),
+                commit,
             ],
         )?;
         self.created = true;
@@ -153,7 +155,7 @@ impl Step for Create {
             repository: self
                 .repository
                 .as_ref()
-                .unwrap()
+                .ok_or_else(|| Error::Internal("Missing repository".into()))?
                 .to_string_lossy()
                 .into_owned(),
             base: self.base.clone(),
@@ -164,7 +166,8 @@ impl Step for Create {
 
     fn rollback(&mut self, _: &StepCtx<'_>) -> Result<()> {
         if self.created {
-            let repository = self.repository.as_ref().unwrap();
+            let repository = self.repository.as_ref()
+                .ok_or_else(|| Error::Internal("Missing repository for worktree rollback".into()))?;
             let destination = self
                 .destination
                 .to_str()

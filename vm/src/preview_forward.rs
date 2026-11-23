@@ -89,12 +89,14 @@ pub fn start(cfg: &Config, port: u16) -> Result<String> {
             format!("127.0.0.1:{local}:localhost:{port}"),
             destination,
         ]);
-        let child = Command::new(&argv[0])
+        let mut command = Command::new(&argv[0]);
+        command
             .args(&argv[1..])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+        crate::util::no_window(&mut command);
+        let child = command.spawn()?;
         let mut forward = Forward { local, pid, child };
         match wait_ready(&mut forward) {
             Ok(()) => {

@@ -264,6 +264,10 @@ impl Drop for Chrome {
     }
 }
 
+pub(crate) fn chrome_log_path() -> PathBuf {
+    crate::paths::AppPaths::from_env().logs().join("chrome.log")
+}
+
 pub(super) fn start(profile: &Profile, verify: bool, restore: bool) -> Result<Chrome> {
     let port = if verify {
         std::net::TcpListener::bind(("127.0.0.1", 0))?
@@ -292,20 +296,15 @@ pub(super) fn start(profile: &Profile, verify: bool, restore: bool) -> Result<Ch
     if !verify {
         terminate_stale_chrome(&user_data);
     }
-    let log_path = if verify {
-        PathBuf::from(format!("/tmp/vmctl-fp-chrome-{}.log", std::process::id()))
+    let mut command = Command::new(chrome_binary()?);
+    command.args(chrome_args(profile, port, &user_data, verify, restore));
+    if verify {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
     } else {
-        PathBuf::from("/tmp/vmctl-fp-chrome.log")
-    };
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
-    let child = Command::new(chrome_binary()?)
-        .args(chrome_args(profile, port, &user_data, verify, restore))
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log))
-        .spawn()?;
+        let log = cabin_diagnostics::open_capture(&chrome_log_path(), cabin_diagnostics::Capture::Replace)?;
+        command.stdout(log.try_clone()?).stderr(log);
+    }
+    let child = command.spawn()?;
     Ok(Chrome {
         child,
         port,

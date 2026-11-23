@@ -17,6 +17,7 @@ path = "src/bin/vmctl.rs"
 bindings = ["dep:ts-rs"]
 
 [dependencies]
+cabin-diagnostics = { path = "../diagnostics" }
 base64 = "0.21"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 fs4 = { version = "1", default-features = false, features = ["sync"] }

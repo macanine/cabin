@@ -79,7 +79,7 @@ fn start_gateway(
         None => network.start(&cfg.net_socket(), cfg.ssh_port)?,
     }
     if let Err(error) = cfg.set_ssh_relay_port(network.ssh_port()) {
-        eprintln!("cabin: could not record the SSH relay port: {error}");
+        cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "ssh", "relay_port_write_failed", format_args!("{error}"));
     }
     Ok(())
 }
@@ -126,7 +126,7 @@ impl Host {
             kick_rx: Mutex::new(Some(kick_rx)),
         });
         host.set_machine_info(host.machine.configured_info(false));
-        host.start_network_recovery();
+        host.start_network_recovery()?;
         {
             let me = Arc::downgrade(&host);
             host.sync.set_sink(move |event| {
@@ -138,7 +138,8 @@ impl Host {
         {
             // Fingerprint the bundled daemon while QEMU boots.
             let me = Arc::downgrade(&host);
-            std::thread::spawn(move || {
+            // The handshake can compute the fingerprint on demand if prewarming fails.
+            let _ = std::thread::Builder::new().name("guest-build-fingerprint".into()).spawn(move || {
                 if let Some(me) = me.upgrade() {
                     let _ = me.bundled_build();
                 }
@@ -207,7 +208,7 @@ impl Host {
         self.emit(AppEvent::Machine { status });
         let me = Arc::downgrade(self);
         let hot = attempt.clone();
-        std::thread::spawn(move || {
+        if let Err(error) = std::thread::Builder::new().name("startup-progress".into()).spawn(move || {
             while hot.running() {
                 std::thread::sleep(Duration::from_millis(400));
                 if let Some(me) = me.upgrade() {
@@ -216,7 +217,9 @@ impl Host {
                     break;
                 }
             }
-        });
+        }) {
+            attempt.note(&format!("Live startup progress is unavailable: {error}"));
+        }
         Ok(attempt)
     }
 
@@ -484,7 +487,7 @@ impl Host {
         if !self.stopping.load(Ordering::Acquire)
             && let Err(error) = self.quit(true, Duration::from_secs(4))
         {
-            eprintln!("cabin: {}", error.message);
+            cabin_diagnostics::event(cabin_diagnostics::Level::Error, "lifecycle", "shutdown_failed", format_args!("{}", error.code));
         }
     }
 }

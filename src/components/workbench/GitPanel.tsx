@@ -2,8 +2,8 @@ import {
   IconArrowBackUp, IconArrowDown, IconArrowLeft, IconArrowUp, IconCheck, IconChevronRight, IconGitBranch,
   IconGitCommit, IconLayoutColumns, IconLayoutRows, IconMinus, IconPlus,
 } from "@tabler/icons-react";
-import { useEffect, useMemo, useState } from "react";
-import type { GitFileDiff, GitFileStatus, GitStatus } from "../../services/ipc/generated/core";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { GitFileDiff, GitFileStatus } from "../../services/ipc/generated/core";
 import { toIpcError } from "../../services/ipc/common";
 import { confirmAction } from "../../services/ipc/dialogs";
 import { workbenchIpc, type WorkbenchRoot } from "../../services/ipc/workbench";
@@ -23,35 +23,52 @@ export function GitPanel({ root, git }: { root: WorkbenchRoot; git: GitStatusSta
   const { status } = git;
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const mutation = useRef(false);
   const [collapsed, setCollapsed] = useState<Set<Group>>(new Set());
   const [open, setOpen] = useState<{ path: string; staged: boolean } | null>(null);
   const groups = useMemo(() => changeGroups(status), [status]);
 
-  async function act(run: () => Promise<GitStatus>) {
+  async function act(run: () => Promise<void>) {
+    if (mutation.current) return;
+    mutation.current = true;
     setBusy(true);
-    try { git.accept(await run()); } catch (err) { uiActions.toast(toIpcError(err).message, "error"); } finally { setBusy(false); }
+    try {
+      await run();
+    } catch (err) {
+      uiActions.toast(toIpcError(err).message, "error");
+    } finally {
+      mutation.current = false;
+      setBusy(false);
+    }
   }
-  const stage = (paths: string[]) => act(() => workbenchIpc.stage(root, paths));
-  const unstage = (paths: string[]) => act(() => workbenchIpc.unstage(root, paths));
+  const stage = (paths: string[]) => act(async () => git.accept(await workbenchIpc.stage(root, paths)));
+  const unstage = (paths: string[]) => act(async () => git.accept(await workbenchIpc.unstage(root, paths)));
   async function discard(files: GitFileStatus[]) {
     const label = files.length === 1 ? splitPath(files[0].path)[1] : `${files.length} files`;
     const untracked = files.some((file) => file.status === "?");
     if (!(await confirmAction(`Discard changes to ${label}?${untracked ? " Untracked files will be deleted." : ""} This cannot be undone.`, "Discard"))) return;
-    await act(() => workbenchIpc.discard(root, files.map((file) => file.path)));
+    await act(async () => git.accept(await workbenchIpc.discard(root, files.map((file) => file.path))));
   }
-  async function commit() {
-    const all = groups.staged.length === 0;
-    setBusy(true);
-    try {
+  function commit() {
+    return act(async () => {
+      const all = groups.staged.length === 0;
+      if (all) {
+        const latest = await workbenchIpc.gitStatus(root);
+        git.accept(latest);
+        if (latest.staged.length) {
+          uiActions.toast("Files are now staged. Review the staged changes before committing.", "info");
+          return;
+        }
+        if (latest.truncated) {
+          uiActions.toast("The change list is incomplete. Stage the files you want to commit.", "info");
+          return;
+        }
+      }
       const done = await workbenchIpc.commit(root, message, all);
       setMessage("");
       uiActions.toast(`Committed ${done.head}: ${done.summary}`, "success");
-      await git.refresh();
-    } catch (err) {
-      uiActions.toast(toIpcError(err).message, "error");
-    } finally {
-      setBusy(false);
-    }
+      await git.refresh(true);
+    });
   }
 
   if (open) {

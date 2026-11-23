@@ -9,8 +9,12 @@ use std::io;
 use std::net::UdpSocket;
 use std::time::Duration;
 
-pub use polling::Event;
-use polling::{AsRawSource, Events, PollMode, Poller};
+#[cfg(unix)]
+use std::os::fd::BorrowedFd as BorrowedSource;
+#[cfg(windows)]
+use std::os::windows::io::BorrowedSocket as BorrowedSource;
+
+use polling::{AsSource, Event, Events, PollMode, Poller};
 
 /// Receive/send buffer for the gateway's packet path. Loopback UDP drops
 /// datagrams when a buffer fills, and macOS defaults are small.
@@ -27,27 +31,45 @@ pub fn packet_pair() -> io::Result<(UdpSocket, UdpSocket)> {
     shoes::embed::loopback_udp_pair(Some(PACKET_BUFFER))
 }
 
-/// Level-triggered readiness over sockets that stay open while watched.
-pub struct Readiness {
+/// Level-triggered readiness scoped to borrowed sockets.
+pub(crate) struct Readiness<'socket> {
     poller: Poller,
     events: Events,
+    sources: Vec<BorrowedSource<'socket>>,
 }
 
-impl Readiness {
-    pub fn new() -> io::Result<Self> {
-        Ok(Self { poller: Poller::new()?, events: Events::new() })
+impl<'socket> Readiness<'socket> {
+    pub(crate) fn scope(run: impl FnOnce(&mut Self) -> io::Result<()>) -> io::Result<()> {
+        // The callback only borrows the poller, so it cannot leak registrations.
+        let mut readiness = Self {
+            poller: Poller::new()?,
+            events: Events::new(),
+            sources: Vec::new(),
+        };
+        run(&mut readiness)
     }
 
     /// Watch `socket` under `key` for readability and/or writability.
-    pub fn watch(&self, key: usize, socket: impl AsRawSource, read: bool, write: bool) -> io::Result<()> {
-        let event = Event::new(key, read, write);
-        // SAFETY: callers keep each socket open until this `Readiness` is dropped.
-        unsafe { self.poller.add_with_mode(socket, event, PollMode::Level) }
+    pub(crate) fn watch(
+        &mut self,
+        key: usize,
+        socket: &'socket impl AsSource,
+        read: bool,
+        write: bool,
+    ) -> io::Result<()> {
+        let source = socket.source();
+        // A backend may fail after inserting the source. Track it before adding.
+        self.sources.push(source);
+        // SAFETY: the borrowed source stays open and Drop unregisters it.
+        unsafe {
+            self.poller
+                .add_with_mode(&source, Event::new(key, read, write), PollMode::Level)
+        }
     }
 
     /// Wait for readiness; `None` waits indefinitely. An interrupted wait
     /// reports no events.
-    pub fn wait(&mut self, timeout: Option<Duration>) -> io::Result<&Events> {
+    pub(crate) fn wait(&mut self, timeout: Option<Duration>) -> io::Result<&Events> {
         self.events.clear();
         match self.poller.wait(&mut self.events, timeout) {
             Ok(_) => {}
@@ -58,6 +80,14 @@ impl Readiness {
     }
 }
 
+impl Drop for Readiness<'_> {
+    fn drop(&mut self) {
+        for source in self.sources.drain(..) {
+            let _ = self.poller.delete(source);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,15 +95,24 @@ mod tests {
     #[test]
     fn readiness_reports_a_readable_socket_until_drained() {
         let (a, b) = packet_pair().unwrap();
-        let mut ready = Readiness::new().unwrap();
-        ready.watch(3, &b, true, false).unwrap();
-        assert_eq!(ready.wait(Some(Duration::from_millis(10))).unwrap().iter().count(), 0);
-        a.send(&[1, 2, 3]).unwrap();
-        for _ in 0..2 {
-            let events: Vec<_> = ready.wait(Some(Duration::from_secs(2))).unwrap().iter().collect();
-            assert!(events.iter().any(|event| event.key == 3 && event.readable));
-        }
-        b.recv(&mut [0u8; 8]).unwrap();
-        assert_eq!(ready.wait(Some(Duration::from_millis(10))).unwrap().iter().count(), 0);
+        Readiness::scope(|ready| {
+            ready.watch(3, &b, true, false)?;
+            assert_eq!(
+                ready.wait(Some(Duration::from_millis(10)))?.iter().count(),
+                0
+            );
+            a.send(&[1, 2, 3])?;
+            for _ in 0..2 {
+                let events = ready.wait(Some(Duration::from_secs(2)))?;
+                assert!(events.iter().any(|event| event.key == 3 && event.readable));
+            }
+            b.recv(&mut [0u8; 8])?;
+            assert_eq!(
+                ready.wait(Some(Duration::from_millis(10)))?.iter().count(),
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
     }
 }

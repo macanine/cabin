@@ -278,8 +278,8 @@ impl App {
     pub fn start_services(&self) {
         let pricing_ctx = self.ctx.clone();
         std::thread::spawn(move || loop {
-            if let Err(error) = sync_model_prices(&pricing_ctx, false) {
-                eprintln!("model price refresh: {error}");
+            if sync_model_prices(&pricing_ctx, false).is_err() {
+                cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "usage", "price_refresh_failed", format_args!("Could not refresh model prices"));
             }
             std::thread::sleep(std::time::Duration::from_secs(30 * 60));
         });

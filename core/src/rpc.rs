@@ -60,6 +60,10 @@ struct Kind {
 /// listed here; anything else is rejected.
 pub fn dispatch(app: &App, method: &str, raw: Value) -> Result<Value> {
     match method {
+        "diagnostic_events" => {
+            let path = app.context().paths.logs().join(cabin_diagnostics::EVENT_FILE);
+            Ok(json!(cabin_diagnostics::recent_records(&path, 32 * 1024)))
+        }
         "app_snapshot" => ok(app.snapshot()?),
         "app_startup_snapshot" => ok(app.startup_snapshot()?),
         "monitor_processes" => {

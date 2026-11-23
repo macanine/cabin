@@ -49,7 +49,9 @@ impl Step for QemuStep {
             ));
         };
         let (version, image) = std::thread::scope(|scope| {
-            let version = scope.spawn(|| crate::qemu_engine::version(&engine));
+            let version = std::thread::Builder::new()
+                .name("qemu-version".into())
+                .spawn_scoped(scope, || crate::qemu_engine::version(&engine));
             let image = capture(
                 &[
                     engine.qemu_img.display().to_string(),
@@ -58,7 +60,12 @@ impl Step for QemuStep {
                 std::time::Duration::from_secs(10),
                 None,
             );
-            (version.join().expect("QEMU version worker panicked"), image)
+            let version = (|| -> Result<String> {
+                version?.join().map_err(|_| {
+                    crate::Error::Message("QEMU version worker stopped unexpectedly".into())
+                })?
+            })();
+            (version, image)
         });
         let version = match version {
             Ok(version) => version,

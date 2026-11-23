@@ -16,10 +16,8 @@ use crate::stream_reader::StreamReader;
 use crate::tcp::tcp_handler::{TcpClientHandler, TcpClientSetupResult};
 use crate::util::{allocate_vec, write_all};
 
-use super::shadow_tls_server_handler::parse_validated_server_hello;
+use super::server_hello::parse_validated_server_hello;
 
-// Constants from shadow_tls_server_handler
-// TODO: deduplicate consts
 const TLS_HEADER_LEN: usize = 5;
 const TLS_FRAME_MAX_LEN: usize = TLS_HEADER_LEN + 65535;
 const CONTENT_TYPE_HANDSHAKE: u8 = 0x16;

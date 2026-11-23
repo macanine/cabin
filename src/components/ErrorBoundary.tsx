@@ -1,4 +1,5 @@
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Component, type ReactNode } from "react";
+import { reportFrontendDiagnostic } from "../services/ipc/common";
 
 interface State {
   error: Error | null;
@@ -16,8 +17,8 @@ export class ErrorBoundary extends Component<{ children: ReactNode; resetKey: st
     if (previous.resetKey !== this.props.resetKey && this.state.error) this.setState({ error: null });
   }
 
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("view crashed", error, info.componentStack);
+  componentDidCatch() {
+    reportFrontendDiagnostic("viewCrash");
   }
 
   render() {

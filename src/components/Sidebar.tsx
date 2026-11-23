@@ -1,6 +1,6 @@
 import { ActionIcon, Menu, Tooltip } from "@mantine/core";
 import {
-  IconActivity, IconArchive, IconArchiveOff, IconBell, IconBrandApple, IconBrandChrome, IconChartBar, IconCheck,
+  IconActivity, IconArchive, IconArchiveOff, IconBell, IconBrandChrome, IconChartBar, IconCheck,
   IconClock, IconCopy, IconDots, IconDownload, IconFolder, IconFolderPlus, IconLayoutSidebarLeftCollapse,
   IconLayoutSidebarLeftExpand, IconListDetails, IconPencil, IconPlayerPlay, IconPlayerStop, IconPlus, IconSearch,
   IconPlug, IconRobot, IconSettings, IconSparkles, IconTerminal2, IconTrash, IconX,
@@ -244,7 +244,7 @@ function ProjectHeader({
           </Menu.Item>
           {sync && (
             <Menu.Item leftSection={<IconRefresh size={14} />} onClick={() => setSyncOpen(true)}>
-              Sync with Mac…
+              Sync local folder…
             </Menu.Item>
           )}
           <Menu.Item leftSection={<IconPencil size={14} />} onClick={() => setRenaming(true)}>
@@ -452,11 +452,11 @@ function SettingsMenu() {
   const machine = useApp((state) => state.machine);
   const { running } = useOperationSummary();
   const { projects } = useMacPermissions();
-  const needsAccess = IS_MAC && projects?.some(({ access }) => access.state !== "available");
+  const needsAccess = projects?.some(({ access }) => access.state !== "available");
   return (
     <Menu position="top-end" width={220} withinPortal shadow="md">
       <Menu.Target>
-        <ActionIcon variant="subtle" color={needsAccess ? "yellow" : "gray"} aria-label="Settings and machine" title={needsAccess ? "A Mac project folder needs attention" : undefined}>
+        <ActionIcon variant="subtle" color={needsAccess ? "yellow" : "gray"} aria-label="Settings and machine" title={needsAccess ? "A local project folder needs attention" : undefined}>
           <IconSettings size={17} />
         </ActionIcon>
       </Menu.Target>
@@ -482,8 +482,8 @@ function SettingsMenu() {
           {running > 0 && <span className="float-right ml-3 text-xs text-faint">{running} running</span>}
         </Menu.Item>
         <Menu.Divider />
-        {IS_MAC && <Menu.Item leftSection={<IconBrandApple size={15} />} rightSection={needsAccess && <span className="dot warn" aria-label="Needs attention" />}
-          onClick={() => uiActions.navigate({ kind: "settings", tab: "permissions" })}>Mac permissions</Menu.Item>}
+        <Menu.Item leftSection={<IconFolder size={15} />} rightSection={needsAccess && <span className="dot warn" aria-label="Needs attention" />}
+          onClick={() => uiActions.navigate({ kind: "settings", tab: "permissions" })}>Folder permissions</Menu.Item>
         <Menu.Item leftSection={<IconSettings size={15} />} onClick={() => uiActions.navigate({ kind: "settings" })}>
           Settings
           {IS_MAC && <span className="float-right ml-3 text-xs text-faint">⌘,</span>}

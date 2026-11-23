@@ -28,7 +28,7 @@ initPerf();
 const v = q.get("v") ?? "new";
 if (q.get("theme")) document.documentElement.dataset.theme = q.get("theme")!;
 const networkMode = q.get("network");
-const mock = v === "session" ? (await import("./chatmock"), null) : mockIpc(networkMode);
+const mock = v === "session" ? (await import("./chatmock"), null) : mockIpc(networkMode, q.has("windows"));
 const stopped = networkMode === "stopped";
 const now = Date.now();
 const ws = (id: string, name: string) => ({ id, name, path: "/home/dev/" + name, modelOverrides: [], archived: false, createdAt: now, updatedAt: now });

@@ -2,10 +2,11 @@
 //
 // Construct TLS 1.3 handshake messages for REALITY protocol
 
+#[cfg(test)]
+use super::common::HANDSHAKE_TYPE_CERTIFICATE;
 use super::common::{
-    HANDSHAKE_TYPE_CERTIFICATE, HANDSHAKE_TYPE_CERTIFICATE_VERIFY,
-    HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS, HANDSHAKE_TYPE_FINISHED, HANDSHAKE_TYPE_SERVER_HELLO,
-    VERSION_TLS_1_2_MAJOR, VERSION_TLS_1_2_MINOR,
+    HANDSHAKE_TYPE_CERTIFICATE_VERIFY, HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS, HANDSHAKE_TYPE_FINISHED,
+    HANDSHAKE_TYPE_SERVER_HELLO, VERSION_TLS_1_2_MAJOR, VERSION_TLS_1_2_MINOR,
 };
 use aws_lc_rs::signature::Ed25519KeyPair;
 use std::io::Result;
@@ -119,6 +120,7 @@ pub fn construct_encrypted_extensions() -> Result<Vec<u8>> {
 ///
 /// # Arguments
 /// * `cert` - Certificate from rcgen (takes ownership to avoid allocation)
+#[cfg(test)]
 pub fn construct_certificate(cert: rcgen::Certificate) -> Result<Vec<u8>> {
     let cert_der = cert.der();
 

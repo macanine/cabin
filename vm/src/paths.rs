@@ -274,6 +274,10 @@ impl StatePaths {
     }
 
     pub fn journal(&self) -> PathBuf {
+        self.logs().join("operations.jsonl")
+    }
+
+    pub fn legacy_journal(&self) -> PathBuf {
         self.root.join("journal.jsonl")
     }
 
@@ -294,7 +298,7 @@ impl StatePaths {
     }
 
     pub fn proxy_log(&self) -> PathBuf {
-        self.proxy().join("shoes.log")
+        self.instance_logs("global").join("shoes.log")
     }
 
     pub fn proxy_transaction_lock(&self) -> PathBuf {

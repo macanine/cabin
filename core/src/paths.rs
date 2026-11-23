@@ -58,6 +58,10 @@ impl AppPaths {
         &self.home
     }
 
+    pub fn logs(&self) -> PathBuf {
+        self.data.join("logs")
+    }
+
     pub fn database(&self) -> PathBuf {
         self.data.join("state.sqlite3")
     }

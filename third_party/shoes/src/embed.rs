@@ -1,8 +1,7 @@
 //! Embedding entry points for desktop hosts.
 //!
 //! Added by Cabin on top of upstream shoes 0.3.2 (see VENDORED.txt).
-//! Upstream only exposes a TUN-oriented entry point for mobile FFI; desktop
-//! hosts need plain listeners (HTTP/SOCKS/mixed) started in-process.
+//! Cabin uses loopback HTTP/SOCKS listeners and a host-owned packet socket.
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
@@ -110,31 +109,7 @@ impl Resolver for NoBootstrapResolver {
 fn validate_binding(configs: &[Config], bound: Option<&BoundDns>) -> std::io::Result<()> {
     for config in configs {
         let rules = match config {
-            Config::Server(server) => {
-                if bound.is_some() {
-                    if !matches!(
-                        server.protocol,
-                        ServerProxyConfig::Http { .. }
-                            | ServerProxyConfig::Socks { .. }
-                            | ServerProxyConfig::Mixed { .. }
-                    ) || !server.transport.is_default()
-                    {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Unsupported,
-                            "bound DNS supports embedded HTTP, SOCKS and mixed TCP listeners only",
-                        ));
-                    }
-                    if let BindLocation::Address(addresses) = &server.bind_location {
-                        if addresses.iter().any(|address| !address.is_ip_literal()) {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                "bound DNS requires IP-literal listener addresses",
-                            ));
-                        }
-                    }
-                }
-                &server.rules
-            }
+            Config::Server(server) => &server.rules,
             Config::TunServer(tun) => &tun.rules,
             _ => continue,
         };
@@ -205,15 +180,34 @@ fn reject_external_dns(configs: &[Config], has_groups: bool) -> std::io::Result<
     Ok(())
 }
 
-fn reject_tun(configs: &[Config]) -> std::io::Result<()> {
-    if configs
-        .iter()
-        .any(|config| matches!(config, Config::TunServer(_)))
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "TUN configs are not supported by the embedded entry point",
-        ));
+fn validate_listeners(configs: &[Config]) -> std::io::Result<()> {
+    for config in configs {
+        match config {
+            Config::Server(server) => {
+                let loopback = matches!(&server.bind_location,
+                    BindLocation::Address(addresses)
+                        if addresses.iter().all(|address| address.is_loopback_literal()));
+                let supported = matches!(
+                    server.protocol,
+                    ServerProxyConfig::Http { .. }
+                        | ServerProxyConfig::Socks { .. }
+                        | ServerProxyConfig::Mixed { .. }
+                );
+                if !loopback || !supported || !server.transport.is_default() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        "embedded listeners require loopback IP addresses and HTTP, SOCKS or mixed over TCP",
+                    ));
+                }
+            }
+            Config::TunServer(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "TUN configs require the host-owned packet socket entry point",
+                ));
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -229,9 +223,9 @@ fn parse(config_yaml: &str) -> std::io::Result<Vec<Config>> {
 
 async fn load(config_yaml: &str) -> std::io::Result<ValidatedConfigs> {
     let configs = parse(config_yaml)?;
+    validate_listeners(&configs)?;
     let (configs, _) = convert_cert_paths(configs).await?;
     let validated = create_server_configs(configs)?;
-    reject_tun(&validated.configs)?;
     reject_external_dns(&validated.configs, !validated.dns_groups.is_empty())?;
     Ok(validated)
 }
@@ -426,6 +420,30 @@ async fn run_tun_inner(
         }
     };
     crate::tun::run_tun_from_config_controlled(tun, device, shutdown, resolver, gate).await
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn embedded_listener_accepts_only_loopback_http_socks_and_mixed_over_tcp() {
+    for protocol in ["http", "socks", "mixed"] {
+        let config = format!("- address: 127.0.0.1:0\n  protocol: {{type: {protocol}}}\n");
+        validate(&config).await.unwrap();
+    }
+
+    for config in [
+        "- address: 0.0.0.0:0\n  protocol: {type: http}\n",
+        "- addresses: ['127.0.0.1:0', '0.0.0.0:0']\n  protocol: {type: mixed}\n",
+        "- path: /tmp/shoes.sock\n  protocol: {type: http}\n",
+        "- address: 127.0.0.1:0\n  protocol: {type: http}\n  transport: udp\n",
+        "- address: 127.0.0.1:0\n  protocol: {type: hysteria2, password: example}\n  transport: quic\n",
+        "- address: 127.0.0.1:0\n  protocol: {type: forward, target: '127.0.0.1:8080'}\n",
+    ] {
+        assert_eq!(
+            validate(config).await.unwrap_err().kind(),
+            std::io::ErrorKind::Unsupported,
+            "{config}"
+        );
+    }
 }
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]

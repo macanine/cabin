@@ -1,5 +1,6 @@
 //! Pipeline runner: plan, apply with auto-rollback, rollback, status, lifecycle.
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -137,7 +138,8 @@ impl Runner {
                 text.push_str(&format!("FAIL {issue}\n"));
             }
         }
-        std::fs::write(&log_path, text)?;
+        cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Replace)?
+            .write_all(text.as_bytes())?;
         let mut fields = Map::new();
         fields.insert("instance".to_string(), json!(cfg.name));
         fields.insert("ok".to_string(), json!(issues.is_empty()));
@@ -645,10 +647,7 @@ impl Runner {
             .instance_logs_dir()
             .join(format!("device-verify-{}.log", localstamp()));
         ensure_dir(&cfg.instance_logs_dir())?;
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)?;
+        let file = cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
         let log = Arc::new(Mutex::new(file));
         let result = (|| -> Result<Value> {
             if !runtime.running() {
@@ -793,11 +792,7 @@ impl Runner {
             } else {
                 "install"
             };
-            let mut log = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)?;
-            use std::io::Write;
+            let mut log = cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
             writeln!(
                 log,
                 "# reconfigure {old_user} -> {new_user}, {old_hostname} -> {new_hostname}"
@@ -1002,10 +997,7 @@ impl Runner {
                     }
                     if was_running {
                         let log = Arc::new(Mutex::new(
-                            std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&log_path)?,
+                            cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?,
                         ));
                         let _ =
                             runtime.start(&log, Boot::new(Duration::from_secs(180)));
@@ -1166,12 +1158,8 @@ impl Runner {
             let prepared = crate::guest_dns::ensure(cfg, &runtime)
                 .and_then(|_| crate::workspace::mount_mappings(cfg, &runtime));
             if let Err(error) = prepared {
-                let mut log_file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(cfg.instance_file("start-rollback.log"))?;
-                use std::io::Write;
-                writeln!(
+                let mut log_file = cabin_diagnostics::open_capture(&cfg.instance_logs_dir().join("start-rollback.log"), cabin_diagnostics::Capture::Append)?;
+                    writeln!(
                     log_file,
                     "# start rollback instance={} at={}\n{}",
                     cfg.name,
@@ -1201,11 +1189,7 @@ impl Runner {
         let log_path = cfg
             .instance_logs_dir()
             .join(format!("start-{}.log", localstamp()));
-        let mut log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)?;
-        use std::io::Write;
+        let mut log_file = cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
         writeln!(log_file, "# start instance={} at={}", cfg.name, now_millis())?;
         let log = Arc::new(Mutex::new(log_file));
         self.start_stopped(&runtime, &log, &log_path, None)?;
@@ -1223,8 +1207,10 @@ impl Runner {
         let log = attempt
             .log()
             .ok_or_else(|| crate::Error::Message("Startup log is unavailable".into()))?;
-        let log_path = attempt.log_path().expect("an open startup log has a path");
-        attempt.follow_serial(self.cfg.serial_log_path());
+        let log_path = attempt
+            .log_path()
+            .ok_or_else(|| crate::Error::Message("Startup log path is unavailable".into()))?;
+        attempt.follow_serial(self.cfg.serial_log_path(), false);
         self.start_stopped(runtime, log, log_path, Some(attempt))
     }
 
@@ -1263,9 +1249,13 @@ impl Runner {
             // operations before the daemon handshake deploys its user service.
             self.ensure_helper(runtime)?;
             std::thread::scope(|scope| {
-                let dns = scope.spawn(|| crate::guest_dns::ensure(cfg, runtime));
+                let dns = std::thread::Builder::new()
+                    .name("guest-dns".into())
+                    .spawn_scoped(scope, || crate::guest_dns::ensure(cfg, runtime))?;
                 let folders = crate::workspace::mount_mappings(cfg, runtime);
-                dns.join().expect("guest DNS worker panicked").and(folders)
+                dns.join()
+                    .map_err(|_| crate::Error::Message("Guest DNS worker stopped unexpectedly".into()))?
+                    .and(folders)
             })?;
             if let Some(attempt) = attempt {
                 attempt.complete(Phase::Guest, "Guest DNS and shared folders are ready");
@@ -1314,11 +1304,7 @@ impl Runner {
         let log_path = cfg
             .instance_logs_dir()
             .join(format!("stop-{}.log", localstamp()));
-        let mut log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)?;
-        use std::io::Write;
+        let mut log_file = cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
         writeln!(log_file, "# stop instance={} at={}", cfg.name, now_millis())?;
         let log = Arc::new(Mutex::new(log_file));
         let runtime = Runtime::new(cfg);
@@ -1350,10 +1336,7 @@ impl Runner {
                 .instance_logs_dir()
                 .join(format!("destroy-{}.log", localstamp()));
             let log = Arc::new(Mutex::new(
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)?,
+                cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?,
             ));
             runtime.stop(&log, Duration::from_secs(60));
             if runtime.alive() {
@@ -1418,7 +1401,7 @@ impl Runner {
         let cfg = &self.cfg;
         let mut files: Vec<PathBuf> = Vec::new();
         if serial {
-            for path in [cfg.serial_log_path(), cfg.provision_serial_log()] {
+            for path in [cfg.serial_log_path(), cfg.provision_serial_log(), cfg.instance_file("serial.log"), StatePaths::new(&cfg.home).instance(&cfg.name).provision_serial()] {
                 if path.exists() {
                     files.push(path);
                 }
@@ -1438,6 +1421,10 @@ impl Runner {
                 }
             }
         } else {
+            let events = cfg.logs_dir().join(cabin_diagnostics::EVENT_FILE);
+            if std::fs::symlink_metadata(&events).is_ok_and(|meta| meta.is_file()) {
+                files.push(events);
+            }
             for directory in [cfg.instance_logs_dir(), cfg.logs_dir().join("global")] {
                 if let Ok(entries) = std::fs::read_dir(directory) {
                     for entry in entries.flatten() {

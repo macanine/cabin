@@ -1,7 +1,5 @@
 //! Append-only JSONL journal plus per-step atomic state files.
 
-use std::fs::OpenOptions;
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -34,26 +32,7 @@ impl Journal {
         }
         let record = Value::Object(record);
         let line = crate::py_json::dumps_compact_utf8(&record) + "\n";
-        let mut file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(&self.path)?;
-        file.lock()?;
-        // A process can die halfway through an append. Keep that fragment
-        // isolated so the next complete record remains a readable JSON line.
-        if file.metadata()?.len() != 0 {
-            file.seek(SeekFrom::End(-1))?;
-            let mut last = [0];
-            file.read_exact(&mut last)?;
-            if last[0] != b'\n' {
-                file.write_all(b"\n")?;
-            }
-        }
-        file.write_all(line.as_bytes())?;
-        file.flush()?;
-        file.sync_all()?;
-        let _ = file.unlock();
+        cabin_diagnostics::append_record(&self.path, &line, true)?;
         Ok(record)
     }
 }
@@ -98,7 +77,11 @@ mod tests {
     fn journal_recovers_after_a_partial_append() {
         let dir = crate::sockets::test_dir();
         let journal = Journal::new(&dir).unwrap();
-        std::fs::write(&journal.path, b"{\"event\":\"interrupted").unwrap();
+        use std::io::Write;
+        cabin_diagnostics::open_capture(&journal.path, cabin_diagnostics::Capture::New)
+            .unwrap()
+            .write_all(b"{\"event\":\"interrupted")
+            .unwrap();
         journal.append("recovered", Map::new()).unwrap();
         let log = std::fs::read_to_string(&journal.path).unwrap();
         let last: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();

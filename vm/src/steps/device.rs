@@ -733,7 +733,7 @@ impl Step for DeviceSealStep {
             runtime.start(
                 &ctx.log_file,
                 Boot {
-                    serial_log: Some(&cfg.instance_file("serial-seal-install.log")),
+                    serial_log: Some(&cfg.instance_logs_dir().join("serial-seal-install.log")),
                     phase: Some("install"),
                     ..Boot::new(std::time::Duration::from_secs(300))
                 },
@@ -774,7 +774,7 @@ impl Step for DeviceSealStep {
             runtime.start(
                 &ctx.log_file,
                 Boot {
-                    serial_log: Some(&cfg.instance_file("serial-seal-runtime.log")),
+                    serial_log: Some(&cfg.instance_logs_dir().join("serial-seal-runtime.log")),
                     phase: Some("runtime"),
                     ..Boot::new(std::time::Duration::from_secs(300))
                 },
@@ -891,7 +891,7 @@ impl Step for DeviceSealStep {
             Ok(())
         })();
         if result.is_err() {
-            let serial_tail = tail_file(&cfg.instance_file("serial-seal-runtime.log"), 80);
+            let serial_tail = tail_file(&cfg.instance_logs_dir().join("serial-seal-runtime.log"), 80);
             if !serial_tail.is_empty() {
                 ctx.log(&format!("runtime serial log tail:\n{serial_tail}"));
             }

@@ -227,7 +227,7 @@ impl GlobalNetwork {
         if let Err(error) = self.with_store(|store| {
             store.append_network_history(kind, message, runtime.connectivity.failed_checks, report)
         }) {
-            eprintln!("cabin: network history: {}", error.message);
+            cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "network", "history_write_failed", format_args!("{}", error.code));
         }
     }
 
@@ -400,7 +400,8 @@ impl GlobalNetwork {
             runtime.grant.invalidate("The gateway path needs a fresh network check");
             runtime.apply_policy();
         }
-        runtime.gateway.as_ref().unwrap().set_upstream(&upstream).map_err(|e| error(e.to_string()))?;
+        let gateway = runtime.gateway.as_ref().ok_or_else(|| error("The network gateway stopped during the route change"))?;
+        gateway.set_upstream(&upstream).map_err(|e| error(e.to_string()))?;
         runtime.active_route = Some(route.clone());
         runtime.upstream_revision += 1;
         Ok(())

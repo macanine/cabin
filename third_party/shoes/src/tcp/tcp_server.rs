@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-#[cfg(unix)]
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,10 +14,9 @@ use super::tcp_server_handler_factory::create_tcp_server_handler;
 use crate::address::NetLocation;
 use crate::async_stream::{AsyncMessageStream, AsyncStream};
 use crate::client_proxy_selector::{ClientProxySelector, ConnectDecision};
-use crate::config::{BindLocation, Config, ConfigSelection, ServerConfig, TcpConfig, Transport};
+use crate::config::{BindLocation, Config, ConfigSelection, ServerConfig, TcpConfig};
 use crate::copy_bidirectional::copy_bidirectional;
 use crate::copy_bidirectional_message::copy_bidirectional_message;
-use crate::quic_server::start_quic_servers;
 use crate::resolver::Resolver;
 use crate::routing::{ServerStream, run_udp_routing};
 use crate::socket_util::{new_tcp_listener, set_tcp_keepalive};
@@ -74,53 +71,6 @@ async fn run_tcp_server(
                 error!("{}:{} finished with error: {:?}", addr.ip(), addr.port(), e);
             } else {
                 debug!("{}:{} finished successfully", addr.ip(), addr.port());
-            }
-        });
-    }
-}
-
-#[cfg(target_family = "unix")]
-async fn run_unix_server(
-    path_buf: PathBuf,
-    resolver: Arc<dyn Resolver>,
-    server_handler: Arc<dyn TcpServerHandler>,
-) -> std::io::Result<()> {
-    if tokio::fs::symlink_metadata(&path_buf).await.is_ok() {
-        println!(
-            "WARNING: replacing file at socket path {}",
-            path_buf.display()
-        );
-        let _ = tokio::fs::remove_file(&path_buf).await;
-    }
-
-    let listener = crate::socket_util::new_unix_listener(path_buf, 4096)?;
-    let mut tasks = crate::listener_tasks::ListenerTasks::new();
-
-    loop {
-        let accepted = tokio::select! {
-            result = listener.accept() => result,
-            _ = tasks.join_next(), if !tasks.is_empty() => continue,
-        };
-        let (stream, addr) = match accepted {
-            Ok(v) => v,
-            Err(e) => {
-                error!("Accept failed: {e:?}");
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            }
-        };
-        let Some(permit) = crate::resources::try_connection(None) else {
-            continue;
-        };
-
-        let cloned_resolver = resolver.clone();
-        let cloned_handler = server_handler.clone();
-        tasks.spawn(async move {
-            let _permit = permit;
-            if let Err(e) = process_stream(stream, cloned_handler, cloned_resolver).await {
-                error!("{addr:?} finished with error: {e:?}");
-            } else {
-                debug!("{addr:?} finished successfully");
             }
         });
     }
@@ -383,51 +333,9 @@ pub async fn start_servers(
             std::io::ErrorKind::Unsupported,
             "TUN servers run only on a host-owned packet socket (see embed::run_tun_controlled)",
         )),
-        Config::Server(server_config) => start_tcp_or_quic_servers(server_config, resolver).await,
+        Config::Server(server_config) => start_tcp_servers(server_config, resolver).await,
         _ => unreachable!("create_server_configs only returns Server and TunServer"),
     }
-}
-
-async fn start_tcp_or_quic_servers(
-    config: ServerConfig,
-    resolver: Arc<dyn Resolver>,
-) -> std::io::Result<Vec<JoinHandle<()>>> {
-    let mut join_handles = Vec::with_capacity(3);
-
-    match config.transport {
-        Transport::Tcp => match start_tcp_servers(config.clone(), resolver).await {
-            Ok(handles) => {
-                join_handles.extend(handles);
-            }
-            Err(e) => {
-                for join_handle in join_handles {
-                    join_handle.abort();
-                }
-                return Err(e);
-            }
-        },
-        Transport::Quic => match start_quic_servers(config.clone(), resolver).await {
-            Ok(handles) => {
-                join_handles.extend(handles);
-            }
-            Err(e) => {
-                for join_handle in join_handles {
-                    join_handle.abort();
-                }
-                return Err(e);
-            }
-        },
-        Transport::Udp => todo!(),
-    }
-
-    if join_handles.is_empty() {
-        return Err(std::io::Error::other(format!(
-            "failed to start servers at {}",
-            config.bind_location
-        )));
-    }
-
-    Ok(join_handles)
 }
 
 async fn start_tcp_servers(
@@ -486,28 +394,7 @@ async fn start_tcp_servers(
                 }
             }
         }
-        #[cfg_attr(not(unix), allow(unused_variables))]
-        BindLocation::Path(path_buf) => {
-            #[cfg(target_family = "unix")]
-            {
-                let tcp_handler: Arc<dyn TcpServerHandler> =
-                    create_tcp_server_handler(protocol, &client_proxy_selector, &resolver, None)
-                        .into();
-                let handle = tokio::spawn(async move {
-                    run_unix_server(path_buf, resolver, tcp_handler)
-                        .await
-                        .unwrap();
-                });
-                handles.push(handle);
-            }
-            #[cfg(not(target_family = "unix"))]
-            {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Unix sockets are not supported on this platform",
-                ));
-            }
-        }
+        BindLocation::Path(_) => unreachable!("embedded listeners are validated before startup"),
     }
 
     Ok(handles)

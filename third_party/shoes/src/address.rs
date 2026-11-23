@@ -403,8 +403,12 @@ impl NetLocationPortRange {
         Self::new(address, ports)
     }
 
-    pub(crate) fn is_ip_literal(&self) -> bool {
-        !matches!(self.address, Address::Hostname(_))
+    pub(crate) fn is_loopback_literal(&self) -> bool {
+        match self.address {
+            Address::Ipv4(address) => address.is_loopback(),
+            Address::Ipv6(address) => address.is_loopback(),
+            Address::Hostname(_) => false,
+        }
     }
 
     pub fn to_socket_addrs(&self) -> std::io::Result<Vec<SocketAddr>> {

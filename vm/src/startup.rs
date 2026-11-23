@@ -1,8 +1,7 @@
 //! Timed startup phases and bounded log tails for one launch or attachment.
 
 use crate::util::LockExt;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -11,7 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 use crate::Config;
-use crate::util::{ensure_dir, log_line};
+use crate::util::log_line;
 
 static NEXT_LOG: AtomicU64 = AtomicU64::new(0);
 const TAIL_LINES: usize = 40;
@@ -134,17 +133,13 @@ impl Default for Attempt {
 
 impl Attempt {
     pub fn open_log(&self, dir: &Path) -> crate::Result<()> {
-        ensure_dir(dir)?;
         let number = NEXT_LOG.fetch_add(1, Ordering::Relaxed);
         let path = dir.join(format!(
             "start-{}-{}-{number}.log",
             self.started_at,
             std::process::id()
         ));
-        let mut options = OpenOptions::new();
-        options.create_new(true).append(true);
-        let file = options.open(&path)?;
-        crate::util::chmod(&path, 0o600)?;
+        let file = cabin_diagnostics::open_capture(&path, cabin_diagnostics::Capture::New)?;
         let _ = self.log.set((path, Arc::new(Mutex::new(file))));
         self.note("Startup attempt began");
         Ok(())
@@ -317,10 +312,13 @@ impl Attempt {
         }
     }
 
-    /// The serial console of a cold boot appends to a shared file. Record its
-    /// byte boundary under the VM lock before QEMU starts writing to it.
-    pub(crate) fn follow_serial(&self, path: PathBuf) {
-        let offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    /// A running VM may already have written into the serial capture.
+    pub(crate) fn follow_serial(&self, path: PathBuf, running: bool) {
+        let offset = if running {
+            std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+        } else {
+            0
+        };
         self.state.locked().serial = Some((path, offset));
     }
 
@@ -409,17 +407,7 @@ pub(crate) fn log_tail(path: &Path) -> Vec<String> {
 }
 
 fn read_from(path: &Path, offset: u64) -> String {
-    let Ok(mut file) = File::open(path) else {
-        return String::new();
-    };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = offset.max(len.saturating_sub(TAIL_BYTES)).min(len);
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return String::new();
-    }
-    let mut bytes = Vec::new();
-    let _ = file.take(TAIL_BYTES).read_to_end(&mut bytes);
-    String::from_utf8_lossy(&bytes).into_owned()
+    cabin_diagnostics::tail(path, TAIL_BYTES, offset)
 }
 
 #[cfg(test)]

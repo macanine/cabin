@@ -65,6 +65,7 @@ export type IpcCommand =
   | "app_quit"
   | "app_background"
   | "guest_invoke"
+  | "frontend_diagnostic"
   | "machine_checks"
   | "machine_diagnostics"
   | "host_fix"

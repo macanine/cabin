@@ -76,7 +76,6 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
   const [subagentSelected, setSubagentSelected] = useState<string | null>(null);
   const [text, setText] = useState(() => loadDraft(sessionId));
   const [caret, setCaret] = useState(0);
-  const [sending, setSending] = useState(false);
   const attachments = useChatAttachments();
   const input = useRef<HTMLTextAreaElement>(null);
 
@@ -134,7 +133,7 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
   const hasModel = model != null || live != null;
 
   const queue = useMessageQueue({
-    sessionId, state: state.state, blocked: pending != null || planLocked, sending, setSending, onSent: scroll.resume,
+    sessionId, state: state.state, blocked: pending != null || planLocked, onSent: scroll.resume,
   });
   const menu = useComposerMenu({
     text, caret, workspaceId, agent, sessionId, worktree: session?.worktree?.path ?? null, controls,
@@ -153,7 +152,7 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
 
   async function send() {
     const message = text.trim();
-    if ((!message && !attachments.files.length) || sending || attachments.loading || planLocked) return;
+    if ((!message && !attachments.files.length) || queue.sending || attachments.loading || planLocked) return;
     if (busy) {
       // While the agent works, a send waits in the queue.
       if (attachments.files.length) { uiActions.toast("Attachments can be sent when the agent is idle", "info"); return; }
@@ -164,7 +163,8 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
     // A stopped chat is idle: sending reconnects its agent and resumes the conversation.
     if (!idle) return;
     if (!hasModel) { uiActions.toast("Choose a model first", "info"); return; }
-    setSending(true);
+    const finish = queue.startDirect();
+    if (!finish) return;
     try {
       await libraryIpc.chatSend(sessionId, message, attachments.files);
       clearComposer();
@@ -173,7 +173,7 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
     } catch (error) {
       uiActions.toast(toIpcError(error).message, "error");
     } finally {
-      setSending(false);
+      finish();
     }
   }
 
@@ -295,9 +295,9 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
               placeholder={placeholder(state.state, pending != null, planLocked, hasModel, items.length === 0)}
               docked={pending != null || dockPlan != null}
               busy={busy}
-              sending={sending}
+              sending={queue.sending}
               canSend={canSend}
-              canSteer={controls.canSteer && busy}
+              canSteer={controls.canSteer && busy && !queue.sending && !pending && !planLocked}
               menu={menu}
               queue={{ ...queue, onEdit: (message) => { queue.remove(message); setText(message.text); focusAt(input.current); } }}
               attachments={attachments}

@@ -20,11 +20,15 @@ test("names, paths and patterns", () => {
   assert.equal(guestPathFor("My App!"), "~/projects/my-app");
   assert.equal(guestPathFor("!!!"), "~/projects/project");
   assert.equal(folderName("/Users/me/code/api/"), "api");
+  assert.equal(folderName("/Users/me/code/api\\v2"), "api\\v2");
+  assert.equal(folderName("C:\\Users\\me\\code\\api\\"), "api");
+  assert.equal(folderName("C:/Users/me/code/api/"), "api");
+  assert.equal(folderName("\\\\server\\share\\api\\"), "api");
   assert.deepEqual(parsePatterns("*.log\n\n# note\n build/ "), ["*.log", "build/"]);
   const rules = toggleExcluded(defaultRules(), "docs", false);
   assert.deepEqual(rules.excluded, ["docs"]);
   assert.deepEqual(toggleExcluded(rules, "docs", true).excluded, []);
-  assert.equal(modeInfo("twoWay").flow, "Mac ⇄ machine");
+  assert.equal(modeInfo("twoWay").flow, "Local ⇄ machine");
 });
 
 test("one status line, conflicts first", () => {

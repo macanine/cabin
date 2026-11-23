@@ -93,9 +93,7 @@ export function SessionView({ id }: { id: string }) {
           archived={session.archived}
           onSize={(next) => (size.current = next)}
           focusKey={terminal ? undefined : `${session.status.state}:${session.lastStartedAt ?? ""}`}
-        />
-        {!terminal && !live && (
-          <div className="terminal-banner" role="status">
+          notice={!terminal && !live ? <>
             <span>
               {session.status.state === "failed"
                 ? session.status.message
@@ -111,8 +109,8 @@ export function SessionView({ id }: { id: string }) {
             <Button size="xs" variant="default" leftSection={<IconRefresh size={14} />} onClick={() => start(false)}>
               Start fresh
             </Button>
-          </div>
-        )}
+          </> : null}
+        />
       </div>}
       <WorkbenchPanel root={root} git={git} />
       </div>

@@ -140,7 +140,9 @@ impl Inventory {
     pub fn measure_vm(&mut self, home: &Path) {
         use StorageKind::*;
         let paths = StatePaths::new(home);
-        let disk = paths.instance(NAME).disk();
+        let instance = paths.instance(NAME);
+        let disk = instance.disk();
+        let legacy_proxy = paths.proxy().join("shoes.log");
         let archive = crate::qemu_engine::archive_path(home);
         let staging = crate::qemu_engine::staging_path(home);
         let archive_partial = crate::download::partial_path(&archive);
@@ -162,6 +164,12 @@ impl Inventory {
                 if path == disk {
                     return VirtualDisk;
                 }
+                if path == paths.legacy_journal()
+                    || path == legacy_proxy
+                    || (path.parent() == Some(instance.root()) && legacy_capture(path))
+                {
+                    return Logs;
+                }
                 if kind == Engine && (path == staging || path == archive_partial || path == archive)
                 {
                     return Downloads;
@@ -175,7 +183,7 @@ impl Inventory {
                         Some("images") => SystemImages,
                         Some("engines") => Engine,
                         Some("logs" | "destroy.log") => Logs,
-                        Some("network" | "sync" | "state" | "proxy" | "journal.jsonl") => Settings,
+                        Some("network" | "sync" | "state" | "proxy") => Settings,
                         _ => kind,
                     };
                 }
@@ -286,7 +294,7 @@ pub struct CleanupResult {
     pub failures: Vec<String>,
 }
 
-pub const LOG_RETENTION_DAYS: u64 = 30;
+pub use cabin_diagnostics::RETENTION_DAYS as LOG_RETENTION_DAYS;
 
 fn image_partial(path: &Path) -> bool {
     let suffix = format!("-minimal-cloudimg-{}.img.part", crate::arch::GuestArch::current().cloud_image_suffix());
@@ -309,6 +317,14 @@ fn real_directory(path: &Path) -> io::Result<Option<Metadata>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+fn legacy_capture(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| matches!(name,
+        "serial.log" | "serial-provision.log" | "display.log" | "qemu-stderr.log"
+            | "start-rollback.log" | "serial-browser-install.log" | "serial-desktop-install.log"
+            | "serial-seal-install.log" | "serial-seal-runtime.log"
+    ))
 }
 
 fn candidates(home: &Path, target: CleanupTarget, now: SystemTime) -> io::Result<Vec<PathBuf>> {
@@ -352,6 +368,11 @@ fn candidates(home: &Path, target: CleanupTarget, now: SystemTime) -> io::Result
         }
         CleanupTarget::Logs => {
             let retention = Duration::from_secs(LOG_RETENTION_DAYS * 86_400);
+            let is_old = |meta: &Metadata| {
+                meta.is_file() && meta.modified().ok()
+                    .and_then(|at| now.duration_since(at).ok())
+                    .is_some_and(|age| age >= retention)
+            };
             if same_volume(&paths.logs())? {
                 for dir in [paths.instance_logs(NAME), paths.instance_logs("global")] {
                     if !same_volume(&dir)? {
@@ -361,16 +382,25 @@ fn candidates(home: &Path, target: CleanupTarget, now: SystemTime) -> io::Result
                         let row = row?;
                         let path = row.path();
                         let meta = fs::symlink_metadata(&path)?;
-                        if meta.is_file()
-                            && path.extension().is_some_and(|ext| ext == "log")
-                            && meta
-                                .modified()
-                                .ok()
-                                .and_then(|at| now.duration_since(at).ok())
-                                .is_some_and(|age| age >= retention)
+                        if path.extension().is_some_and(|ext| ext == "log")
+                            && path.file_name().is_some_and(|name| name != "shoes.log")
+                            && is_old(&meta)
                         {
                             result.push(path);
                         }
+                    }
+                }
+            }
+            let journal = paths.legacy_journal();
+            if fs::symlink_metadata(&journal).is_ok_and(|meta| is_old(&meta)) {
+                result.push(journal);
+            }
+            let instance = paths.instance(NAME);
+            if same_volume(&paths.instances())? && same_volume(instance.root())? {
+                for row in fs::read_dir(instance.root())? {
+                    let path = row?.path();
+                    if legacy_capture(&path) && is_old(&fs::symlink_metadata(&path)?) {
+                        result.push(path);
                     }
                 }
             }

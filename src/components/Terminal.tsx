@@ -1,13 +1,23 @@
 import { useAutoRefresh } from "../lib/useAutoRefresh";
 import { Button, useComputedColorScheme } from "@mantine/core";
-import { useEffect, useRef, useState } from "react";
+import { IconMinus, IconPlus } from "@tabler/icons-react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import "@fontsource/jetbrains-mono/latin-400.css";
+import "@fontsource/jetbrains-mono/latin-700.css";
+import "@fontsource/jetbrains-mono/latin-400-italic.css";
+import "@fontsource/jetbrains-mono/latin-700-italic.css";
 import type { Terminal as GhosttyTerminal } from "ghostty-web";
 import { toIpcError } from "../services/ipc/common";
 import { libraryIpc } from "../services/ipc/library";
 import { clipboard } from "../services/ipc/dialogs";
 import { appStore, onTerminalEvent } from "../state/store";
 import { cellAt, WHEEL_DOWN, WHEEL_UP, WheelAccumulator, wheelReport } from "../lib/terminalInput";
-import { type ColorScheme, terminalColors } from "../lib/terminalTheme";
+import { BASE, type ColorScheme, terminalColors } from "../lib/terminalTheme";
+import {
+  loadTerminalFonts, readTerminalFontSize, saveTerminalFontSize, terminalFontSize, TERMINAL_FONT,
+  TERMINAL_FONT_DEFAULT, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_SCROLLBAR_GUTTER,
+} from "../lib/terminalAppearance";
+import { installTerminalIme } from "../lib/terminalIme";
 import { gridFor, settledSender, type Grid } from "../lib/terminalFit";
 import { blobBase64, PASTE_IMAGE_MAX, pastedImage, typedPath } from "../lib/terminalPaste";
 import { formatBytes } from "../lib/format";
@@ -29,10 +39,6 @@ function ghostty(): Promise<typeof GhosttyTerminal> {
     throw error;
   });
   return ghosttyReady;
-}
-
-function cssVar(name: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 /** Focus the terminal unless the user is typing in another field. */
@@ -69,6 +75,9 @@ interface Entry {
   attached: boolean;
   autoStart: boolean;
   onState?: (next: TerminalViewState) => void;
+  onZoom?: (change: number) => void;
+  fit?: () => void;
+  setFontSize: (size: number) => void;
   resize: (grid: Grid) => void;
   sync: (mode: "entry" | "retry" | "stream") => void;
   connection: (ready: boolean) => void;
@@ -128,7 +137,7 @@ function watchStore() {
   });
 }
 
-function acquire(Terminal: typeof GhosttyTerminal, sessionId: string, scheme: ColorScheme, slot: HTMLElement): Entry {
+function acquire(Terminal: typeof GhosttyTerminal, sessionId: string, scheme: ColorScheme, slot: HTMLElement, fontSize: number): Entry {
   watchStore();
   let entry = pool.get(sessionId);
   if (entry && entry.scheme !== scheme) {
@@ -136,35 +145,29 @@ function acquire(Terminal: typeof GhosttyTerminal, sessionId: string, scheme: Co
     pool.delete(sessionId);
     entry = undefined;
   }
-  entry ??= create(Terminal, sessionId, scheme, slot);
+  entry ??= create(Terminal, sessionId, scheme, slot, fontSize);
+  entry.setFontSize(fontSize);
   pool.delete(sessionId);
   pool.set(sessionId, entry);
   return entry;
 }
 
-/** Row height as a factor of the font size: the density of a native
- *  terminal. Taller rows open gaps in box-drawing lines (agent UIs). */
-const LINE_HEIGHT = 1.2;
-
-function create(Terminal: typeof GhosttyTerminal, sessionId: string, scheme: ColorScheme, slot: HTMLElement): Entry {
+function create(Terminal: typeof GhosttyTerminal, sessionId: string, scheme: ColorScheme, slot: HTMLElement, fontSize: number): Entry {
   const root = document.createElement("div");
   root.className = "terminal-host";
   // Open while in the document so font metrics and the first fit are real.
   slot.appendChild(root);
 
   const term = new Terminal({
-    fontFamily: cssVar("--mono") || "monospace",
-    fontSize: 13,
-    cursorBlink: true,
+    fontFamily: TERMINAL_FONT,
+    fontSize,
+    cursorStyle: "bar",
+    cursorBlink: false,
     scrollback: 10000,
     // Scroll position is restored after every write (see `write` below); an
     // easing animation would keep pulling against that.
     smoothScrollDuration: 0,
-    theme: terminalColors(scheme, {
-      background: cssVar("--terminal-bg"),
-      foreground: cssVar("--terminal-fg"),
-      accent: cssVar("--accent"),
-    }),
+    theme: terminalColors(scheme),
   });
   // WebKit's IME edits a contenteditable host itself, inserting nodes before
   // the canvas. Keep all text input in Ghostty's textarea instead, and let
@@ -179,88 +182,8 @@ function create(Terminal: typeof GhosttyTerminal, sessionId: string, scheme: Col
   };
   term.open(root);
   opened = true;
-  // Rows at LINE_HEIGHT (vite.config.ts patches the renderer to honour it),
-  // measured again once the web font has loaded; the fit loop picks the new
-  // cell size up on its next frame.
-  const remeasure = () => {
-    const renderer = term.renderer as (NonNullable<typeof term.renderer> & { lineHeight?: number }) | undefined;
-    if (!renderer) return;
-    renderer.lineHeight = LINE_HEIGHT;
-    renderer.remeasureFont();
-  };
-  remeasure();
-  void document.fonts?.ready.then(remeasure);
-  root.contentEditable = "false";
-  root.removeAttribute("tabindex");
-  root.removeAttribute("role");
-  root.removeAttribute("aria-label");
-  root.removeAttribute("aria-multiline");
-  const textarea = term.textarea;
-  if (textarea) {
-    // Keep a real caret rectangle for the IME even while the input is hidden.
-    textarea.style.clipPath = "none";
-    textarea.style.pointerEvents = "none";
-    let composing = false;
-    let preedit = "";
-    let lastCommit = "";
-    let commitTimer: ReturnType<typeof setTimeout> | undefined;
-    const measure = document.createElement("canvas").getContext("2d");
-    if (measure) measure.font = `${term.options.fontSize}px ${term.options.fontFamily}`;
-    textarea.wrap = "off";
-    positionInput = (force = false) => {
-      const cursor = term.wasmTerm?.getCursor();
-      const metrics = term.renderer?.getMetrics();
-      // Ghostty temporarily moves this textarea for its context menu.
-      if (!cursor || !metrics || (!force && textarea.style.position === "fixed")) return;
-      const col = Math.max(0, Math.min(term.cols - 1, cursor.x));
-      const row = Math.max(0, Math.min(term.rows - 1, cursor.y + Math.floor(term.viewportY)));
-      const textWidth = composing ? (measure?.measureText(preedit).width ?? preedit.length * metrics.width) : 0;
-      const width = Math.min((term.cols - col) * metrics.width, Math.max(metrics.width, Math.ceil(textWidth + metrics.width)));
-      textarea.style.position = "absolute";
-      textarea.style.left = `${col * metrics.width}px`;
-      textarea.style.top = `${row * metrics.height}px`;
-      textarea.style.width = `${width}px`;
-      textarea.style.height = `${metrics.height}px`;
-      textarea.style.font = `${term.options.fontSize}px ${term.options.fontFamily}`;
-      textarea.style.lineHeight = `${metrics.height}px`;
-    };
-    // Ghostty prevents beforeinput on the host; it must not cancel the IME's
-    // composition events on the textarea. compositionend still bubbles to
-    // Ghostty, which sends the committed text to the PTY once.
-    textarea.addEventListener("beforeinput", (event) => event.stopPropagation());
-    textarea.addEventListener("compositionstart", () => {
-      composing = true;
-      preedit = "";
-      lastCommit = "";
-      clearTimeout(commitTimer);
-      textarea.classList.add("terminal-composing");
-      positionInput(true);
-    });
-    textarea.addEventListener("compositionupdate", (event) => {
-      preedit = event.data;
-      positionInput(true);
-    });
-    textarea.addEventListener("compositionend", (event) => {
-      composing = false;
-      preedit = "";
-      lastCommit = event.data;
-      textarea.classList.remove("terminal-composing");
-      positionInput();
-      clearTimeout(commitTimer);
-      commitTimer = setTimeout(() => { lastCommit = ""; }, 0);
-      queueMicrotask(() => { if (!composing) textarea.value = ""; });
-    });
-    // Some input methods commit text without a composition event or keydown.
-    textarea.addEventListener("input", (event) => {
-      const input = event as InputEvent;
-      if (composing || input.isComposing || !["insertText", "insertReplacementText"].includes(input.inputType)) return;
-      const text = input.data ?? textarea.value;
-      if (text && text !== lastCommit) term.input(text, true);
-      lastCommit = "";
-      textarea.value = "";
-    });
-    positionInput();
-  }
+  positionInput = installTerminalIme(term, root);
+  positionInput();
   // Full reset (RIS) before anything is shown. ghostty-web's WASM build
   // reuses the memory of disposed terminals without clearing it, so a new
   // terminal's untouched rows showed text from other sessions. RIS rewrites
@@ -409,7 +332,16 @@ function create(Terminal: typeof GhosttyTerminal, sessionId: string, scheme: Col
 
   // ghostty-web: returning true means "handled, skip default handling".
   term.attachCustomKeyEventHandler((event) => {
-    if (event.type !== "keydown" || !event.ctrlKey || !event.shiftKey) return false;
+    if (event.type !== "keydown" || event.isComposing) return false;
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && entry.onZoom) {
+      const change = event.key === "0" ? 0 : event.key === "-" ? -1 : ["+", "="].includes(event.key) ? 1 : null;
+      if (change !== null) {
+        event.preventDefault();
+        entry.onZoom(change);
+        return true;
+      }
+    }
+    if (!event.ctrlKey || !event.shiftKey) return false;
     // App shortcuts (handled on window): keep them away from the PTY.
     if (["KeyN", "KeyK", "KeyB"].includes(event.code)) return true;
     if (event.code === "KeyC") {
@@ -473,7 +405,9 @@ function create(Terminal: typeof GhosttyTerminal, sessionId: string, scheme: Col
     const rect = canvas.getBoundingClientRect();
     const notches = wheel.take(event.deltaY, event.deltaMode, rect.height / term.rows, term.rows);
     if (notches === 0) return true;
-    const { col, row } = cellAt(event.clientX, event.clientY, rect, term.cols, term.rows);
+    const { col, row } = cellAt(event.clientX, event.clientY, {
+      left: rect.left, top: rect.top, width: rect.width - TERMINAL_SCROLLBAR_GUTTER, height: rect.height,
+    }, term.cols, term.rows);
     const report = wheelReport(notches < 0 ? WHEEL_UP : WHEEL_DOWN, col, row, term.getMode(1006));
     sendInput(report.repeat(Math.abs(notches)));
     return true;
@@ -486,6 +420,12 @@ function create(Terminal: typeof GhosttyTerminal, sessionId: string, scheme: Col
     term,
     attached: false,
     autoStart: false,
+    setFontSize: (size) => {
+      if (term.options.fontSize === size) return;
+      term.options.fontSize = size;
+      entry.fit?.();
+      positionInput();
+    },
     resize: (next) => {
       grid = next;
       resize();
@@ -530,9 +470,8 @@ function create(Terminal: typeof GhosttyTerminal, sessionId: string, scheme: Col
  * every animation frame the slot changes size, so the grid always fills it;
  * the PTY is resized once the size has settled (and right away on attach, so
  * a program starts at the real size). ghostty-web's FitAddon is not used: it
- * ignored resizes for 50 ms after each one (dropping the final size of a
- * window drag) and reserved 15 px for a scrollbar that is drawn as an
- * overlay. */
+ * ignored resizes for 50 ms after each one, which can drop the final size of
+ * a window drag. The fitted width excludes the canvas scrollbar gutter. */
 function attach(entry: Entry, slot: HTMLElement, onSize: (size: TerminalSize) => void, focusOnAttach: boolean): () => void {
   const { term, root, sessionId } = entry;
   entry.attached = true;
@@ -545,17 +484,28 @@ function attach(entry: Entry, slot: HTMLElement, onSize: (size: TerminalSize) =>
   });
   const fitNow = () => {
     const metrics = term.renderer?.getMetrics();
-    const grid = metrics && gridFor(slot.clientWidth, slot.clientHeight, metrics);
+    const grid = metrics && gridFor(slot.clientWidth - TERMINAL_SCROLLBAR_GUTTER, slot.clientHeight, metrics);
     if (!grid) return;
     if (grid.cols !== term.cols || grid.rows !== term.rows) term.resize(grid.cols, grid.rows);
     pty.push(grid);
   };
+  entry.fit = fitNow;
   let frame = 0;
   const observer = new ResizeObserver(() => {
     cancelAnimationFrame(frame);
     frame = requestAnimationFrame(fitNow);
   });
   observer.observe(slot);
+
+  // A window can move between displays without changing its CSS dimensions.
+  let resolution: MediaQueryList;
+  const repaint = () => {
+    resolution?.removeEventListener("change", repaint);
+    resolution = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    resolution.addEventListener("change", repaint);
+    if (term.wasmTerm) term.renderer?.render(term.wasmTerm, true, term.viewportY, term);
+  };
+  repaint();
   fitNow();
   pty.flush();
 
@@ -568,11 +518,14 @@ function attach(entry: Entry, slot: HTMLElement, onSize: (size: TerminalSize) =>
   return () => {
     window.removeEventListener("focus", onWindowFocus);
     observer.disconnect();
+    resolution.removeEventListener("change", repaint);
     cancelAnimationFrame(frame);
     // A size still settling belongs to the view being left: send it now.
     pty.flush();
     entry.attached = false;
     entry.onState = undefined;
+    entry.onZoom = undefined;
+    entry.fit = undefined;
     root.remove();
     const state = appStore.get();
     if (!state.guestReady || !state.sessions.some((session) => session.id === sessionId)) {
@@ -598,17 +551,29 @@ export function SessionTerminal({
   focusKey,
   plain = false,
   archived = false,
+  notice,
 }: {
   sessionId: string;
   onSize?: (size: TerminalSize) => void;
   focusKey?: unknown;
   plain?: boolean;
   archived?: boolean;
+  notice?: ReactNode;
 }) {
   const slot = useRef<HTMLDivElement>(null);
   const entryRef = useRef<Entry | null>(null);
   const [state, setState] = useState<TerminalViewState>({ busy: true });
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const [fontSize, setFontSize] = useState(readTerminalFontSize);
+  const fontSizeRef = useRef(fontSize);
+  const zoom = (change: number) => {
+    const next = change === 0 ? TERMINAL_FONT_DEFAULT : terminalFontSize(fontSizeRef.current + change);
+    if (next === fontSizeRef.current) return;
+    fontSizeRef.current = next;
+    saveTerminalFontSize(next);
+    setFontSize(next);
+    entryRef.current?.setFontSize(next);
+  };
   const onSizeRef = useRef(onSize);
   onSizeRef.current = onSize;
   // Colours follow the app (system) scheme; a change rebuilds the emulator.
@@ -628,16 +593,17 @@ export function SessionTerminal({
     const focusAtNavigation = document.activeElement;
     let disposed = false;
     let detach = () => {};
-    void ghostty().then((Terminal) => {
+    void Promise.all([ghostty(), loadTerminalFonts()]).then(([Terminal]) => {
       if (disposed) return;
       const active = document.activeElement;
       const focusOnAttach =
         (active === focusAtNavigation || active === document.body || active == null) &&
         !active?.closest("[role='dialog'], [role='menu']");
-      const entry = acquire(Terminal, sessionId, scheme, element);
+      const entry = acquire(Terminal, sessionId, scheme, element, fontSizeRef.current);
       entryRef.current = entry;
       entry.autoStart = plain && !archived;
       entry.onState = setState;
+      entry.onZoom = zoom;
       detach = attach(entry, element, (size) => onSizeRef.current?.(size), focusOnAttach);
       entry.sync("entry");
     }).catch((cause: unknown) => {
@@ -666,13 +632,22 @@ export function SessionTerminal({
     else setLoadAttempt((attempt) => attempt + 1);
   }, { enabled: !!state.error, initial: false, interval: 8_000 });
   const failed = state.error ?? (plain && state.status?.state === "failed" ? state.status.message : null);
-  const exited = plain && !archived && state.status?.state === "exited" ? state.status : null;
+  const status = state.status?.state;
+  const exited = plain && state.status?.state === "exited" ? state.status : null;
+  const label = archived ? "Archived" : failed ? "Unavailable" : status === "running" ? "Running" :
+    state.busy || status === "starting" ? "Connecting" : exited ? "Exited" : "Stopped";
+  const palette = BASE[scheme];
+  const surfaceStyle = {
+    "--console-bg": palette.background,
+    "--console-ink": palette.foreground,
+    "--console-caret": palette.accent,
+  } as CSSProperties;
+  const modifier = /Mac/i.test(navigator.platform) ? "⌘" : "Ctrl+";
 
   return (
-    <>
+    <div className="terminal-surface" data-terminal-theme={scheme} style={surfaceStyle}>
       <div
         className="terminal-frame"
-        // Clicks on the padding around the canvas still focus the terminal.
         onMouseDown={(event) => {
           const term = entryRef.current?.term;
           if (event.button === 0 &&
@@ -684,23 +659,33 @@ export function SessionTerminal({
       >
         <div className="terminal-slot" ref={slot} />
       </div>
-      {state.busy ? plain && state.status?.state !== "running" && (
-        <div className="terminal-banner" role="status">Opening terminal…</div>
-      ) : failed ? (
-        <div className="terminal-banner" role="status">
-          <span>{failed}</span>
-          {plain && state.status?.state === "failed" && <Button size="xs" variant="default" onClick={retry}>Restart shell</Button>}
+      {notice || failed || (exited && !archived) ? (
+        <div className="terminal-notice" role="status">
+          {notice ?? <>
+            <span>{failed ?? (exited?.code ? `Shell exited with code ${exited.code}.` : "Shell exited.")}</span>
+            {!archived && (plain || state.error) && (
+              <Button size="compact-xs" variant="default" onClick={retry}>
+                {plain && (exited || status === "failed") ? "Restart shell" : "Retry"}
+              </Button>
+            )}
+          </>}
         </div>
-      ) : exited ? (
-        <div className="terminal-banner" role="status">
-          <span>
-            {exited.code === 0 ? "Shell exited." : exited.code == null ? "Shell ended." : `Shell exited with code ${exited.code}.`}
-            {" Reopen this terminal to start another shell."}
-          </span>
+      ) : null}
+      <div className="terminal-statusbar">
+        <span className="terminal-status" data-tone={failed ? "error" : label === "Running" ? "live" : undefined} role="status">
+          {label}
+        </span>
+        <div className="terminal-zoom" role="group" aria-label="Terminal text size">
+          <button type="button" disabled={fontSize <= TERMINAL_FONT_MIN} onClick={() => zoom(-1)}
+            title={`Decrease text size (${modifier}−)`} aria-label="Decrease terminal text size"><IconMinus size={14} /></button>
+          <button type="button" className="terminal-zoom-value" onClick={() => zoom(0)}
+            title={`Reset text size (${modifier}0)`} aria-label={`Reset terminal text size (currently ${fontSize} pixels)`}>
+            {fontSize} px
+          </button>
+          <button type="button" disabled={fontSize >= TERMINAL_FONT_MAX} onClick={() => zoom(1)}
+            title={`Increase text size (${modifier}+)`} aria-label="Increase terminal text size"><IconPlus size={14} /></button>
         </div>
-      ) : archived && plain && (
-        <div className="terminal-banner" role="status">Archived terminal</div>
-      )}
-    </>
+      </div>
+    </div>
   );
 }

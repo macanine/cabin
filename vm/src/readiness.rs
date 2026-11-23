@@ -230,6 +230,17 @@ fn windows_path_checks(
         issues.push(item("appDataLocation", "Windows app data is redirected", false, true,
             "Use a Windows profile with local AppData outside OneDrive and network storage, or ask your administrator to restore local AppData before installing.", None));
     }
+    let instance = crate::paths::StatePaths::new(home).instance(crate::machine::NAME);
+    if let Err(error) = crate::sockets::validate_path(&instance.console_socket()) {
+        issues.push(item(
+            "vmSocketPath",
+            "Windows VM socket path is unusable",
+            false,
+            false,
+            error.to_string(),
+            None,
+        ));
+    }
     // Leave room in MAX_PATH for instance, step, and log file names.
     if appdata.encode_utf16().count() >= 180 || data_path.encode_utf16().count() >= 180 {
         issues.push(item("appDataLength", "Windows app data path is long", false, true,
@@ -537,7 +548,7 @@ fn run(argv: &[String]) -> Result<std::process::ExitStatus> {
 /// or loading an entire console log into memory.
 pub fn diagnostic_history(home: &Path) -> serde_json::Value {
     use crate::paths::StatePaths;
-    use serde_json::{Value, json};
+    use serde_json::json;
 
     let paths = StatePaths::new(home);
     let instance = paths.instance_logs(crate::machine::NAME);
@@ -577,11 +588,8 @@ pub fn diagnostic_history(home: &Path) -> serde_json::Value {
         })
         .filter_map(|path| Some((path.metadata().ok()?.modified().ok()?, path)))
         .max();
-    let journal = diagnostic_tail(&paths.journal(), 128 * 1024);
-    let records: Vec<Value> = journal
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
+    let mut records = cabin_diagnostics::recent_records(&paths.legacy_journal(), 128 * 1024);
+    records.extend(cabin_diagnostics::recent_records(&paths.journal(), 128 * 1024));
     // Apply is also used by startup repairs. Anchor the install fallback to
     // the latest *install* step log, which uses "-apply-" instead of "-start-".
     let last_apply_ms = last_apply
@@ -607,11 +615,17 @@ pub fn diagnostic_history(home: &Path) -> serde_json::Value {
     let global = recent(&paths.logs().join("global")).take(3);
     let console = recent(paths.instance(crate::machine::NAME).root()).filter(|path| {
         path.file_name().is_some_and(|name| {
-            name == "serial.log" || name == "provision-serial.log" || name == "display.log"
+            matches!(name.to_str(), Some("serial.log" | "serial-provision.log" | "display.log" | "qemu-stderr.log" | "start-rollback.log"))
         })
     });
+    let current_console = |path: &Path| {
+        matches!(path.file_name().and_then(|name| name.to_str()),
+            Some("serial.log" | "serial-provision.log" | "qemu-stderr.log"))
+    };
     let logs: Vec<_> = recent(&instance)
+        .filter(|path| !current_console(path))
         .take(7)
+        .chain(recent(&instance).filter(|path| current_console(path)))
         .chain(global)
         .chain(console)
         .map(|path| {
@@ -619,28 +633,12 @@ pub fn diagnostic_history(home: &Path) -> serde_json::Value {
             json!({ "file": path.file_name().unwrap_or_default().to_string_lossy(), "tail": log })
         })
         .collect();
-    json!({ "lastStart": last_start, "lastInstall": last_install, "logTails": logs })
+    let events = cabin_diagnostics::recent_records(&paths.logs().join(cabin_diagnostics::EVENT_FILE), 32 * 1024);
+    json!({ "lastStart": last_start, "lastInstall": last_install, "logTails": logs, "events": events })
 }
 
 fn diagnostic_tail(path: &Path, max_bytes: u64) -> String {
-    use std::io::{Read, Seek, SeekFrom};
-
-    let read = || -> std::io::Result<String> {
-        let mut file = std::fs::File::open(path)?;
-        let offset = file.metadata()?.len().saturating_sub(max_bytes);
-        file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = Vec::new();
-        file.take(max_bytes).read_to_end(&mut bytes)?;
-        let text = String::from_utf8_lossy(&bytes);
-        // Discard the first partial line, including any partial home paths.
-        let text = if offset > 0 {
-            text.split_once('\n').map_or("", |(_, rest)| rest)
-        } else {
-            &text
-        };
-        Ok(text.to_owned())
-    };
-    read().unwrap_or_default()
+    cabin_diagnostics::tail(path, max_bytes, 0)
 }
 
 /// Redact home roots and account names in every string, including nested log
@@ -845,6 +843,12 @@ mod tests {
             windows_path_checks(home, Some(&long), None, &[], false)[0].id,
             "appDataLength"
         );
+        let long_home = PathBuf::from(format!(r"C:\{}\cabin\vm", "x".repeat(90)));
+        let issues = windows_path_checks(&long_home, None, None, &[], false);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, "vmSocketPath");
+        assert!(!issues[0].optional);
+        assert!(issues[0].detail.contains("CABIN_HOME"));
         let profile = Path::new(r"C:\Users\杨");
         assert_eq!(
             windows_path_checks(home, None, Some(profile), &[], false)[0].id,
@@ -938,17 +942,30 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            paths.journal(),
+            paths.legacy_journal(),
             concat!(
                 "{\"event\":\"apply_start\",\"ts\":1}\n",
                 "{\"event\":\"step_failed\",\"step\":\"image\",\"error\":\"connection reset\"}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            paths.journal(),
+            concat!(
                 "{\"event\":\"preflight\",\"ts\":18446744073709551614}\n",
                 "{\"event\":\"apply_start\",\"ts\":18446744073709551614}\n",
                 "{\"event\":\"step_ok\",\"step\":\"disk\"}\n",
             ),
         )
         .unwrap();
+        cabin_diagnostics::append_record(
+            &paths.logs().join(cabin_diagnostics::EVENT_FILE),
+            "{\"event\":\"desktop_ready\"}\n",
+            false,
+        )
+        .unwrap();
         let report = diagnostic_history(&home);
+        assert_eq!(report["events"][0]["event"], "desktop_ready");
         assert_eq!(report["lastInstall"].as_array().unwrap().len(), 2);
         assert_eq!(report["lastInstall"][1]["step"], "image");
         assert_eq!(report["lastStart"]["state"], "failed");

@@ -1,13 +1,12 @@
-//! Opt-in live check of the Windows QEMU integration: the distro engine and
-//! firmware are discovered, the exact app argv boots QEMU under TCG, the QMP
-//! control channel answers on its AF_UNIX socket, and the stop flow tears
-//! everything down. Skipped silently when QEMU is not on PATH.
+//! Native Windows check using Cabin's vendored QEMU. The app's argv opens
+//! QMP and the gateway's AF_UNIX socket, and the stop flow tears QEMU down.
 //!
-//! cargo test --test windows_qemu_live -- --ignored --nocapture
+//! Set `CABIN_VENDOR_DIR` to the directory staged by `npm run vendor`, then
+//! run `cargo test --test windows_qemu_live -- --ignored --nocapture`.
 #![cfg(windows)]
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,16 +23,50 @@ impl Drop for Scratch {
 
 fn scratch(name: &str) -> Scratch {
     let dir = std::env::temp_dir().join(format!(
-        "cabin-qemu-live-{name}-{}-{}",
+        "cq-{name}-{}-{}",
         std::process::id(),
         vm_core::util::now_millis()
     ));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir(&dir).expect("create an isolated QEMU test directory");
     Scratch(dir)
 }
 
-fn qemu_available() -> bool {
-    vm_core::qemu_engine::installed(Path::new("unused-home")).is_some()
+struct QemuChild(Child);
+
+impl Drop for QemuChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn bundled_engine(home: &Path) -> vm_core::qemu_engine::Engine {
+    vm_core::qemu_engine::require(home)
+        .expect("set CABIN_VENDOR_DIR to the staged Windows vendor bundle")
+}
+
+fn start_qemu(args: &[String]) -> QemuChild {
+    let mut command = Command::new(&args[0]);
+    command.args(&args[1..]).stdin(Stdio::null());
+    vm_core::util::no_window(&mut command);
+    QemuChild(command.spawn().expect("launch bundled QEMU"))
+}
+
+fn wait_for_qmp(cfg: &Config, child: &mut QemuChild, args: &[String]) {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    while Instant::now() < deadline {
+        if let Some(status) =
+            vm_core::qmp::qmp_query_status(&cfg.qmp_socket(), Duration::from_secs(2))
+        {
+            assert_eq!(status["status"], "running");
+            return;
+        }
+        if let Some(status) = child.0.try_wait().expect("read QEMU exit status") {
+            panic!("QEMU exited during startup ({status}); args: {args:?}");
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    panic!("QMP never became ready; args: {args:?}");
 }
 
 fn log(path: &Path) -> Arc<Mutex<std::fs::File>> {
@@ -65,12 +98,12 @@ fn boot_config(home: &Path, mode: &str) -> Config {
     )
     .unwrap();
     std::fs::create_dir_all(cfg.instance_dir()).unwrap();
+    std::fs::create_dir_all(cfg.serial_log_path().parent().unwrap()).unwrap();
     cfg
 }
 
 fn prepare_drives(cfg: &Config) {
-    let engine = vm_core::qemu_engine::installed(&cfg.home)
-        .expect("distro QEMU with firmware should resolve");
+    let engine = bundled_engine(&cfg.home);
     assert!(engine.qemu.is_file(), "{}", engine.qemu.display());
     assert!(engine.qemu_img.is_file(), "{}", engine.qemu_img.display());
     assert!(
@@ -101,68 +134,38 @@ fn prepare_drives(cfg: &Config) {
 }
 
 #[test]
-#[ignore = "needs QEMU for Windows on PATH"]
-fn distro_engine_and_firmware_are_discovered() {
-    if !qemu_available() {
-        eprintln!("skipping: QEMU is not on PATH");
-        return;
-    }
-    let engine = vm_core::qemu_engine::installed(Path::new("unused-home"))
-        .expect("distro QEMU with firmware should resolve");
+#[ignore = "requires the staged Windows vendor bundle"]
+fn bundled_engine_reports_its_version() {
+    let engine = bundled_engine(Path::new("unused-home"));
     let version = vm_core::qemu_engine::version(&engine).unwrap();
     assert!(version.contains("QEMU"), "{version}");
 }
 
 #[test]
-#[ignore = "needs QEMU for Windows on PATH"]
+#[ignore = "requires the staged Windows vendor bundle"]
 fn the_app_argv_boots_qmp_and_stops_cleanly() {
-    if !qemu_available() {
-        eprintln!("skipping: QEMU is not on PATH");
-        return;
-    }
     let scratch = scratch("boot");
-    let cfg = boot_config(&scratch.0.join("vm"), "user");
+    let cfg = boot_config(&scratch.0.join("v,m"), "user");
     prepare_drives(&cfg);
 
     // The exact argv the app launches (Windows runs QEMU as a supervised
     // child instead of daemonizing).
     let args = vm_core::vm::build_qemu_args(&cfg, false, None, None, None).unwrap();
-    assert!(
-        args.iter().any(|arg| arg.contains("accel=whpx") || arg.contains("accel=tcg")),
-        "Windows runs WHPX or TCG: {:?}",
-        args
-    );
+    let whpx = args
+        .windows(2)
+        .any(|pair| pair[0] == "-accel" && pair[1].split(',').next() == Some("whpx"));
+    let tcg = args
+        .windows(2)
+        .any(|pair| pair[0] == "-machine" && pair[1].split(',').any(|part| part == "accel=tcg"));
+    assert!(whpx || tcg, "Windows runs WHPX or TCG: {args:?}");
     assert!(args.iter().any(|arg| arg.contains("rng-builtin")));
-    assert!(args.iter().any(|arg| arg.contains("q35")), "x64 guests use q35");
+    assert!(
+        args.iter().any(|arg| arg.contains("q35")),
+        "x64 guests use q35"
+    );
 
-    let mut command = Command::new(&args[0]);
-    command.args(&args[1..]);
-    // Detached stdio: inherited pipes would make `cargo test` wait for QEMU.
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    vm_core::util::no_window(&mut command);
-    let mut child = command
-        .spawn()
-        .unwrap_or_else(|error| panic!("QEMU spawn failed: {error}"));
-
-    // QMP answers on the instance's AF_UNIX socket as soon as QEMU is up.
-    let endpoint = cfg.qmp_socket();
-    let deadline = Instant::now() + Duration::from_secs(90);
-    let mut status = None;
-    while Instant::now() < deadline {
-        if let Some(reply) = vm_core::qmp::qmp_query_status(&endpoint, Duration::from_secs(2)) {
-            status = Some(reply);
-            break;
-        }
-        if child.try_wait().ok().flatten().is_some() {
-            panic!("QEMU exited during startup; args: {args:?}");
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
-    let status = status.expect("QMP never became ready");
-    assert_eq!(status["status"], "running");
+    let mut child = start_qemu(&args);
+    wait_for_qmp(&cfg, &mut child, &args);
 
     // The full stop flow: QMP quit, then termination, then cleanup.
     let runtime = Runtime::new(&cfg);
@@ -170,16 +173,14 @@ fn the_app_argv_boots_qmp_and_stops_cleanly() {
     let stopped = runtime.stop(&log, Duration::from_secs(60));
     assert!(stopped, "stop flow shuts QEMU down");
     assert!(!runtime.alive());
-    let _ = child.wait();
+    assert!(child.0.try_wait().expect("read QEMU exit status").is_some());
+    assert!(!cfg.pidfile().exists());
+    assert!(!cfg.qmp_socket().exists());
 }
 
 #[test]
-#[ignore = "needs QEMU for Windows on PATH"]
+#[ignore = "requires the staged Windows vendor bundle"]
 fn gateway_mode_connects_qemu_to_the_gateway_socket() {
-    if !qemu_available() {
-        eprintln!("skipping: QEMU is not on PATH");
-        return;
-    }
     let scratch = scratch("gateway");
     let cfg = boot_config(&scratch.0.join("vm"), "gateway");
     prepare_drives(&cfg);
@@ -204,36 +205,12 @@ fn gateway_mode_connects_qemu_to_the_gateway_socket() {
         "QEMU must dial the gateway's socket: {netdev}"
     );
 
-    let mut command = Command::new(&args[0]);
-    command.args(&args[1..]);
-    command.stdin(Stdio::null());
-    vm_core::util::no_window(&mut command);
-    let mut child = command.spawn().unwrap();
-
-    let deadline = Instant::now() + Duration::from_secs(90);
-    loop {
-        let status =
-            vm_core::qmp::qmp_query_status(&cfg.qmp_socket(), Duration::from_secs(2));
-        if let Some(status) = status {
-            assert_eq!(status["status"], "running");
-            break;
-        }
-        assert!(
-            child.try_wait().ok().flatten().is_none(),
-            "QEMU exited during startup; args: {args:?}"
-        );
-        assert!(
-            Instant::now() < deadline,
-            "QMP never became ready; args: {args:?}"
-        );
-        std::thread::sleep(Duration::from_millis(300));
-    }
+    let mut child = start_qemu(&args);
+    wait_for_qmp(&cfg, &mut child, &args);
     // QEMU's data NIC dials the gateway's socket.
     let connected = Instant::now() + Duration::from_secs(30);
     while !gateway.connected() && Instant::now() < connected {
         std::thread::sleep(Duration::from_millis(300));
     }
     assert!(gateway.connected(), "QEMU connected to the gateway socket");
-    drop(child.kill());
-    let _ = child.wait();
 }

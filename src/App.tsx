@@ -94,7 +94,7 @@ export default function App() {
 
   const syncFolders = useApp((state) => JSON.stringify(state.syncs.map(({ project }) => [project.id, project.name, project.hostPath, project.mode])));
   const inspectingPermissions = useUi((ui) => ui.view.kind === "settings" && ui.view.tab === "permissions");
-  useAutoRefresh(refreshMacPermissions, { enabled: ready && IS_MAC, refreshKey: syncFolders, interval: inspectingPermissions ? 30_000 : 0 });
+  useAutoRefresh(refreshMacPermissions, { enabled: ready, refreshKey: syncFolders, interval: inspectingPermissions ? 30_000 : 0 });
 
   // Desktop shortcuts. On macOS ⌘N / ⌘[ / ⌘] (⌘ never reaches the
   // terminal's PTY). Everywhere, Ctrl+Shift keeps plain Ctrl+N/K/B for shells
