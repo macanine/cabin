@@ -1,7 +1,7 @@
 //! Append-only JSONL journal plus per-step atomic state files.
 
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -36,9 +36,20 @@ impl Journal {
         let line = crate::py_json::dumps_compact_utf8(&record) + "\n";
         let mut file = OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(&self.path)?;
-        let _ = file.lock();
+        file.lock()?;
+        // A process can die halfway through an append. Keep that fragment
+        // isolated so the next complete record remains a readable JSON line.
+        if file.metadata()?.len() != 0 {
+            file.seek(SeekFrom::End(-1))?;
+            let mut last = [0];
+            file.read_exact(&mut last)?;
+            if last[0] != b'\n' {
+                file.write_all(b"\n")?;
+            }
+        }
         file.write_all(line.as_bytes())?;
         file.flush()?;
         file.sync_all()?;
@@ -81,7 +92,36 @@ pub fn save_state(home: &Path, scope: &str, step_id: &str, state: &Value) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::load_state;
+    use super::*;
+
+    #[test]
+    fn journal_recovers_after_a_partial_append() {
+        let dir = crate::sockets::test_dir();
+        let journal = Journal::new(&dir).unwrap();
+        std::fs::write(&journal.path, b"{\"event\":\"interrupted").unwrap();
+        journal.append("recovered", Map::new()).unwrap();
+        let log = std::fs::read_to_string(&journal.path).unwrap();
+        let last: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        assert_eq!(last["event"], "recovered");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn step_state_replacement_leaves_no_partial_json() {
+        let dir = crate::sockets::test_dir();
+        let path = state_path(&dir, "agent", "disk");
+        ensure_dir(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{\"unfinished").unwrap();
+        assert!(load_state(&dir, "agent", "disk").is_none());
+        let state = serde_json::json!({"status": "applied", "bytes": 1024});
+        save_state(&dir, "agent", "disk", &state).unwrap();
+        assert_eq!(load_state(&dir, "agent", "disk"), Some(state));
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn previous_device_step_state_remains_readable() {
