@@ -146,7 +146,7 @@ pub fn install_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// Leave the app. With `stop_machine` the VM is stopped first, so nothing is
-/// left running; without it the VM is left to run on its own.
+/// left running; without it, an idle VM can continue running on its own.
 #[tauri::command]
 pub(crate) async fn app_quit(
     app: AppHandle,
@@ -154,9 +154,7 @@ pub(crate) async fn app_quit(
     stop_machine: bool,
 ) -> Result<(), crate::app_error::AppError> {
     let shared = host.inner().clone();
-    if stop_machine && shared.snapshot().machine.state == MachineState::Running {
-        crate::task::blocking(&shared, |host| host.stop()).await?;
-    }
+    crate::task::blocking(&shared, move |host| host.prepare_quit(stop_machine)).await?;
     QUITTING.store(true, Ordering::SeqCst);
     app.exit(0);
     Ok(())

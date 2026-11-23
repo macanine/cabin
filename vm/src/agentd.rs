@@ -98,23 +98,39 @@ pub fn ensure_helper(runtime: &Runtime, binary: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Copy `binary` into the guest, replace the old one atomically and
-/// (re)start the systemd user service.
+fn deploy_script(expected: &str) -> String {
+    format!(
+        r#"
+set -eu
+uid=$(id -u); gid=$(id -g)
+for dir in "$HOME/.local" "$HOME/.local/share" "$HOME/.local/state" "$HOME/.local/bin" "$HOME/.config" "$HOME/.config/systemd/user"; do
+    if ! mkdir -p "$dir" 2>/dev/null || [ ! -w "$dir" ]; then
+        sudo -n install -d -o "$uid" -g "$gid" "$dir"
+        sudo -n chown "$uid:$gid" "$HOME/.local" "$HOME/.config" "$dir"
+    fi
+done
+target="$HOME/{REMOTE_BIN}"
+tmp=$(mktemp "$target.XXXXXXXXXX")
+trap 'rm -f -- "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+cat > "$tmp"
+printf '%s  %s\n' '{expected}' "$tmp" | sha256sum --check
+chmod 0755 "$tmp"
+mv -fT -- "$tmp" "$target"
+"$target" install-service
+"#
+    )
+}
+
+/// Copy into a unique file beside cabind, verify it and replace the installed
+/// binary atomically before (re)starting the systemd user service.
 pub fn deploy(runtime: &Runtime, binary: &Path) -> Result<()> {
-    if !binary.is_file() {
-        return message(format!(
-            "cabind for the VM was not found at {}",
-            binary.display()
-        ));
-    }
+    require_binary(binary)?;
     let expected = crate::util::sha256_file(binary)?;
     let mut argv = runtime.ssh_argv(false)?;
     argv.push(format!(
-        "uid=$(id -u); gid=$(id -g); for dir in \"$HOME/.local\" \"$HOME/.local/share\" \"$HOME/.local/state\" \"$HOME/.local/bin\" \"$HOME/.config\" \"$HOME/.config/systemd/user\"; do if ! mkdir -p \"$dir\" 2>/dev/null || [ ! -w \"$dir\" ]; then sudo -n install -d -o \"$uid\" -g \"$gid\" \"$dir\" && sudo -n chown \"$uid:$gid\" \"$HOME/.local\" \"$HOME/.config\" \"$dir\"; fi; done; \
-         cat > \"$HOME/{REMOTE_BIN}.new\" && \
-         printf '%s  %s\\n' '{expected}' \"$HOME/{REMOTE_BIN}.new\" | sha256sum --check && \
-         chmod 0755 \"$HOME/{REMOTE_BIN}.new\" && mv -f \"$HOME/{REMOTE_BIN}.new\" \"$HOME/{REMOTE_BIN}\" && \
-         \"$HOME/{REMOTE_BIN}\" install-service"
+        "sh -c {}",
+        crate::util::shell_quote(&deploy_script(&expected))
     ));
     let output = capture_file(&argv, Duration::from_secs(75), File::open(binary)?);
     if output.code == 124 {
@@ -154,4 +170,41 @@ pub fn connect_argv(runtime: &Runtime) -> Result<Vec<String>> {
     let mut argv = runtime.ssh_argv(false)?;
     argv.push(format!("\"$HOME/{REMOTE_BIN}\" connect"));
     Ok(argv)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupted_deploy_preserves_the_installed_binary_and_removes_staging_file() {
+        let home = crate::sockets::test_dir();
+        let installed = home.join(REMOTE_BIN);
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, b"working build").unwrap();
+        // A partial upload arrives at EOF after SSH drops. Simulate a checksum
+        // failure for it, including on hosts with no GNU sha256sum.
+        let script = format!(
+            "sha256sum() {{ cat >/dev/null; return 1; }}\n{}",
+            deploy_script("expected")
+        );
+        let args = vec!["sh".into(), "-c".into(), script];
+        let env = vec![("HOME".into(), home.to_string_lossy().into_owned())];
+        let output = crate::util::capture_env(
+            &args,
+            Duration::from_secs(5),
+            Some("partial"),
+            None,
+            Some(&env),
+        );
+        assert_eq!(output.code, 1, "{}", output.output);
+        assert_eq!(std::fs::read(&installed).unwrap(), b"working build");
+        assert_eq!(
+            std::fs::read_dir(installed.parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(home).unwrap();
+    }
 }
