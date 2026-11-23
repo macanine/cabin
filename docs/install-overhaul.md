@@ -49,7 +49,7 @@ emulation is a visible, explained fallback, never a silent default.
    triple from the *build host*, not the bundle target; cross-building breaks.
 6. Architecture is decided ad hoc in ~15 places (`if guest_arch() == "x86_64"`). Still
    hardcoded to arm64: `vm/config/browser.json` UA/platform, `vm/src/browser.rs`
-   (`"Linux aarch64"`), `src-tauri/src/network_gate.rs`, `vm/src/storage.rs`
+   (`"Linux aarch64"`), `src-tauri/src/network_gate/`, `vm/src/storage.rs`
    (`ubuntu-24.04` partial name), `vm/src/machine.rs` and `vm/src/storage.rs` engine
    file lists, `vm/src/cli.rs` (`qemu-system-aarch64 --version`), `vm/src/device/profile.rs`.
    `config::CHROME_URL` keys on the *host* `target_arch`.
@@ -124,7 +124,7 @@ It does not edit files owned by another workstream in the same wave.
   `WhpxFeatureOff | VirtualizationOff | HypervisorConflict | ProbeFailed(String)`. On a
   WHPX launch failure at VM start, retry once under TCG and record why.
 - Browser UA and platform per arch: `vm/config/browser.json` becomes arch-neutral or
-  gets per-arch values, plus `vm/src/browser.rs` and the `network_gate.rs` fixture.
+  gets per-arch values, plus `vm/src/browser.rs` and the `network_gate/` fixtures.
 - Device profile: refuse it only as an option validation. The UI hides it (wave 2).
 - Unit tests for every mapping. Mac `cargo test` stays green.
 
