@@ -48,6 +48,7 @@ export type IpcCommand =
   | "app_background"
   | "guest_invoke"
   | "machine_checks"
+  | "machine_diagnostics"
   | "host_fix"
   | "machine_details"
   | "storage_status"

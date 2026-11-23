@@ -2,7 +2,7 @@ import { useAutoRefresh } from "../../lib/useAutoRefresh";
 import { Button } from "@mantine/core";
 import { IconDownload, IconPlayerPlay, IconPlayerStop, IconServer, IconTrash } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
-import { RecoveryPanel } from "../../components/Recovery";
+import { CopyDiagnosticsButton, RecoveryPanel } from "../../components/Recovery";
 import { toIpcError } from "../../services/ipc/common";
 import { MachineDetailsPanel, MachineResources } from "./MachineDetailsPanel";
 import { machineIpc } from "../../services/ipc/app";
@@ -100,7 +100,7 @@ export function MachineSettings() {
             {machine.guestVersion && <div className="text-xs text-faint">cabind {machine.guestVersion}{machine.os ? ` · ${machine.os}` : ""}</div>}
           </div>
           {!installed ? (
-            <Button leftSection={<IconDownload size={14} />} disabled={!busy && blocking} onClick={() => uiActions.navigate({ kind: "install" })}>
+            <Button leftSection={<IconDownload size={14} />} onClick={() => uiActions.navigate({ kind: "install" })}>
               {busy ? "Show progress" : "Install…"}
             </Button>
           ) : running ? (
@@ -127,7 +127,7 @@ export function MachineSettings() {
       ))}
       {connected && observation?.error && <p className="muted machine-note" role="status">Guest observation unavailable · {observation.error}</p>}
 
-      <Section title="Startup and diagnostics">
+      <Section title="Startup and diagnostics" action={<CopyDiagnosticsButton />}>
         {start ? (
           <details className="machine-expander" open={startFailed || start.state === "running" || undefined}>
             <summary>{startFailed ? "Start failed" : start.state === "running" ? "Start in progress" : `Last start · ${formatDuration(reportElapsed(start, Date.now()))}`}</summary>

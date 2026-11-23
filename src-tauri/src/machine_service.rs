@@ -41,6 +41,18 @@ pub(crate) async fn machine_checks(
     blocking(&host, move |host| Ok(host.checks(disk_gb, memory_mb))).await
 }
 
+#[tauri::command]
+pub(crate) async fn machine_diagnostics(
+    host: State<'_, Shared>,
+    disk_gb: u32,
+    memory_mb: u32,
+    steps: Vec<InstallStep>,
+    install_error: Option<String>,
+    install_user: Option<String>,
+) -> Result<String, AppError> {
+    blocking(&host, move |host| host.diagnostics(disk_gb, memory_mb, steps, install_error, install_user)).await
+}
+
 /// Run a readiness fix (enable WHPX, restart, open a help page).
 #[tauri::command]
 pub(crate) async fn host_fix(
@@ -89,7 +101,13 @@ pub(crate) fn machine_install(
     options: MachineInstallOptions,
 ) {
     let shared = host.inner().clone();
-    spawn_task(&host, channel, move |_| shared.install(options));
+    spawn_task(&host, channel, move |_| {
+        let username = options.username.clone();
+        let started_at = vm_core::util::now_millis();
+        let result = shared.install(options);
+        shared.record_install_result(started_at, &result, username.as_deref());
+        result
+    });
 }
 
 #[tauri::command]
@@ -329,7 +347,10 @@ pub(crate) fn machine_resume(
 ) {
     let shared = host.inner().clone();
     spawn_task(&host, channel, move |_| {
-        shared.resume(change_mirror, apt_mirror)
+        let started_at = vm_core::util::now_millis();
+        let result = shared.resume(change_mirror, apt_mirror);
+        shared.record_install_result(started_at, &result, None);
+        result
     });
 }
 

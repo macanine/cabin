@@ -886,6 +886,93 @@ impl Host {
         vm_core::readiness::ReadinessReport { items, host: vm_core::readiness::host_facts(self.machine.home()) }
     }
 
+    fn install_result_path(&self) -> PathBuf {
+        vm_core::StatePaths::new(self.machine.home()).logs().join("last-install.json")
+    }
+
+    /// Keep the outcome even if setup stopped before the first step was logged.
+    pub fn record_install_result(&self, started_at: i64, result: &Result<MachineStatus, AppError>, username: Option<&str>) {
+        let failure = result.as_ref().err();
+        let state = match failure.map(|error| error.code.as_str()) {
+            None => "succeeded",
+            Some("cancelled") => "cancelled",
+            Some(_) => "failed",
+        };
+        let report = serde_json::json!({
+            "startedAt": started_at,
+            "finishedAt": vm_core::util::now_millis(),
+            "state": state,
+            "error": failure.map(|error| &error.message),
+            "username": username,
+        });
+        if let Err(error) = vm_core::util::atomic_write_json(&self.install_result_path(), &report, 0o600) {
+            eprintln!("cabin: could not record the install outcome: {error}");
+        }
+    }
+
+    /// Collect support information even when the guest is offline.
+    pub fn diagnostics(
+        &self,
+        disk_gb: u32,
+        memory_mb: u32,
+        steps: Vec<InstallStep>,
+        install_error: Option<String>,
+        install_user: Option<String>,
+    ) -> Result<String, AppError> {
+        use vm_core::readiness::{diagnostic_history, host_os_version, redact_diagnostics};
+
+        let home = self.machine.home();
+        let machine = self.status.read_lock().clone();
+        let start = self.startup.locked().as_ref().map(|(_, report)| report.clone());
+        let mut history = diagnostic_history(home);
+        let install = vm_core::util::read_json(&self.install_result_path()).unwrap_or_default();
+        let mut recorded_events = history["lastInstall"].take();
+        if let Some(started_at) = install["startedAt"].as_i64()
+            && recorded_events[0]["ts"].as_i64().is_some_and(|ts| ts < started_at)
+        {
+            recorded_events = serde_json::json!([]);
+        }
+        let mut readiness = self.checks(disk_gb, memory_mb);
+        let host_user = readiness.host.username.take();
+        let platform = &readiness.host.platform;
+        let vendor = vm_core::vendor::bundled_manifest().map(|vendor| vendor.manifest);
+        let mut report = serde_json::json!({
+            "versions": {
+                "cabin": env!("CARGO_PKG_VERSION"),
+                "bundledCabind": self.agentd.is_file().then_some(env!("CARGO_PKG_VERSION")),
+                "runningCabind": machine.guest_version,
+                "ubuntu": machine.os,
+                "qemu": vendor.as_ref().map(|manifest| &manifest.qemu.version)
+                    .map(String::as_str).or_else(|| (platform == "macos" && vm_core::qemu_engine::installed(home).is_some()).then_some(vm_core::qemu_engine::RELEASE)),
+                "openSsh": vendor.as_ref().and_then(|manifest| manifest.ssh.as_ref()).map(|ssh| &ssh.version),
+            },
+            "host": {
+                "facts": readiness.host,
+                "osVersion": host_os_version(platform),
+                "architecture": vm_core::platform::native_arch(),
+            },
+            "readiness": readiness.items,
+            "lastInstall": {
+                "steps": steps,
+                "state": install["state"],
+                "startedAt": install["startedAt"],
+                "finishedAt": install["finishedAt"],
+                "error": install_error.map(serde_json::Value::String).unwrap_or_else(|| install["error"].clone()),
+                "recordedEvents": recorded_events,
+            },
+            "lastStart": start.as_ref().map(|report| serde_json::json!(report)).unwrap_or_else(|| history["lastStart"].take()),
+            "logTails": history["logTails"].take(),
+        });
+
+        let profile = std::env::home_dir();
+        let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+        let users: Vec<_> = [host_user.as_deref(), machine.username.as_deref(), install_user.as_deref(), install["username"].as_str()]
+            .into_iter().flatten().collect();
+        let roots: Vec<_> = [Some(home), profile.as_deref(), appdata.as_deref()].into_iter().flatten().collect();
+        redact_diagnostics(&mut report, &roots, &users);
+        serde_json::to_string_pretty(&report).map_err(|error| AppError::internal(error.to_string()))
+    }
+
     /// Carry out a readiness fix.
     pub fn fix(&self, fix: vm_core::readiness::Fix) -> Result<vm_core::readiness::FixOutcome, AppError> {
         vm_core::readiness::apply_fix(&fix).map_err(|error| AppError {
@@ -2216,6 +2303,28 @@ mod tests {
             Ok(())
         }).unwrap();
         assert_eq!(host.snapshot().machine.busy, None);
+    }
+
+    #[test]
+    fn diagnostics_include_the_last_install_failure_before_steps_exist() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("private-cabin-data");
+        let make_host = || {
+            let machine = Machine::new(&root, concat!(env!("CARGO_MANIFEST_DIR"), "/../vm"));
+            Host::new(machine, root.join("missing-cabind")).unwrap()
+        };
+        let host = make_host();
+        let error = format!("guest-test-user could not find an image under {}", root.display());
+        host.record_install_result(vm_core::util::now_millis(), &Err(AppError::internal(error)), Some("guest-test-user"));
+        drop(host);
+        let exported = make_host().diagnostics(20, 4096, vec![], None, None).unwrap();
+        assert!(!exported.contains("private-cabin-data"));
+        assert!(!exported.contains("guest-test-user"));
+        let report: Value = serde_json::from_str(&exported).unwrap();
+        assert_eq!(report["versions"]["cabin"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(report["lastInstall"]["state"], "failed");
+        assert_eq!(report["lastInstall"]["error"], "<user> could not find an image under <home>");
+        assert!(report["readiness"].is_array());
     }
 
     #[test]

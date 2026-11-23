@@ -113,6 +113,7 @@ export function InstallWizard() {
           steps={steps}
           startedAt={startedAt}
           error={error}
+          installOptions={{ diskSize: options.diskSize, memoryMb: options.memoryMb, username: options.username ?? plan?.username ?? null }}
           cancelled={cancelled}
           osName={chosenOs(options, choices)?.name ?? plan?.osName ?? "Ubuntu"}
           onRetry={install}

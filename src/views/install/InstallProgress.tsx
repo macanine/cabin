@@ -2,7 +2,7 @@ import { useAutoRefresh } from "../../lib/useAutoRefresh";
 import { Button, Checkbox, Progress } from "@mantine/core";
 import { IconArrowLeft, IconPlayerPlay, IconRotateClockwise } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
-import type { DownloadProgress, InstallStep, MachineStatus } from "../../services/ipc/generated/core";
+import type { DownloadProgress, InstallStep, MachineInstallOptions, MachineStatus } from "../../services/ipc/generated/core";
 import { machineIpc } from "../../services/ipc/app";
 import { toIpcError } from "../../services/ipc/common";
 import { confirmAction } from "../../services/ipc/dialogs";
@@ -11,6 +11,7 @@ import { uiActions } from "../../state/ui";
 import { MirrorPicker } from "../../components/MirrorPicker";
 import { type StateTone } from "../../components/common";
 import { StepProgress } from "../../components/StepProgress";
+import { CopyDiagnosticsButton } from "../../components/Recovery";
 import { BootDetails, BootHero, BootStep, BootSteps, Elapsed, Note, Ticker } from "../../components/Boot";
 import { useAutoOpen } from "../../components/motion";
 import { downloadSummary, formatDuration } from "../../lib/format";
@@ -68,12 +69,13 @@ function DownloadBar({ download }: { download: DownloadProgress }) {
  * automatically and can be resumed here.
  */
 export function InstallProgress({
-  machine, steps, startedAt, error, cancelled, osName, onRetry, onEdit,
+  machine, steps, startedAt, error, installOptions, cancelled, osName, onRetry, onEdit,
 }: {
   machine: MachineStatus;
   steps: InstallStep[];
   startedAt: number | null;
   error: string | null;
+  installOptions: Pick<MachineInstallOptions, "diskSize" | "memoryMb" | "username">;
   cancelled: string | null;
   osName: string;
   onRetry: () => void;
@@ -180,10 +182,13 @@ export function InstallProgress({
           </div>
         </Note>
       )}
-      {(help || cancelled) && !installed && (
-        <div className="flex justify-end gap-2">
-          <Button variant="default" leftSection={<IconArrowLeft size={14} />} onClick={onEdit}>Change settings</Button>
-          <Button leftSection={<IconRotateClockwise size={14} />} onClick={onRetry}>{cancelled ? "Install again" : "Retry"}</Button>
+      {(help || (cancelled && !installed)) && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {help && <CopyDiagnosticsButton installError={failure} installOptions={installed ? undefined : installOptions} />}
+          {!installed && <>
+            <Button variant="default" leftSection={<IconArrowLeft size={14} />} onClick={onEdit}>Change settings</Button>
+            <Button leftSection={<IconRotateClockwise size={14} />} onClick={onRetry}>{cancelled ? "Install again" : "Retry"}</Button>
+          </>}
         </div>
       )}
 

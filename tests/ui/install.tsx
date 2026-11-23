@@ -10,6 +10,8 @@ const host = q.get("host") ?? "mac";
 const fail = q.get("fail");
 const windows = host.startsWith("win");
 let whpxOn = host !== "win-nowhpx";
+let clipboardText = "";
+let diagnosticsRequested = false;
 
 const callbacks = new Map<number, (raw: unknown) => void>();
 let nextCallback = 1;
@@ -102,6 +104,19 @@ async function install(channel: { id: number }) {
 const handlers: Record<string, (a: any) => unknown> = {
   app_subscribe: ({ channel }) => { events = channel; return { machine, guest: null, start: null }; },
   machine_checks: () => readiness(),
+  machine_diagnostics: ({ steps, installError, diskGb, memoryMb }) => {
+    diagnosticsRequested = true;
+    const { items, host } = readiness();
+    return JSON.stringify({
+      versions: { cabin: "0.2.0" },
+      host: { platform: host.platform, memoryMb },
+      readiness: items,
+      lastInstall: { steps, error: installError, diskGb },
+      lastStart: machine.state === "running" ? { state: "succeeded" } : null,
+      logTails: [{ file: "start.log", tail: "<home>/vm: initial setup" }],
+    });
+  },
+  "plugin:clipboard-manager|write_text": ({ text }) => { clipboardText = text; },
   network_state: () => ({ ...initialState().network, available: true, running: false }),
   proxy_catalog: () => initialState().proxy,
   usage_dashboard: () => {
@@ -135,7 +150,10 @@ const handlers: Record<string, (a: any) => unknown> = {
   machine_verify: () => [],
 };
 (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
-(window as any).__journey = { enableWhpx: () => { whpxOn = true; } };
+(window as any).__journey = {
+  enableWhpx: () => { whpxOn = true; },
+  diagnostics: () => diagnosticsRequested && JSON.parse(clipboardText || "{}"),
+};
 (window as any).__TAURI_INTERNALS__ = {
   transformCallback: (fn: (raw: unknown) => void) => { const id = nextCallback++; callbacks.set(id, fn); return id; },
   unregisterCallback: (id: number) => callbacks.delete(id),

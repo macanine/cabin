@@ -533,6 +533,178 @@ fn run(argv: &[String]) -> Result<std::process::ExitStatus> {
     Ok(Command::new(&argv[0]).args(&argv[1..]).status()?)
 }
 
+/// Read bounded diagnostic tails without following paths supplied by the UI
+/// or loading an entire console log into memory.
+pub fn diagnostic_history(home: &Path) -> serde_json::Value {
+    use crate::paths::StatePaths;
+    use serde_json::{Value, json};
+
+    let paths = StatePaths::new(home);
+    let instance = paths.instance_logs(crate::machine::NAME);
+    let recent = |dir: &Path| {
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if !entry.file_type().ok()?.is_file() || path.extension()? != "log" {
+                    return None;
+                }
+                Some((entry.metadata().ok()?.modified().ok()?, path))
+            })
+            .collect();
+        files.sort_unstable();
+        files.into_iter().rev().map(|(_, path)| path)
+    };
+    let last_start = recent(&instance).find(|path| {
+        // Startup attempts use start-<milliseconds>-<pid>-<sequence>.log.
+        path.file_name().and_then(|name| name.to_str()).and_then(|name| name.strip_prefix("start-"))
+            .and_then(|name| name.split('-').next())
+            .is_some_and(|stamp| stamp.parse::<u64>().is_ok())
+    }).map(|path| {
+        let log = diagnostic_tail(&path, 24 * 1024);
+        let state = if log.contains("Startup failed:") { "failed" }
+            else if log.contains("Startup complete") { "succeeded" }
+            else { "incomplete" };
+        json!({ "state": state, "logTail": log.lines().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>() })
+    });
+    let last_apply = recent(&instance)
+        .chain(recent(&paths.logs().join("global")))
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().contains("-apply-"))
+        })
+        .filter_map(|path| Some((path.metadata().ok()?.modified().ok()?, path)))
+        .max();
+    let journal = diagnostic_tail(&paths.journal(), 128 * 1024);
+    let records: Vec<Value> = journal
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    // Apply is also used by startup repairs. Anchor the install fallback to
+    // the latest *install* step log, which uses "-apply-" instead of "-start-".
+    let last_apply_ms = last_apply
+        .and_then(|(time, _)| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64);
+    let apply_start = records.iter().rposition(|row| {
+        row["event"] == "apply_start"
+            && row["ts"]
+                .as_u64()
+                .zip(last_apply_ms)
+                .is_some_and(|(ts, latest)| ts <= latest)
+    });
+    let last_install: Vec<_> = apply_start
+        .into_iter()
+        .flat_map(|index| {
+            let end = records[index + 1..]
+                .iter()
+                .position(|row| row["event"] == "apply_start" || row["event"] == "preflight")
+                .map_or(records.len(), |end| index + end + 1);
+            &records[index..end]
+        })
+        .collect();
+    let global = recent(&paths.logs().join("global")).take(3);
+    let console = recent(paths.instance(crate::machine::NAME).root()).filter(|path| {
+        path.file_name().is_some_and(|name| {
+            name == "serial.log" || name == "provision-serial.log" || name == "display.log"
+        })
+    });
+    let logs: Vec<_> = recent(&instance)
+        .take(7)
+        .chain(global)
+        .chain(console)
+        .map(|path| {
+            let log = diagnostic_tail(&path, 12 * 1024);
+            json!({ "file": path.file_name().unwrap_or_default().to_string_lossy(), "tail": log })
+        })
+        .collect();
+    json!({ "lastStart": last_start, "lastInstall": last_install, "logTails": logs })
+}
+
+fn diagnostic_tail(path: &Path, max_bytes: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let read = || -> std::io::Result<String> {
+        let mut file = std::fs::File::open(path)?;
+        let offset = file.metadata()?.len().saturating_sub(max_bytes);
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = Vec::new();
+        file.take(max_bytes).read_to_end(&mut bytes)?;
+        let text = String::from_utf8_lossy(&bytes);
+        // Discard the first partial line, including any partial home paths.
+        let text = if offset > 0 {
+            text.split_once('\n').map_or("", |(_, rest)| rest)
+        } else {
+            &text
+        };
+        Ok(text.to_owned())
+    };
+    read().unwrap_or_default()
+}
+
+/// Redact home roots and account names in every string, including nested log
+/// entries. Do this before encoding JSON so escaped Windows paths are covered.
+pub fn redact_diagnostics(value: &mut serde_json::Value, roots: &[&Path], users: &[&str]) {
+    use regex::Regex;
+
+    let mut roots: Vec<_> = roots
+        .iter()
+        .filter(|root| root.parent().is_some())
+        .flat_map(|root| {
+            let root = root.to_string_lossy();
+            [
+                root.to_string(),
+                root.replace('\\', "/"),
+                root.replace('\\', "\\\\"),
+            ]
+        })
+        .collect();
+    roots.sort_unstable_by_key(|root| std::cmp::Reverse(root.len()));
+    roots.dedup();
+    let paths: Vec<_> = roots
+        .iter()
+        .filter_map(|root| Regex::new(&format!("(?i){}", regex::escape(root))).ok())
+        .collect();
+    let users: Vec<_> = users
+        .iter()
+        .flat_map(|name| [*name, name.rsplit('\\').next().unwrap_or(name)])
+        .flat_map(|name| [name, name.split('@').next().unwrap_or(name)])
+        .filter(|name| !name.trim().is_empty())
+        .filter_map(|name| Regex::new(&format!(r"(?i)\b{}\b", regex::escape(name))).ok())
+        .collect();
+    let home =
+        Regex::new(r#"(?i)(?:[a-z]:[/\\]+Users[/\\]+|/(?:Users|home)/)[^/\\\r\n"'`<>]+"#).unwrap();
+    let ssh_user = Regex::new(r"(?i)\b[\w.-]+@((?:\d{1,3}\.){3}\d{1,3}|localhost)\b").unwrap();
+    let user_field = Regex::new(r#"(?i)(\b(?:username|user)\s*[=:]\s*["']?|\b(?:creating|adding|created) user\s+["']?)[\w.-]+"#).unwrap();
+    let url_credentials = Regex::new(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s@]+@").unwrap();
+    fn walk(value: &mut serde_json::Value, redact: &impl Fn(&str) -> String) {
+        use serde_json::Value;
+        match value {
+            Value::String(text) => *text = redact(text),
+            Value::Array(values) => values.iter_mut().for_each(|value| walk(value, redact)),
+            Value::Object(map) => map.values_mut().for_each(|value| walk(value, redact)),
+            _ => {}
+        }
+    }
+    walk(value, &|text| {
+        let mut text = text.to_owned();
+        for path in &paths {
+            text = path.replace_all(&text, "<home>").into_owned();
+        }
+        text = home.replace_all(&text, "<home>").into_owned();
+        text = ssh_user.replace_all(&text, "<user>@${1}").into_owned();
+        text = user_field.replace_all(&text, "${1}<user>").into_owned();
+        text = url_credentials
+            .replace_all(&text, "${1}<credentials>@")
+            .into_owned();
+        for user in &users {
+            text = user.replace_all(&text, "<user>").into_owned();
+        }
+        text
+    });
+}
+
 /// Carry out a fix. Windows-only fixes say so elsewhere.
 pub fn apply_fix(fix: &Fix) -> Result<FixOutcome> {
     match fix {
@@ -758,5 +930,94 @@ mod tests {
         );
         assert!(policy.detail.contains("security policy"));
         assert_eq!(policy.fix, Some(Fix::ReinstallApp));
+    }
+
+    #[test]
+    fn diagnostics_redact_paths_and_user_names_before_json_encoding() {
+        use serde_json::json;
+        let roots = [
+            Path::new(r"D:\profiles\Host Name"),
+            Path::new("/private/local/Custom Home"),
+        ];
+        let mut report = json!({
+            "readiness": [{ "detail": r"d:\PROFILES\Host Name\AppData\Roaming\cabin" }],
+            "lastInstall": {
+                "error": r#"could not write "D:\\profiles\\Host Name\\Temp\\file""#,
+                "steps": [{ "logTail": ["Host Name started the machine", "/home/guestname/.ssh", "GuestName@127.0.0.1: SSH timed out"] }],
+            },
+            "lastStart": { "facts": [{ "value": "/private/local/Custom Home/.cabin/qemu" }] },
+            "logTails": [
+                r"C:\Users\Archived Profile\AppData\log",
+                "/Users/Another Name/Library/log",
+                "Cloud-init: Creating user 'PreviousGuest'",
+                "Network: https://ProxyUser:Secret@mirror.example/path",
+            ],
+        });
+        redact_diagnostics(&mut report, &roots, &[r"CORP\Host Name", "guestname"]);
+        let encoded = report.to_string();
+        for private in [
+            "Host Name",
+            "GuestName",
+            "guestname",
+            "Archived Profile",
+            "Another Name",
+            "Custom Home",
+            "PreviousGuest",
+            "ProxyUser",
+            "Secret",
+        ] {
+            assert!(!encoded.contains(private), "{private}: {encoded}");
+        }
+        assert!(encoded.contains("<home>") && encoded.contains("<user>@127.0.0.1: SSH timed out"));
+    }
+
+    #[test]
+    fn diagnostic_history_recovers_reports_and_bounds_log_tails() {
+        use crate::paths::StatePaths;
+        let home = std::env::temp_dir().join(format!("diagnostic-history-{}", std::process::id()));
+        let paths = StatePaths::new(&home);
+        let instance = paths.instance_logs(crate::machine::NAME);
+        let global = paths.logs().join("global");
+        std::fs::create_dir_all(&instance).unwrap();
+        std::fs::create_dir_all(&global).unwrap();
+        let log = format!(
+            "first boot began\n{}\nStartup failed: QEMU exited\n",
+            "x".repeat(30_000)
+        );
+        std::fs::write(instance.join("start-1200-10-0.log"), log).unwrap();
+        std::fs::write(instance.join("disk-start-20260702.log"), "not an attempt").unwrap();
+        std::fs::write(
+            global.join("image-apply-20260702.log"),
+            "image could not be downloaded",
+        )
+        .unwrap();
+        std::fs::write(
+            paths.journal(),
+            concat!(
+                "{\"event\":\"apply_start\",\"ts\":1}\n",
+                "{\"event\":\"step_failed\",\"step\":\"image\",\"error\":\"connection reset\"}\n",
+                "{\"event\":\"preflight\",\"ts\":18446744073709551614}\n",
+                "{\"event\":\"apply_start\",\"ts\":18446744073709551614}\n",
+                "{\"event\":\"step_ok\",\"step\":\"disk\"}\n",
+            ),
+        )
+        .unwrap();
+        let report = diagnostic_history(&home);
+        assert_eq!(report["lastInstall"].as_array().unwrap().len(), 2);
+        assert_eq!(report["lastInstall"][1]["step"], "image");
+        assert_eq!(report["lastStart"]["state"], "failed");
+        assert_eq!(
+            report["lastStart"]["logTail"][0],
+            "Startup failed: QEMU exited"
+        );
+        assert!(
+            report["logTails"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|log| log["tail"] == "image could not be downloaded")
+        );
+        assert!(report.to_string().len() < 16_000);
+        std::fs::remove_dir_all(home).unwrap();
     }
 }
