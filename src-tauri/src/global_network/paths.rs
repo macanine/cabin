@@ -45,7 +45,7 @@ impl GlobalNetwork {
         self.journal(runtime, "interfaceChanged", reason, None);
     }
 
-    /// Called by the macOS network-path watcher (host/).
+    /// Called by the macOS network-path watcher (`host/network_check.rs`).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn path_changed(&self) -> bool {
         self.path_changed_with(network_interfaces::paths().unwrap_or_default())
