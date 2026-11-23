@@ -12,7 +12,7 @@
 //       guestArch: "aarch64" | "x86_64",
 //       qemu:    <pin>,
 //       openssh?: <pin> } } }
-//   pin = { version, license, format: "tar.gz" | "nsis" | "zip", url, sha256,
+//   pin = { version, license, format: "tar.gz" | "nsis" | "zip", url | urls, sha256,
 //           sourceUrl, upstreamSourceUrl?, extraFiles?: [{ name, url, sha256 }] }
 //
 // Cache: build/vendor-cache/<sha256-prefix>-<file name> (hash-verified on every use).
@@ -34,12 +34,14 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = path.join(root, "build", "vendor-cache");
 const outRoot = path.join(root, "build", "vendor");
-const STAMP_VERSION = 2;
+const STAMP_VERSION = 4;
 
 const WINDOWS_QEMU_KEEP_FILES = [
   "qemu-system-x86_64.exe",
@@ -91,35 +93,48 @@ function detectPlatform() {
   return null;
 }
 
-async function download(pin, dest) {
+function urls(pin) {
+  return pin.urls ?? [pin.url];
+}
+
+export async function download(pin, dest) {
   if (fs.existsSync(dest) && sha256File(dest) === pin.sha256) return;
   fs.rmSync(dest, { force: true });
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  console.log(`download ${pin.url}`);
-  const response = await fetch(pin.url, { redirect: "follow" });
-  if (!response.ok || !response.body) {
-    throw new Error(`download failed (${response.status}): ${pin.url}`);
-  }
   const part = `${dest}.part`;
-  const hash = createHash("sha256");
-  const out = fs.createWriteStream(part);
-  for await (const chunk of response.body) {
-    hash.update(chunk);
-    if (!out.write(chunk)) await new Promise((resolve) => out.once("drain", resolve));
+  const errors = [];
+  for (const url of urls(pin)) {
+    try {
+      console.log(`download ${url}`);
+      const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(10 * 60_000) });
+      if (!response.ok || !response.body) {
+        await response.body?.cancel();
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const hash = createHash("sha256");
+      const digest = new Transform({
+        transform(chunk, _encoding, done) {
+          hash.update(chunk);
+          done(null, chunk);
+        },
+      });
+      await pipeline(response.body, digest, fs.createWriteStream(part));
+      const actual = hash.digest("hex");
+      if (actual !== pin.sha256) {
+        throw new Error(`sha256 mismatch (expected ${pin.sha256}, got ${actual})`);
+      }
+      fs.renameSync(part, dest);
+      return;
+    } catch (error) {
+      fs.rmSync(part, { force: true });
+      errors.push(`${url}: ${error.message}`);
+    }
   }
-  await new Promise((resolve, reject) => out.end((e) => (e ? reject(e) : resolve())));
-  const actual = hash.digest("hex");
-  if (actual !== pin.sha256) {
-    fs.rmSync(part, { force: true });
-    throw new Error(
-      `sha256 mismatch for ${pin.url}\n  expected ${pin.sha256}\n  actual   ${actual}`,
-    );
-  }
-  fs.renameSync(part, dest);
+  throw new Error(`download failed:\n  ${errors.join("\n  ")}`);
 }
 
 function cachePath(pin) {
-  return path.join(cacheDir, `${pin.sha256.slice(0, 12)}-${path.basename(new URL(pin.url).pathname)}`);
+  return path.join(cacheDir, `${pin.sha256.slice(0, 12)}-${path.basename(new URL(urls(pin)[0]).pathname)}`);
 }
 
 // Extract with the 7-Zip WebAssembly build, which reads NSIS installers and
@@ -164,7 +179,35 @@ function need(file) {
   if (!fs.existsSync(file)) throw new Error(`Expected file missing after extraction: ${file}`);
 }
 
-async function stageMacQemu(pin, work, dest) {
+function runMacTool(tool, args) {
+  const result = spawnSync(tool, args, { encoding: "utf8" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`${tool} failed: ${result.stderr.trim()}`);
+  return result.stdout.trim();
+}
+
+export function signMacQemu(dir, identity = "-") {
+  const entitlements = path.join(dir, "entitlements.plist");
+  if (runMacTool("/usr/libexec/PlistBuddy", ["-c", "Print :com.apple.security.hypervisor", entitlements]) !== "true") {
+    throw new Error("The QEMU entitlements must enable com.apple.security.hypervisor");
+  }
+  // The staged archive can inherit quarantine and other metadata from Finder.
+  runMacTool("/usr/bin/xattr", ["-cr", dir]);
+  const sign = ["--force", "--sign", identity, identity === "-" ? "--timestamp=none" : "--timestamp"];
+  const runtime = identity === "-" ? [] : ["--options", "runtime"];
+  for (const entry of fs.readdirSync(path.join(dir, "lib"), { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".dylib")) {
+      runMacTool("/usr/bin/codesign", [...sign, path.join(dir, "lib", entry.name)]);
+    }
+  }
+  for (const binary of ["qemu-system-aarch64", "qemu-img"]) {
+    runMacTool("/usr/bin/codesign", [
+      ...sign, ...runtime, "--entitlements", entitlements, path.join(dir, "bin", binary),
+    ]);
+  }
+}
+
+async function stageMacQemu(pin, _work, dest, signingIdentity) {
   const archive = cachePath(pin);
   await download(pin, archive);
   extractTar(archive, dest);
@@ -173,6 +216,10 @@ async function stageMacQemu(pin, work, dest) {
   }
   fs.chmodSync(path.join(dest, "bin/qemu-system-aarch64"), 0o755);
   fs.chmodSync(path.join(dest, "bin/qemu-img"), 0o755);
+  if (process.platform === "darwin") {
+    makeWritable(dest);
+    signMacQemu(dest, signingIdentity);
+  }
   return {
     version: pin.version,
     system: "qemu/bin/qemu-system-aarch64",
@@ -244,7 +291,7 @@ async function stageOpenssh(pin, work, dest) {
 
 async function stageExtras(pin, licenses, prefix) {
   for (const extra of pin.extraFiles ?? []) {
-    const cached = cachePath({ ...extra, url: extra.url });
+    const cached = cachePath(extra);
     await download(extra, cached);
     copyFile(cached, path.join(licenses, `${prefix}-${extra.name}`));
   }
@@ -264,7 +311,7 @@ function sourcesText(platform, spec) {
     lines.push(
       `${name} ${pin.version}`,
       `  License:  ${pin.license}`,
-      `  Binary:   ${pin.url}`,
+      ...urls(pin).map((url) => `  Binary:   ${url}`),
       `  SHA-256:  ${pin.sha256}`,
       `  Source:   ${pin.sourceUrl}`,
     );
@@ -304,11 +351,15 @@ async function main() {
 
   const outDir = path.join(outRoot, platform);
   const stampFile = path.join(outDir, ".stamp.json");
+  const macSigning = platform === "macos-arm64" && process.platform === "darwin"
+    ? process.env.APPLE_SIGNING_IDENTITY?.trim() || "-"
+    : null;
   const stamp = {
     stamp: STAMP_VERSION,
     qemu: spec.qemu.sha256,
     openssh: spec.openssh?.sha256 ?? null,
     extras: (spec.qemu.extraFiles ?? []).map((e) => e.sha256),
+    macSigning,
   };
   try {
     const existing = JSON.parse(fs.readFileSync(stampFile, "utf8"));
@@ -328,7 +379,7 @@ async function main() {
   fs.mkdirSync(licenses, { recursive: true });
 
   const stageQemu = platform === "macos-arm64" ? stageMacQemu : stageWindowsQemu;
-  const qemu = await stageQemu(spec.qemu, work, path.join(staging, "qemu"));
+  const qemu = await stageQemu(spec.qemu, work, path.join(staging, "qemu"), macSigning);
   await stageExtras(spec.qemu, licenses, "qemu");
   for (const name of ["COPYING", "COPYING.LIB"]) {
     const file = path.join(staging, "qemu", name);
