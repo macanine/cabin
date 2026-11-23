@@ -92,6 +92,10 @@ test("install input failures describe the cause and a recovery action", async ()
     ['step "disk" failed: qemu-img convert failed (exit 1): Permission denied', /opened for writing/, /data folder/],
     ["qemu-img convert failed (exit 1): The process cannot access the file because it is being used by another process", /opened for writing/, /other program/],
     ["qemu-img resize failed (exit 1): unexpected error", /disk could not be prepared/, /disk step log/],
+    ["--user must be a valid lowercase Linux username (max 32 chars)", /username and hostname/, /lowercase/],
+    ["--hostname must be a valid RFC1123 hostname (lowercase, max 63 chars)", /username and hostname/, /lowercase/],
+    ['step "seed" failed: invalid SSH public key: expected one OpenSSH ed25519 public key', /public key could not be prepared/, /fresh key/],
+    ['step "seed" failed: the seed ISO is unreadable or its volumes disagree', /initial configuration/, /seed step log/],
   ]) {
     const help = explainFailure(error);
     assert.match(help.title, title, error);

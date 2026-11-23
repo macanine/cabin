@@ -129,6 +129,18 @@ export function explainFailure(text: string): FailureHelp {
       advice: "Check this computer’s connection or proxy, then retry. Cabin can continue from the saved partial download.",
     };
   }
+  if (t.includes("--user must") || t.includes("--hostname must") || /(?:username|hostname) “/.test(t)) {
+    return {
+      title: "Check the VM username and hostname",
+      advice: "Use a lowercase Linux username and a hostname with lowercase letters, digits, or hyphens.",
+    };
+  }
+  if (t.includes("invalid ssh public key") || t.includes("generated ssh public key") || t.includes("ssh-keygen produced an unexpected public key")) {
+    return {
+      title: "The guest’s SSH public key could not be prepared",
+      advice: "Retry to generate a fresh key for the VM. If it fails again, open the seed step log.",
+    };
+  }
   if (t.includes("--disk-size") || t.includes("could not check free disk space")) {
     return {
       title: "The VM disk size could not be checked",
@@ -205,6 +217,12 @@ export function explainFailure(text: string): FailureHelp {
     return {
       title: "The VM disk could not be prepared",
       advice: "Check the disk step log and that Cabin can write to its data folder, then retry.",
+    };
+  }
+  if (t.includes('step "seed" failed')) {
+    return {
+      title: "The VM’s initial configuration could not be prepared",
+      advice: "Open the seed step log for details, then retry.",
     };
   }
   if (t.includes('step "qemu" failed')) {
