@@ -69,7 +69,7 @@
 
 .net-float-controls,
 .net-float-button,
-.net-float-exit .net-exit,
+.net-float-exit .net-point,
 .net-map-popover {
   border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
   background: color-mix(in srgb, var(--surface) 80%, transparent);
@@ -145,30 +145,8 @@
   padding: 0 12px 12px;
 }
 
-.net-float-exit .net-exit {
-  flex-direction: row;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  padding: 8px 12px;
-}
-
-.net-float-exit .net-exit-place {
-  flex: 1 1 180px;
-  padding-bottom: 0;
-}
-
-.net-float-exit .net-exit-line {
-  flex: 0 1 auto;
-  border-top: 0;
-}
-
-.net-float-exit .net-ip {
-  flex: 1 1 145px;
-}
-
-.net-float-exit .net-exit-error {
-  flex-basis: 100%;
+.net-float-exit .net-point {
+  border-radius: 14px;
 }
 
 .net-alert {
@@ -176,61 +154,76 @@
   border-top: 1px solid var(--border);
 }
 
-/* Exit panel */
-.net-exit {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+/* Route point card: header, then facts on one shared label column. */
+.net-point {
+  display: grid;
+  gap: 10px;
   width: 100%;
   min-width: 0;
-  padding: 10px 10px 6px 12px;
-  border-radius: 12px;
+  padding: 12px 14px;
 }
 
-.net-exit-place {
-  display: flex;
+.net-point-title {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.net-point-badge {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.net-point-facts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.net-point-fact {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
+  min-height: 26px;
   min-width: 0;
-  padding-bottom: 8px;
+  font-size: 13px;
+}
+
+.net-point-fact dt {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.net-point-fact dd {
+  min-width: 0;
+  margin: 0;
 }
 
 .net-flag {
   display: inline-grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
   background: var(--hover);
-  font-size: 18px;
   line-height: 1;
   color: var(--muted);
   flex-shrink: 0;
 }
 
-.net-exit-title {
-  min-width: 0;
-  font-size: 13.5px;
-  font-weight: 600;
-  cursor: default;
-}
-
-/* The place may take two lines rather than lose the country. */
-.net-exit-name {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  line-height: 1.3;
-}
-
-.net-exit-sub {
-  color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 400;
-}
-
-.net-exit.failed .net-flag {
+.net-point.failed .net-flag {
   color: var(--bad);
 }
 
@@ -251,56 +244,12 @@
   margin-top: 2px;
 }
 
-.net-exit-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  min-width: 0;
-  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-  font-size: 12.5px;
-}
-
-.net-line-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 26px;
-  color: var(--faint);
-  flex-shrink: 0;
-}
-
 .net-ip-value {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
-  font-size: 12.5px;
+  font-size: 13px;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.net-ip-classification { justify-content: space-between; }
-.net-ip-classification > :first-child { flex-shrink: 0; color: var(--text); }
-
-.net-exit-line.bad {
-  color: var(--bad);
-}
-
-.net-daylight-text {
-  min-width: 0;
-  line-height: 1.4;
-}
-
-.net-daylight-text strong {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.net-line-icon.sun {
-  color: var(--warn);
-}
-
-.net-line-icon.moon {
-  color: var(--info);
 }
 
 .net-map-marker {
@@ -326,29 +275,8 @@
   border-radius: 12px;
 }
 
-.net-map-popover .net-exit {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0 6px;
-  padding: 8px 10px 6px;
-}
-
-.net-map-popover .net-exit-place {
-  grid-column: 1 / -1;
-  padding-bottom: 4px;
-}
-
-.net-map-popover .net-ip,
-.net-map-popover .net-exit-error {
-  grid-column: 1 / -1;
-}
-
-.net-map-popover .net-exit-line {
-  min-height: 24px;
-}
-
-.net-map-popover .net-line-icon {
-  width: 20px;
+.net-map-popover .net-point {
+  padding: 10px 12px;
 }
 
 .net-ip-value .net-blur {

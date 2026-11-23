@@ -15,14 +15,22 @@ use crate::util::{
     sha256_file,
 };
 
-/// Installed on every new guest: the Node.js runtime library and the full
-/// kernel metapackage that replaces the minimal image's (`os`).
+/// Installed on every new guest: the Node.js runtime library, `locales`
+/// (the minimal image has only C.UTF-8, and the network gate needs the
+/// language to match the exit before the internet opens, so `cabind` must be
+/// able to generate one offline), and the full kernel metapackage that
+/// replaces the minimal image's (`os`).
 fn guest_runtime_packages(cfg: &crate::config::Config) -> Vec<String> {
     vec![
         "libatomic1".to_string(),
+        "locales".to_string(),
         cfg.guest_os().kernel().install.to_string(),
     ]
 }
+
+/// Generated at first boot so the common choice applies instantly. Only
+/// compiled: the system default locale is left as the image has it.
+const PREGENERATED_LOCALE: &str = "en_US.UTF-8";
 
 const SEED_FILES: [&str; 7] = [
     "seed.iso",
@@ -80,6 +88,19 @@ fn add_time_sync(doc: &mut Map<String, Value>) {
         .unwrap_or_default();
     runcmd.insert(0, json!(["timedatectl", "set-ntp", "true"]));
     runcmd.insert(1, json!(["systemctl", "restart", "systemd-timesyncd"]));
+    doc.insert("runcmd".to_string(), Value::Array(runcmd));
+}
+
+/// `runcmd` runs in cloud-init's final stage, after `packages` installed
+/// `locales`. Ubuntu's `locale-gen <name>` builds just that locale and does
+/// not touch `/etc/default/locale`.
+fn add_locale_generation(doc: &mut Map<String, Value>) {
+    let mut runcmd = doc
+        .get("runcmd")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    runcmd.push(json!(["locale-gen", PREGENERATED_LOCALE]));
     doc.insert("runcmd".to_string(), Value::Array(runcmd));
 }
 
@@ -293,6 +314,7 @@ pub fn build_user_data(
             add_ipv4_policy(&mut doc);
             add_time_sync(&mut doc);
         }
+        add_locale_generation(&mut doc);
         add_kernel_switch(cfg, &mut doc);
         return Ok(Value::Object(doc));
     }
@@ -364,6 +386,7 @@ pub fn build_user_data(
         add_ipv4_policy(&mut doc);
         add_time_sync(&mut doc);
     }
+    add_locale_generation(&mut doc);
     add_kernel_switch(cfg, &mut doc);
     Ok(Value::Object(doc))
 }
@@ -950,6 +973,29 @@ mod apt_tests {
             );
             let commands = doc["runcmd"].as_array().unwrap();
             assert_eq!(commands.last().unwrap()[2], switch_script());
+        }
+    }
+
+    #[test]
+    fn new_guests_can_generate_locales_offline() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for (network, device) in [("gateway", false), ("gateway", true), ("user", false)] {
+            let cfg = crate::config::build_config(
+                &json!({"name": "locale-test", "network_mode": network, "device": {"enabled": device}}),
+                root,
+            )
+            .unwrap();
+            let doc = build_user_data(&cfg, "test-hash", TEST_SSH_KEY).unwrap();
+            let packages = doc["packages"].as_array().unwrap();
+            assert!(packages.contains(&json!("locales")), "{network}/{device}: {packages:?}");
+            let commands = doc["runcmd"].as_array().unwrap();
+            assert!(
+                commands.contains(&json!(["locale-gen", "en_US.UTF-8"])),
+                "{network}/{device}: {commands:?}"
+            );
+            // Only compiled: no update-locale/localectl changes the default.
+            let text = serde_json::to_string(commands).unwrap();
+            assert!(!text.contains("update-locale") && !text.contains("set-locale"));
         }
     }
 

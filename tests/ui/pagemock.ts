@@ -12,7 +12,7 @@ export function mockIpc(networkMode?: string | null) {
   const running = networkMode !== "stopped";
   const paused = networkMode === "paused";
   const network: NetworkStatus = {
-    ...initialState().network, available: true, running, paused, revision: "r",
+    ...initialState().network, available: true, running, paused, revision: "r", gatewaySession: running ? 1 : null,
     gate: running && !paused ? "open" : "closed", expiresAt: running && !paused ? now + 3600e3 : null,
   };
   const access = () => allowed ? { state: "available", message: null, privacySettings: false }
@@ -34,6 +34,26 @@ export function mockIpc(networkMode?: string | null) {
     agent_chat_capabilities: () => [],
     acp_runtimes: () => [],
     network_state: () => ({ ...network }),
+    network_exit: () => ({
+      ip: "222.205.120.142", countryCode: "CN", country: "China", region: "Shanghai", city: "Shanghai",
+      isp: "China Education and Research Network", ipType: null, asn: 4538,
+      latitude: 31.23, longitude: 121.47, timezone: "Asia/Shanghai", source: "IP.SB", checkedAt: now,
+    }),
+    network_exit_type: () => ({ ipType: "commercial", inferred: false, organization: "China Education and Research Network", asn: 4538, source: "IPLocate" }),
+    network_origin: () => ({
+      ip: "10.196.103.142", countryCode: "CN", country: "China", region: "Zhejiang", city: "Hangzhou",
+      isp: null, ipType: null, asn: null, latitude: 30.27, longitude: 120.15, timezone: "Asia/Shanghai", source: "IP.SB", checkedAt: now,
+    }),
+    network_system_route: () => ({ internetInterface: "utun1024", defaultInterface: "en0", tunnel: true, fakeIp: true }),
+    environment_review: () => ({
+      fields: [
+        { field: "timezone", enabled: true, reason: null, suggestion: null },
+        { field: "language", enabled: true, reason: null, suggestion: null },
+      ],
+      changes: [], blocked: null,
+      timezones: ["America/New_York", "Asia/Shanghai", "Asia/Tokyo", "UTC"],
+      languages: ["C.UTF-8", "en_US.UTF-8", "zh_CN.UTF-8"],
+    }),
     network_interfaces: () => [
       { name: "en0", label: "Wi-Fi (en0)", kind: "wifi", available: true, ipv4: ["192.0.2.2"] },
       { name: "en8", label: "USB adapter (en8)", kind: "hardware", available: true, ipv4: ["192.0.2.3"] },

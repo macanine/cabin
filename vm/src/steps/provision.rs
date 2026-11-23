@@ -121,15 +121,78 @@ fn verify_kernel_packages(
     Ok(())
 }
 
+const CLOUD_INIT_LOG: &str = "/var/log/cloud-init-output.log";
+/// Upper bound on log bytes read per poll, so a burst cannot stall a poll.
+const CLOUD_INIT_CHUNK: u64 = 256 * 1024;
+
+/// One poll: the log bytes after `offset`, the log's size, and the status.
+/// The log is root:adm 0640, so read it through sudo when that works.
+fn cloud_init_poll_command(offset: u64) -> String {
+    format!(
+        r#"f={CLOUD_INIT_LOG}; r() {{ sudo -n "$@" 2>/dev/null || "$@" 2>/dev/null; }}
+s=$(r stat -c %s "$f" || echo 0)
+if [ "$s" -gt {offset} ]; then n=$((s - {offset})); [ "$n" -gt {CLOUD_INIT_CHUNK} ] && n={CLOUD_INIT_CHUNK}; r tail -c +{start} "$f" | head -c "$n"; s=$(({offset} + n)); fi
+echo; echo __VMCTL_SIZE__; echo "$s"; echo __VMCTL_STATUS__; cloud-init status 2>/dev/null"#,
+        start = offset + 1,
+    )
+}
+
+/// Splits one poll's output into (log chunk, new offset, status line).
+fn parse_cloud_init_poll(output: &str) -> Option<(&str, u64, &str)> {
+    let (chunk, rest) = output.rsplit_once("\n__VMCTL_SIZE__\n")?;
+    let (size, status) = rest.split_once("\n__VMCTL_STATUS__\n")?;
+    Some((chunk, size.trim().parse().ok()?, status.trim()))
+}
+
+fn cloud_init_still_running(status: &str) -> bool {
+    status.is_empty() || ["running", "not started", "not run"].iter().any(|s| status.contains(s))
+}
+
+/// Streams the guest's cloud-init output into the step log until cloud-init
+/// leaves the running state or `timeout` passes. Complete lines are logged as
+/// they arrive; failed polls (sshd restarting, sudo not ready) are retried.
+fn follow_cloud_init(ctx: &StepContext, runtime: &Runtime, timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut offset = 0u64;
+    let mut pending = String::new();
+    while std::time::Instant::now() < deadline {
+        let (rc, out) =
+            runtime.ssh_capture(&cloud_init_poll_command(offset), std::time::Duration::from_secs(30));
+        if let Some((chunk, size, status)) = parse_cloud_init_poll(&out).filter(|_| rc != 255) {
+            pending.push_str(chunk);
+            while let Some(end) = pending.find('\n') {
+                let line: String = pending.drain(..=end).collect();
+                let line = line.trim_end();
+                if !line.is_empty() {
+                    ctx.log(&format!("cloud-init | {line}"));
+                }
+            }
+            offset = size;
+            if !cloud_init_still_running(status) {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    if !pending.trim().is_empty() {
+        ctx.log(&format!("cloud-init | {}", pending.trim_end()));
+    }
+}
+
 pub struct ProvisionStep;
 
 impl ProvisionStep {
     fn verify(&self, ctx: &mut StepContext, runtime: &Runtime) -> Result<Value> {
         let cfg = ctx.cfg.clone();
-        ctx.log("waiting for cloud-init to finish (cloud-init status --wait --long)");
+        ctx.log("waiting for cloud-init to finish (streaming /var/log/cloud-init-output.log)");
+        follow_cloud_init(
+            ctx,
+            runtime,
+            std::time::Duration::from_secs(cfg.provision_timeout),
+        );
         let (rc, out) = runtime.ssh_capture(
             "cloud-init status --wait --long",
-            std::time::Duration::from_secs(cfg.provision_timeout),
+            std::time::Duration::from_secs(120),
         );
         if !out.is_empty() {
             ctx.log(&out);
@@ -600,5 +663,31 @@ mod kernel_tests {
         assert!(script.contains("apt-mark showmanual linux-image-generic"));
         assert!(script.contains("${db:Status-Status}"));
         assert!(script.ends_with("echo __VMCTL_END__\n"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloud_init_poll_keeps_partial_lines_and_reads_status() {
+        let out = "Get:1 http://ports\npartial\n__VMCTL_SIZE__\n42\n__VMCTL_STATUS__\nstatus: running\n";
+        assert_eq!(
+            parse_cloud_init_poll(out),
+            Some(("Get:1 http://ports\npartial", 42, "status: running"))
+        );
+        let empty = "\n__VMCTL_SIZE__\n0\n__VMCTL_STATUS__\n";
+        assert_eq!(parse_cloud_init_poll(empty), Some(("", 0, "")));
+        assert_eq!(parse_cloud_init_poll("ssh: connect refused"), None);
+        for (status, running) in [
+            ("", true),
+            ("status: not started", true),
+            ("status: running", true),
+            ("status: done", false),
+            ("status: error", false),
+        ] {
+            assert_eq!(cloud_init_still_running(status), running, "{status}");
+        }
     }
 }

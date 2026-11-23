@@ -1,171 +1,205 @@
-import { Button, Select, Tooltip } from "@mantine/core";
-import { IconBulb, IconInfoCircle, IconArrowsExchange } from "@tabler/icons-react";
+import { Button, Select, Switch } from "@mantine/core";
+import { IconCheck } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
-import type { EnvironmentReview, EnvironmentSpec, FieldState } from "../../services/ipc/generated/core";
+import type { EnvironmentReview, EnvironmentSpec } from "../../services/ipc/generated/core";
 import { environmentIpc } from "../../services/ipc/environment";
-import { useApp } from "../../state/store";
+import { networkIpc } from "../../services/ipc/network";
+import { patchState, useApp } from "../../state/store";
 import { uiActions, useUi } from "../../state/ui";
-import { runOperation } from "../../lib/operations";
-import { relativeTime } from "../../lib/format";
+import { attempt, runOperation } from "../../lib/operations";
 import { Section } from "../../components/common";
 import { SettingsPage } from "../SettingsView";
-import { clockNote, hostTime, hostZone, useClock } from "../../lib/clock";
 import { syncClock } from "../../state/clockSync";
 import { NetworkDashboard } from "../../components/network/NetworkDashboard";
 import { useExitLookup } from "../../components/network/useNetworkLive";
-import { environmentMatch } from "../../lib/geo";
+import { baseLocale, environmentMatch, placeLabel } from "../../lib/geo";
+import { Flag } from "../../components/Flag";
 
-function Reason({ field }: { field?: FieldState }) {
-  if (!field?.reason) return null;
-  return <div className="field-reason">{field.reason}</div>;
+const localeLabel = (locale: string | null | undefined) => locale?.split(".")[0].replace("_", "-") ?? "unknown";
+
+/** "Matches exit" / "Differs" for one setting, when the exit is known. */
+function MatchPill({ matches }: { matches: boolean | null }) {
+  if (matches == null) return null;
+  return matches ? (
+    <span className="inline-flex items-center gap-1 rounded-full bg-ok/12 px-2 py-0.5 text-xs font-medium text-ok">
+      <IconCheck size={12} stroke={2.5} aria-hidden="true" />Matches exit
+    </span>
+  ) : (
+    <span className="rounded-full bg-warn/14 px-2 py-0.5 text-xs font-medium text-warn">Differs from exit</span>
+  );
 }
 
-function Suggestion({ field, onUse }: { field?: FieldState; onUse: (value: string) => void }) {
-  if (!field?.suggestion) return null;
-  const value = field.suggestion;
+/** One region setting: label and match state, the value, then the exit's value and its fix. */
+function RegionTile({ label, matches, children, footer }: {
+  label: string;
+  matches: boolean | null;
+  children: React.ReactNode;
+  footer?: React.ReactNode;
+}) {
   return (
-    <div className="field-reason">
-      <IconBulb size={13} />
-      Suggested: <span className="mono">{value}</span>
-      <Button size="compact-xs" variant="subtle" onClick={() => onUse(value)}>
-        Use it
-      </Button>
+    <div className="grid content-start gap-2.5 rounded-xl border border-line bg-surface/60 p-3.5">
+      <div className="flex min-h-[22px] items-center justify-between gap-2">
+        <span className="text-sm font-medium">{label}</span>
+        <MatchPill matches={matches} />
+      </div>
+      {children}
+      {footer && <div className="flex min-h-[24px] flex-wrap items-center gap-2 text-sm text-muted">{footer}</div>}
     </div>
   );
 }
 
-/** The VM's timezone and language, applied together (and rolled back
- * together) in the guest. Routing is the dashboard's. */
+/**
+ * The VM's time zone and language next to the verified exit's. With "Follow
+ * exit" on, the Mac sets the time zone to the exit's during each network
+ * check (the check only passes when they match). Language is set by hand;
+ * edits apply together, in one guest operation.
+ */
 function Region() {
   const env = useApp((state) => state.environment);
-  const clock = useClock();
+  const network = useApp((state) => state.network);
   const running = useApp((state) =>
     state.operations.some((op) => op.kind === "environment.apply" && (op.state === "running" || op.state === "pending")),
   );
-  const [draft, setDraft] = useState<EnvironmentSpec | null>(null);
-  const [review, setReview] = useState<EnvironmentReview | null>(null);
   const exit = useExitLookup().value;
+  const [edits, setEdits] = useState<Partial<EnvironmentSpec>>({});
+  const [review, setReview] = useState<EnvironmentReview | null>(null);
+  const [toggling, setToggling] = useState(false);
 
-  // Start from the committed environment; before the first apply, from what
-  // the system reports, so nothing changes unless asked.
-  useEffect(() => {
-    if (!env || draft) return;
-    const base = env.committed;
-    setDraft(
-      env.appliedAt == null
-        ? { ...base, timezone: env.systemTimezone ?? base.timezone, language: env.systemLanguage ?? base.language }
-        : base,
-    );
-  }, [env, draft]);
+  const current: EnvironmentSpec | null = env
+    ? { timezone: env.systemTimezone ?? env.committed.timezone, language: env.systemLanguage ?? env.committed.language }
+    : null;
+  const next: EnvironmentSpec | null = current ? { ...current, ...edits } : null;
+  const nextKey = next ? `${next.timezone}|${next.language}` : "";
 
   useEffect(() => {
-    if (!draft) return;
+    if (!next) return;
     const timer = setTimeout(() => {
-      void environmentIpc.review(draft).then(setReview).catch(() => undefined);
-    }, 250);
+      void environmentIpc.review(next).then(setReview).catch(() => undefined);
+    }, 200);
     return () => clearTimeout(timer);
-  }, [draft]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextKey]);
 
-  if (!env || !draft) return null;
-  const field = (name: string) => review?.fields.find((f) => f.field === name);
-  const update = (patch: Partial<EnvironmentSpec>) => setDraft({ ...draft, ...patch });
-  const changes = review?.changes ?? [];
-  const blocked = review?.blocked ?? null;
-  const note = clockNote(clock, hostZone());
-  const match = environmentMatch(exit, env.systemTimezone, env.systemLanguage);
-  const differs = match.zoneMatches === false || match.localeMatches === false;
-  // The exit's locale as one of this machine's generated locales, if any.
-  const exitLanguage = match.exitLocale ? review?.languages.find((l) => l.split(".")[0] === match.exitLocale) ?? null : null;
-  const missingExitLocale = match.localeMatches === false && !exitLanguage;
+  if (!env || !current || !next) return null;
+  const follow = network.regionFollowsExit;
+  const match = environmentMatch(exit, current.timezone, current.language);
+  const exitLanguage = match.exitLocale
+    ? review?.languages.find((language) => baseLocale(language) === match.exitLocale) ?? null
+    : null;
+  const languageField = review?.fields.find((field) => field.field === "language");
+  const dirty = next.timezone !== current.timezone || next.language !== current.language;
+  const blocked = dirty ? review?.blocked ?? null : null;
 
-  function applyExit() {
-    if (!draft) return;
-    setDraft({
-      ...draft,
-      timezone: match.exitZone ?? draft.timezone,
-      language: exitLanguage ?? draft.language,
-    });
+  async function setFollow(enabled: boolean) {
+    setToggling(true);
+    const status = await attempt(networkIpc.setRegionFollow(enabled));
+    if (status) patchState((state) => ({ ...state, network: status }));
+    setToggling(false);
+    // Follow now rather than at the next scheduled check.
+    if (status && enabled) void networkIpc.verify().catch(() => undefined);
   }
 
+  async function apply() {
+    if (!next) return;
+    const record = await runOperation(environmentIpc.apply(next), "Region applied");
+    if (record?.state === "succeeded") {
+      setEdits({});
+      void syncClock(true);
+      // The gate checks the VM's region; check again now instead of waiting.
+      void networkIpc.verify().catch(() => undefined);
+    }
+  }
+
+  const exitValue = (value: string) => <span className="mono text-fg">{value}</span>;
   return (
-    <>
-      <h3 className="net-region-title">
-        Region
-        {env.appliedAt != null && <span className="faint fs-12"> · applied {relativeTime(hostTime(env.appliedAt))}</span>}
-      </h3>
-      {differs && exit && (
-        <div className="region-differs" role="status">
-          <IconArrowsExchange size={15} />
-          <span className="grow">
-            The exit is in <strong>{[match.zoneMatches === false ? match.exitZone : null, match.localeMatches === false ? match.exitLocale?.replace("_", "-") : null].filter(Boolean).join(" · ")}</strong>
-            {" "}but the VM uses {[match.zoneMatches === false ? env.systemTimezone : null, match.localeMatches === false ? env.systemLanguage : null].filter(Boolean).join(" · ")}.
-            {missingExitLocale && ` The ${match.exitLocale?.replace("_", "-")} locale is not installed in the VM.`}
+    <Section
+      title="Region"
+      hint={exit ? (
+        <span className="inline-flex items-center gap-1.5">Exit in <Flag code={exit.countryCode} size={12} /> {placeLabel(exit)}</span>
+      ) : "Waiting for the exit"}
+      action={(
+        <Switch
+          size="sm"
+          labelPosition="left"
+          label="Follow exit"
+          checked={follow}
+          disabled={toggling || !network.available}
+          onChange={(event) => void setFollow(event.currentTarget.checked)}
+        />
+      )}
+    >
+      <div className="grid gap-3 sm:grid-cols-2">
+        <RegionTile
+          label="Time zone"
+          matches={match.zoneMatches}
+          footer={follow ? (
+            match.zoneMatches === false && match.exitZone ? (
+              <>
+                <span className="grow">Changes to {exitValue(match.exitZone)} at the next check</span>
+                <Button size="compact-xs" variant="light" onClick={() => void attempt(networkIpc.verify())}>Check now</Button>
+              </>
+            ) : <span>Follows the exit automatically</span>
+          ) : match.zoneMatches === false && match.exitZone ? (
+            <>
+              <span className="grow">Exit uses {exitValue(match.exitZone)}</span>
+              <Button size="compact-xs" variant="light" onClick={() => setEdits((old) => ({ ...old, timezone: match.exitZone ?? old.timezone }))}>Use</Button>
+            </>
+          ) : null}
+        >
+          {follow ? (
+            <div className="flex h-[30px] items-center truncate text-md font-semibold" title={current.timezone}>{current.timezone}</div>
+          ) : (
+            <Select
+              size="xs"
+              searchable
+              data={review?.timezones ?? [next.timezone]}
+              value={next.timezone}
+              onChange={(value) => value && setEdits((old) => ({ ...old, timezone: value }))}
+              disabled={running}
+              limit={200}
+              aria-label="Time zone"
+            />
+          )}
+        </RegionTile>
+        <RegionTile
+          label="Language"
+          matches={match.localeMatches}
+          footer={match.localeMatches === false && match.exitLocale ? (
+            exitLanguage ? (
+              <>
+                <span className="grow">Exit uses {exitValue(localeLabel(match.exitLocale))}</span>
+                <Button size="compact-xs" variant="light" onClick={() => setEdits((old) => ({ ...old, language: exitLanguage }))}>Use</Button>
+              </>
+            ) : (
+              <span>Exit uses {exitValue(localeLabel(match.exitLocale))} · {languageField?.reason ?? "language packs arrive with the base tools"}</span>
+            )
+          ) : dirty && languageField?.reason ? <span>{languageField.reason}</span> : null}
+        >
+          <Select
+            size="xs"
+            searchable
+            data={review?.languages.length ? review.languages : [next.language]}
+            value={next.language}
+            onChange={(value) => value && setEdits((old) => ({ ...old, language: value }))}
+            disabled={running || languageField?.enabled === false}
+            limit={200}
+            aria-label="Language"
+          />
+        </RegionTile>
+      </div>
+      {(dirty || running) && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl bg-hover/60 px-3 py-2">
+          <span className={`grow text-sm ${blocked ? "text-bad" : "text-muted"}`}>
+            {blocked ?? [
+              next.timezone !== current.timezone ? `Time zone → ${next.timezone}` : null,
+              next.language !== current.language ? `Language → ${localeLabel(next.language)}` : null,
+            ].filter(Boolean).join(" · ")}
           </span>
-          <Button size="xs" variant="default" onClick={applyExit}>Use exit's</Button>
+          <Button size="xs" variant="default" disabled={running} onClick={() => setEdits({})}>Discard</Button>
+          <Button size="xs" loading={running} disabled={blocked != null || !dirty} onClick={() => void apply()}>Apply</Button>
         </div>
       )}
-      <Section
-        title="Timezone"
-        hint={
-          <span className="region-status">
-            VM: {env.systemTimezone ?? "unknown"} · Mac: {hostZone() ?? "unknown"}
-            <Tooltip
-              label={`Times in this app are always shown in the Mac's zone.${note ? ` ${note}` : " The VM's clock is in step with the Mac's."}`}
-              multiline
-              w={280}
-            >
-              <IconInfoCircle size={14} className="region-info" aria-label="About time zones" />
-            </Tooltip>
-          </span>
-        }
-      >
-        <Select
-          className="net-region-select"
-          searchable
-          data={review?.timezones ?? [draft.timezone]}
-          value={draft.timezone}
-          onChange={(value) => value && update({ timezone: value })}
-          limit={200}
-        />
-        <Suggestion field={field("timezone")} onUse={(value) => update({ timezone: value })} />
-      </Section>
-      <Section title="Language" hint="Only locales generated on this machine are listed. English is the default.">
-        <Select
-          className="net-region-select"
-          searchable
-          data={review?.languages.length ? review.languages : [draft.language]}
-          value={draft.language}
-          onChange={(value) => value && update({ language: value })}
-          disabled={field("language")?.enabled === false}
-        />
-        <Reason field={field("language")} />
-        <Suggestion field={field("language")} onUse={(value) => update({ language: value })} />
-      </Section>
-      {(changes.length > 0 || running) && (
-        <div className="apply-bar">
-          <div className="row" style={{ alignItems: "flex-start" }}>
-            <div className="grow">
-              {blocked ? (
-                <span style={{ color: "var(--bad)", fontSize: 13 }}>{blocked}</span>
-              ) : (
-                <ul className="changes">{changes.map((change) => <li key={change}>{change}</li>)}</ul>
-              )}
-            </div>
-            <Button variant="default" disabled={running} onClick={() => setDraft(null)}>Discard</Button>
-            <Button
-              loading={running}
-              disabled={blocked != null || changes.length === 0}
-              onClick={async () => {
-                await runOperation(environmentIpc.apply(draft), "Region applied");
-                void syncClock(true); // the zone may have changed
-              }}
-            >
-              Apply changes
-            </Button>
-          </div>
-        </div>
-      )}
-    </>
+    </Section>
   );
 }
 
@@ -186,10 +220,7 @@ export function NetworkSettings() {
       <NetworkDashboard />
       <section id="network-region" className="network-region" tabIndex={-1} aria-label="Region">
         {regionReady ? <Region /> : (
-          <>
-            <h3 className="net-region-title">Region</h3>
-            <p className="muted">Region settings are available when the app connects to the machine.</p>
-          </>
+          <Section title="Region" hint="Available when the machine is connected.">{null}</Section>
         )}
       </section>
     </SettingsPage>

@@ -42,6 +42,24 @@ export type StorageReport = { entries: Array<StorageEntry>, totalBytes: number, 
 export type FolderAccessState = "available" | "readDenied" | "writeDenied" | "missing" | "unavailable";
 export type FolderAccess = { state: FolderAccessState, message: string | null, privacySettings: boolean, };
 export type MacProjectAccess = { id: string, name: string, path: string, needsWrite: boolean, access: FolderAccess, };
+export type SystemRoute = { 
+/**
+ * The interface a public destination leaves through (e.g. `utun1024`).
+ */
+internetInterface: string | null, 
+/**
+ * The interface of the `default` route (the physical adapter, e.g. `en0`).
+ */
+defaultInterface: string | null, 
+/**
+ * Internet traffic is captured by a tunnel instead of the physical adapter.
+ */
+tunnel: boolean, 
+/**
+ * The tunnel routes through a fake-IP gateway (198.18.0.0/15), typical
+ * of Clash/mihomo and sing-box TUN modes.
+ */
+fakeIp: boolean, };
 export type IpcCommand =
   | "app_subscribe"
   | "app_quit"

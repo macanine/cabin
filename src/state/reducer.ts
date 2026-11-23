@@ -59,6 +59,7 @@ export function initialState(): AppState {
       gate: "closed",
       paused: false,
       autoRecover: true,
+      regionFollowsExit: true,
       revision: "",
       generation: 0,
       checkedAt: null,

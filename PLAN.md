@@ -56,6 +56,21 @@ independent samples from the same route. The check also covers the traffic bound
 zone, language, and browser profile. A Chrome page observed live must match the managed
 configuration. The installed profile is the durable input to the gate revision.
 
+Exit samples agree when they share the same address or, for IPv4, the same /24: carrier and
+campus NAT pools hand consecutive connections neighbouring addresses. The time zone check
+stays required. When a check fails only because the VM's time zone differs from a verified
+exit (and only browser checks that follow the VM's zone fail with it), the Mac sets the guest
+to the exit's zone through `environment_apply` and evaluates the same attempt again. The
+Region section's "Follow exit" switch (on by default, `network_region_follow`) turns this
+off. Environment operations run in their own operation lane, so a time zone or language change
+never waits behind an apt operation that needs the network. New machines install `locales`
+and generate `en_US.UTF-8` during provisioning; other supported locales are generated
+offline when applied.
+
+`network_system_route` reports whether macOS sends internet traffic through a tunnel (a VPN
+or a TUN proxy such as Clash, recognized by a fake-IP gateway in 198.18.0.0/15). The
+interface picker then offers to bind the physical adapter, which bypasses the tunnel.
+
 The Mac can briefly hold guest TCP while it confirms reachability and the verified public
 exit. A third failed recheck or a 45-second hold closes internet access. Bound interface
 changes, sleep, and stale path revisions revoke the grant. Automatic recovery retries closed

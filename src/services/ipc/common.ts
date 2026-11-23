@@ -64,7 +64,7 @@ export type GuestMethod =
   | "environment_state" | "environment_review" | "environment_apply" | "network_probe"
   | "proxy_import" | "proxy_add_url" | "proxy_refresh" | "proxy_refresh_from_host" | "proxy_remove" | "proxy_probe"
   | "proxy_catalog" | "proxy_group_save" | "proxy_group_remove" | "proxy_node_test"
-  | "network_state" | "network_apply" | "network_verify" | "network_pause" | "network_auto_recover"
+  | "network_state" | "network_apply" | "network_verify" | "network_pause" | "network_auto_recover" | "network_region_follow" | "network_system_route"
   | "network_check" | "network_interfaces" | "network_exit" | "network_exit_type" | "network_origin" | "network_locate" | "network_traffic" | "network_history"
   | "usage_dashboard" | "usage_sync" | "usage_sync_prices" | "usage_save_price"
   | "setup_checks" | "setup_run"

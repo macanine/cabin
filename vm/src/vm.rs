@@ -933,6 +933,11 @@ impl Runtime {
     }
 
     pub fn ssh_argv(&self, tty: bool) -> Result<Vec<String>> {
+        // The guest's host key changes with every install, so nothing is
+        // recorded. Use the null device, not `none`: OpenSSH 10.5 on macOS
+        // fails `Host key verification failed` with `UserKnownHostsFile=none`
+        // even under StrictHostKeyChecking=no.
+        const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
         if !self.cfg.ssh_key_path().exists() {
             return message(format!(
                 "SSH key missing: {}",
@@ -954,9 +959,9 @@ impl Runtime {
             "-o".to_string(),
             "StrictHostKeyChecking=no".to_string(),
             "-o".to_string(),
-            "UserKnownHostsFile=none".to_string(),
+            format!("UserKnownHostsFile={NULL_DEVICE}"),
             "-o".to_string(),
-            "GlobalKnownHostsFile=none".to_string(),
+            format!("GlobalKnownHostsFile={NULL_DEVICE}"),
             "-o".to_string(),
             "ServerAliveInterval=10".to_string(),
             "-o".to_string(),

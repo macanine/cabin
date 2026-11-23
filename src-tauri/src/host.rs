@@ -1313,7 +1313,7 @@ impl Host {
             let route_check = route_check.join().map_err(|_| unavailable("Route checking stopped"))??;
             Ok::<_, AppError>((probe, browser, exits, route_check))
         });
-        let (probe, browser, mut exits, route_check) = match observed {
+        let (mut probe, browser, mut exits, route_check) = match observed {
             Ok(observed) => observed,
             Err(error) => {
                 if attempt.refresh {
@@ -1329,20 +1329,30 @@ impl Host {
             }
         };
         self.network.reuse_exit_samples(&attempt, &probe, &mut exits);
-        let report = evaluate_report(
-            CheckInputs {
-                route,
-                profile_revision: Some(&profile_revision),
-                route_check: route_check.as_ref(),
-                gateway_running: self.network.is_up(),
-                gateway_connected: self.network.gateway_connected(),
-                guest: &probe,
-                require_closed_boundary: attempt.checks_closed_boundary(),
-                browser: browser.as_ref(),
-                exits: &exits,
-            },
-            started_at,
-        );
+        let evaluate = |probe: &GuestNetworkProbe, browser: Option<&BrowserEnvironmentProbe>| {
+            evaluate_report(
+                CheckInputs {
+                    route,
+                    profile_revision: Some(&profile_revision),
+                    route_check: route_check.as_ref(),
+                    gateway_running: self.network.is_up(),
+                    gateway_connected: self.network.gateway_connected(),
+                    guest: probe,
+                    require_closed_boundary: attempt.checks_closed_boundary(),
+                    browser,
+                    exits: &exits,
+                },
+                started_at,
+            )
+        };
+        let mut report = evaluate(&probe, browser.as_ref());
+        if !report.can_open
+            && let Some(followed) = self.follow_exit_region(&report, &exits, &probe, attempt.checks_closed_boundary())
+        {
+            let browser = self.browser_environment(&followed);
+            report = evaluate(&followed, browser.as_ref());
+            probe = followed;
+        }
         let verification = if report.can_open { "Network and environment checks passed".into() } else { failure_summary(&report) };
         self.network.record_check(kind, &verification, Some(&report));
         self.sync_environment_revision();
@@ -1399,6 +1409,53 @@ impl Host {
             self.fail_guest_chats(format!("The machine's internet access was blocked. {verification}"));
         }
         Ok(status)
+    }
+
+    /// When `report` failed only because the machine's time zone differs from
+    /// the verified exit (see `network_gate::region_follow_zone`) and the user
+    /// lets the region follow the exit, set the guest to the exit's zone and
+    /// return a fresh probe to evaluate again. The language is kept. Every
+    /// outcome is recorded in the network history.
+    fn follow_exit_region(
+        &self,
+        report: &agent_core::model::NetworkCheckReport,
+        exits: &[Result<agent_core::model::GeoInfo, String>],
+        probe: &GuestNetworkProbe,
+        check_boundary: bool,
+    ) -> Option<GuestNetworkProbe> {
+        if !self.network.region_follows_exit() {
+            return None;
+        }
+        let zone = crate::network_gate::region_follow_zone(report, exits)?;
+        let language = probe.language.clone()?;
+        let applied = self
+            .call_guest_with_timeout(
+                "environment_apply",
+                json!({ "spec": { "timezone": zone, "language": language } }),
+                Some(Duration::from_secs(120)),
+            )
+            .and_then(|record| {
+                let record: agent_core::model::OperationRecord = serde_json::from_value(record)
+                    .map_err(|error| unavailable(format!("The machine returned an invalid operation: {error}")))?;
+                match record.state {
+                    agent_core::model::OperationState::Succeeded => Ok(()),
+                    _ => Err(unavailable(record.error.unwrap_or_else(|| "The time zone change did not finish".into()))),
+                }
+            });
+        match applied {
+            Ok(()) => {
+                self.network.record_check("regionFollowed", &format!("The machine's time zone now follows the exit: {zone}"), None);
+                self.guest_network_probe(check_boundary, Duration::from_secs(20)).ok()
+            }
+            Err(error) => {
+                self.network.record_check(
+                    "regionFollowFailed",
+                    &format!("The machine's time zone could not follow the exit ({zone}): {}", error.message),
+                    None,
+                );
+                None
+            }
+        }
     }
 
     fn guest_network_probe(&self, check_boundary: bool, timeout: Duration) -> Result<GuestNetworkProbe, AppError> {
@@ -1626,6 +1683,18 @@ impl Host {
                 }
                 self.emit_network()?;
                 return to_value(serde_json::to_value(self.network.status(true)?));
+            }
+            "network_region_follow" => {
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| unavailable("Missing enabled"))?;
+                self.network.set_region_follows_exit(enabled)?;
+                self.emit_network()?;
+                return to_value(serde_json::to_value(self.network.status(self.uses_gateway())?));
+            }
+            "network_system_route" => {
+                return to_value(serde_json::to_value(crate::system_route::detect()));
             }
             "network_auto_recover" => {
                 let enabled = params

@@ -3,6 +3,7 @@ import type {
   ProbeResult, ProxyCatalog, ProxyTestKind, ProxyTestResult, RouteCheck,
 } from "./generated/core";
 import { invokeGuest } from "./common";
+import type { SystemRoute } from "./generated/common";
 import { normalizeRoute, type NetworkInterface, type NetworkRoute } from "../../lib/networkRoute";
 
 /** The VM's route and what the dashboard shows about it. The Mac app answers
@@ -17,6 +18,11 @@ export const networkIpc = {
   setPaused: (paused: boolean) => invokeGuest<NetworkStatus>("network_pause", { paused }),
   setAutoRecover: (enabled: boolean) =>
     invokeGuest<NetworkStatus>("network_auto_recover", { enabled }),
+  /** Let the machine's time zone follow the verified exit (checks again when turned on). */
+  setRegionFollow: (enabled: boolean) =>
+    invokeGuest<NetworkStatus>("network_region_follow", { enabled }),
+  /** Where macOS sends internet traffic: a physical adapter or a tunnel (VPN, Clash TUN). */
+  systemRoute: () => invokeGuest<SystemRoute>("network_system_route"),
   /** A chain checked hop by hop (the committed route or a draft). */
   check: (route: NetworkRoute) => invokeGuest<RouteCheck>("network_check", { route }),
   /** Where the VM comes out, through the gateway. */

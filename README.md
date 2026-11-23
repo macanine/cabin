@@ -15,7 +15,7 @@ brew install zig
 cargo install cargo-zigbuild
 rustup target add aarch64-unknown-linux-musl
 npm ci
-npm run tauri:mac -- dev
+npm run app:dev
 ```
 
 In the installer, choose Ubuntu 24.04 or 26.04 LTS and size the VM, set the guest account,
@@ -118,19 +118,26 @@ QEMU archives, and diagnostic logs older than 30 days.
 
 | Task | Command |
 |---|---|
-| Run the desktop app on macOS | `npm run tauri:mac -- dev` |
-| Build a debug macOS `.app` | `npm run tauri:mac -- build --debug` |
-| Run the desktop app on Windows | `npm run tauri dev -- --config src-tauri/tauri.windows.conf.json` |
+| Run the desktop app (macOS or Windows) | `npm run app:dev` |
+| Build the app (`.app` on macOS, NSIS installer on Windows) | `npm run app:build` (add `-- --debug` for a debug build) |
 | Run frontend tests | `npm test` |
 | Type-check and bundle the frontend | `npm run build` |
 | Run Chromium smoke tests with mocked IPC | `npm run test:ui` |
 | Run Rust tests | `cargo test --manifest-path <crate>/Cargo.toml` for `core`, `usage`, `vm`, `src-tauri`, and `ip-detection` |
 | Build the Linux ARM64 guest daemon | `npm run build:agentd` |
 
-Set `CHROME` to a Chromium or Chrome executable for `npm run test:ui`. The macOS wrapper
-puts Rust build artifacts in `~/Library/Caches/cabin/target-macos` by default. If you
-share `node_modules` with a Linux checkout, `npm run setup:mac` adds the Mac's native
-packages, while `npm ci` replaces the dependency directory.
+Set `CHROME` to a Chromium or Chrome executable for `npm run test:ui`.
+
+`app:dev` and `app:build` run `scripts/tauri.mjs`, the one launcher for every host. It puts
+Cargo on `PATH`, checks the guest daemon toolchain (Rust musl target, Zig, `cargo-zigbuild`)
+before compiling, and runs the local Tauri CLI. Tauri merges `src-tauri/tauri.macos.conf.json`
+or `tauri.windows.conf.json` by itself. Rust build artifacts go to
+`~/Library/Caches/cabin/target-macos` on macOS and `%LOCALAPPDATA%\cabin\target-windows` on
+Windows unless `CARGO_TARGET_DIR` is set, so a tree shared with another OS keeps each
+platform's binaries apart. `npm run tauri:mac -- <args>` and `npm run tauri:win -- <args>` pass
+any Tauri command through the same launcher and stop on the wrong host. If you share
+`node_modules` with a Linux checkout, `npm run setup:mac` adds the Mac's native packages,
+while `npm ci` replaces the dependency directory.
 
 Linux development uses the distribution's QEMU with KVM or TCG. Use `npm run tauri dev` for
 the Linux development shell or `npm run tauri build` for Linux packages. Tauri builds the
@@ -142,12 +149,13 @@ configuration, and assets. The app downloads the pinned QEMU build during setup.
 On Windows x64, Cabin runs the amd64 Ubuntu guest. TCG software emulation uses longer
 startup and provisioning timeouts. Requirements:
 
-- QEMU for Windows (`qemu-system-x86_64`, `qemu-img`, and EDK2 firmware) from the qemu.org
-  installer. Add QEMU to `PATH` if you install it outside Program Files.
-- Microsoft C++ Build Tools, WebView2, and the Windows OpenSSH client
-  (`ssh`, `ssh-keygen`).
-- Zig, `cargo-zigbuild`, and `rustup target add x86_64-unknown-linux-musl` to build the
-  guest daemon (`npm run build:agentd`).
+- Microsoft C++ Build Tools and WebView2.
+- Zig (`winget install zig.zig`), `cargo install cargo-zigbuild`, and
+  `rustup target add x86_64-unknown-linux-musl` to build the guest daemon.
+
+Then run `npm ci` and `npm run app:dev`, the same commands as on macOS. QEMU and OpenSSH come
+from `npm run vendor` (pinned and hash-checked, see [Packaging](#packaging)). The app never
+uses a QEMU on `PATH`, and prefers the bundled `ssh` over the system one.
 
 Windows specifics: QEMU control channels use loopback TCP ports recorded per instance in
 `sockets.json`, the seed ISO is written in-process (no ISO tooling required), gateway
@@ -195,8 +203,8 @@ documented at the top of `scripts/fetch-vendor.mjs`.
 To bump a pin, edit the entry in `scripts/vendor.json`: download the new file, compute its
 SHA-256 yourself (`shasum -a 256`), and update `url`, `sha256`, `version`, and `sourceUrl`
 together. For the macOS QEMU, keep `vm/src/qemu_engine.rs` (`RELEASE`, `SHA256`) in step until
-it reads the manifest. Then run `npm run vendor` and check the tree. `npm run tauri:win -- build`
-builds the Windows installer, and CI (`.github/workflows/build.yml`) builds both platforms.
+it reads the manifest. Then run `npm run vendor` and check the tree. `npm run app:build` on
+Windows builds the installer, and CI (`.github/workflows/build.yml`) builds both platforms.
 Linux uses the distribution's QEMU and skips the fetch.
 
 ### IPC bindings

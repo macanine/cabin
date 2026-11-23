@@ -7,6 +7,7 @@ import "../../src/App.css";
 import { Sidebar } from "../../src/components/Sidebar";
 import { MachineGate } from "../../src/components/MachineGate";
 import { patchState } from "../../src/state/store";
+import { startNetworkMonitor } from "../../src/state/networkMonitor";
 import { uiActions, useUi } from "../../src/state/ui";
 import { TitleBar, TitleBarSlotProvider, WindowStrip } from "../../src/components/TitleBar";
 import { NewSessionView } from "../../src/views/NewSessionView";
@@ -32,7 +33,7 @@ const stopped = networkMode === "stopped";
 const now = Date.now();
 const ws = (id: string, name: string) => ({ id, name, path: "/home/dev/" + name, modelOverrides: [], archived: false, createdAt: now, updatedAt: now });
 const se = (id: string, w: string, name: string, agent: any, state: any = { state: "stopped" }, ago = 3600e3) => ({ id, workspaceId: w, name, worktree: null, agent, mode: "ui", archived: false, starred: false, createdAt: now - ago, updatedAt: now - ago, lastStartedAt: now - ago, status: state });
-patchState((s: any) => ({ ...s, ready: true, guestReady: !stopped,
+patchState((s: any) => ({ ...s, ready: true, guestReady: !stopped, networkLoaded: true,
   machine: { state: stopped ? "stopped" : "running", connection: stopped ? "offline" : "connected", busy: null, username: "dev", hostname: "dev-vm", error: null, os: "ubuntu-24.04", guestVersion: "0.2.0", cpus: 4, memoryMb: 4096 },
   workspaces: [ws("w1", "cabin"), ws("w2", "notes"), ws("w3", "api-server")],
   sessions: [se("s1", "w1", "Add Tailwind to the UI", "claude", { state: "running", pid: 1 }, 600e3), se("s2", "w1", "Fix sync conflicts", "codex", undefined, 7200e3), se("s3", "w2", "Shell", null, undefined, 86400e3), se("s4", "w3", "Refactor the parser", "pi", undefined, 90000e3), se("s5", "w3", "Write release notes", "opencode", undefined, 200000e3)],
@@ -49,6 +50,7 @@ patchState((s: any) => ({ ...s, ready: true, guestReady: !stopped,
     return { kind, name: kind, package: requiresNode ? "@x/" + kind : "agy", requiresNode, installed, binary: "/b", version: installed ? "1.2." + i : null, cliChecked: true, authenticated: i === 0 && !unavailable, authDetail, configError: null, claudeLogin };
   }),
   settings: { defaultAgent: "claude", latencyTarget: "1.1.1.1:443", checkTarget: "example.com:443" }, dataDir: "/home/dev/.local/share/cabin",
+  environment: { committed: { timezone: "UTC", language: "en_US.UTF-8" }, appliedAt: null, systemTimezone: "Asia/Shanghai", systemLanguage: "C.UTF-8" },
   network: mock?.network ?? { ...s.network, available: true, running: true, gate: "open", revision: "r", expiresAt: now + 3600e3, report: null },
   start: v === "start" ? {
     state: "running", startedAt: now, finishedAt: null, error: null, facts: [], logPath: null,
@@ -69,6 +71,8 @@ if (v === "agents" && q.has("claudeSwitch")) {
     } : agent),
   })));
 }
+// Exit and origin lookups run only when asked, so other pages stay deterministic.
+if (q.has("monitor")) startNetworkMonitor();
 if (v === "permissions") uiActions.navigate({ kind: "settings", tab: "permissions" });
 
 function AgentsPage() {

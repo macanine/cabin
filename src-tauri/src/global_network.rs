@@ -34,6 +34,7 @@ use crate::network_health::{Connectivity, HoldCheck, traffic_sample};
 const ROUTE: &str = "network_route";
 const PAUSED: &str = "network_paused";
 const AUTO_RECOVER: &str = "network_auto_recover";
+const REGION_FOLLOWS_EXIT: &str = "network_region_follows_exit";
 /// What a chain check connects to through each prefix.
 const CHECK_TARGET: &str = "www.google.com:443";
 /// Node servers rarely move; their locations are kept this long.
@@ -577,6 +578,11 @@ impl GlobalNetwork {
             gateway_session: runtime.gateway.as_ref().map(|_| runtime.gateway_session),
             paused: grant.paused,
             auto_recover: grant.auto_recover,
+            region_follows_exit: self
+                .with_store(|store| store.setting::<bool>(REGION_FOLLOWS_EXIT))
+                .ok()
+                .flatten()
+                .unwrap_or(true),
             revision: grant.revision.clone(),
             generation: grant.generation,
             checked_at: grant.checked_at,
@@ -761,7 +767,7 @@ impl GlobalNetwork {
             }
             return Ok(false);
         }
-        if attempt.refresh && matches!((runtime.verified_exit, public_ip), (Some(old), Some(new)) if old != new) {
+        if attempt.refresh && matches!((runtime.verified_exit, public_ip), (Some(old), Some(new)) if !crate::network_gate::same_exit(old, new)) {
             return Err(error("The public exit no longer matches the verified route"));
         }
         if attempt.held && public_ip.zip(runtime.verified_exit).is_none() {
@@ -870,6 +876,27 @@ impl GlobalNetwork {
                 None,
             );
         }
+        Ok(())
+    }
+
+    /// Whether a check that failed only on the machine's time zone may set
+    /// the machine to the verified exit's zone (on unless turned off).
+    pub fn region_follows_exit(&self) -> bool {
+        self.with_store(|store| store.setting::<bool>(REGION_FOLLOWS_EXIT))
+            .ok()
+            .flatten()
+            .unwrap_or(true)
+    }
+
+    pub fn set_region_follows_exit(&self, enabled: bool) -> Result<(), AppError> {
+        let runtime = self.runtime();
+        self.with_store(|store| store.set_setting(REGION_FOLLOWS_EXIT, &enabled))?;
+        self.journal(
+            &runtime,
+            "regionPreference",
+            if enabled { "The machine's time zone follows the exit" } else { "The machine's time zone is set by hand" },
+            None,
+        );
         Ok(())
     }
 
@@ -1035,10 +1062,16 @@ impl GlobalNetwork {
     /// Called by the macOS network-path watcher (host.rs).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn path_changed(&self) -> bool {
+        self.path_changed_with(network_interfaces::paths().unwrap_or_default())
+    }
+
+    /// A default-path event says nothing about a bound adapter: tunnels such
+    /// as a Clash TUN emit them constantly. A bound route is invalidated only
+    /// when its own adapter's index or addresses changed in `paths`.
+    fn path_changed_with(&self, paths: BTreeMap<String, InterfacePath>) -> bool {
         let mut runtime = self.runtime();
         if runtime.active_route.as_ref().is_some_and(|route| route.bind_interface.is_some()) {
-            self.invalidate_interface_path(&mut runtime, true);
-            return true;
+            return runtime.gateway.is_some() && self.observe_interface_paths(&mut runtime, paths);
         }
         runtime.path_revision += 1;
         self.start_hold(&mut runtime, HoldCheck::Reachability, "The Mac network path changed".into())
@@ -1120,7 +1153,7 @@ impl GlobalNetwork {
         let result = result.and_then(|address| {
             if runtime.grant.mode == NetworkGateMode::Open {
                 match (runtime.verified_exit, address) {
-                    (Some(old), Some(new)) if old != new => {
+                    (Some(old), Some(new)) if !crate::network_gate::same_exit(old, new) => {
                         return Err("The public exit no longer matches the verified route".into());
                     }
                     (None, _) | (_, None) if target.check.is_some() => {
@@ -1825,7 +1858,11 @@ mod tests {
         assert!(network.observe_health(&target(), Ok(Some(exit))).changed);
         assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Open);
         assert!(network.path_changed());
-        let wrong_exit = Ipv4Addr::new(203, 0, 113, 8);
+        // A neighbour from the same NAT pool is the same exit.
+        assert!(network.observe_health(&target(), Ok(Some(Ipv4Addr::new(203, 0, 113, 142)))).changed);
+        assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Open);
+        assert!(network.path_changed());
+        let wrong_exit = Ipv4Addr::new(203, 0, 114, 8);
         for failed in 1..=3 {
             let change = network.observe_health(&target(), Ok(Some(wrong_exit)));
             assert!(change.changed);
@@ -2091,22 +2128,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn interface_path_change_invalidates_inflight_check_and_rollback() {
-        let dir = temp("interface-path-change");
+    fn test_path(last: u8) -> BTreeMap<String, InterfacePath> {
+        BTreeMap::from([(
+            "en-test".to_string(),
+            InterfacePath { index: 4, ipv4: vec![(Ipv4Addr::new(10, 196, 103, last), Some(Ipv4Addr::new(255, 255, 0, 0)))] },
+        )])
+    }
+
+    fn bound_network(name: &str) -> (std::path::PathBuf, GlobalNetwork, NetworkRoute) {
+        let dir = temp(name);
         let network = GlobalNetwork::open(&dir).unwrap();
         network.start(&dir.join("gateway.sock"), 0).unwrap();
         let route = NetworkRoute { bind_interface: Some("en-test".into()), ..NetworkRoute::default() };
         network.save(&route).unwrap();
         network.runtime().active_route = Some(route.clone());
         open_gate(&network, &route);
+        (dir, network, route)
+    }
+
+    #[test]
+    fn interface_path_change_invalidates_inflight_check_and_rollback() {
+        let (dir, network, route) = bound_network("interface-path-change");
         let rollback = network.rollback_point();
         let revision = route_revision(&route);
         let attempt = network.begin_check(revision.clone(), true).unwrap();
-        assert!(network.path_changed());
+        // The bound adapter appears with a new address.
+        assert!(network.path_changed_with(test_path(7)));
         assert!(!network.finish_check(&attempt, passing_report(&revision), None, &[], None).unwrap());
         network.restore_gate(rollback);
         assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Closed);
+        network.stop();
+        drop(network);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_default_path_event_keeps_an_unchanged_bound_adapter() {
+        let (dir, network, _) = bound_network("interface-path-steady");
+        network.runtime().interface_paths = test_path(142);
+        let path_revision = network.runtime().path_revision;
+        // Tunnels such as a Clash TUN emit these constantly.
+        assert!(!network.path_changed_with(test_path(142)));
+        assert_eq!(network.runtime().path_revision, path_revision);
+        assert_eq!(network.runtime().grant.mode, NetworkGateMode::Open);
         network.stop();
         drop(network);
         let _ = std::fs::remove_dir_all(dir);

@@ -17,7 +17,9 @@ use crate::ops::{Operation, Step, StepCtx};
 use crate::system::{CommandSpec, privileged};
 
 /// Node.js is not among them: Ubuntu's package is too old (see `node`).
-pub const BASE_PACKAGES: [&str; 2] = ["git", "curl"];
+/// `locales` brings `locale-gen` and the locale sources the minimal cloud
+/// image leaves out; new guests get it at provisioning, older ones here.
+pub const BASE_PACKAGES: [&str; 3] = ["git", "curl", "locales"];
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 fn command_version(ctx: &Context, program: &str) -> Option<String> {
@@ -159,6 +161,23 @@ pub fn checks(ctx: &Context) -> Vec<SetupCheck> {
         git_check.action = Some(SetupAction::InstallBasePackages);
     }
     list.push(git_check);
+    list.push(if crate::environment::LocaleFiles::system().can_generate() {
+        check(
+            "locales",
+            "Language packs",
+            CheckStatus::Ok,
+            "Any supported language can be applied",
+        )
+    } else {
+        let mut locales = check(
+            "locales",
+            "Language packs",
+            CheckStatus::Missing,
+            "Only the built-in C language is available. Language packs come with the base tools once the machine is online.",
+        );
+        locales.action = Some(SetupAction::InstallBasePackages);
+        locales
+    });
     list.push(crate::python::check(ctx));
 
     let has = |program: &str| {
@@ -323,7 +342,7 @@ impl Step for AptStep {
 pub fn install_base_operation(ctx: &Context) -> Operation {
     let mut install = vec!["install".to_string(), "-y".into()];
     install.extend(BASE_PACKAGES.iter().map(|p| p.to_string()));
-    Operation::new("setup.installBase", "Install git and curl")
+    Operation::new("setup.installBase", "Install base tools")
         .key("setup-apt")
         .request(serde_json::json!({}))
         .step(AptStep {
@@ -475,7 +494,7 @@ mod tests {
             fake.calls(),
             vec![
                 format!("{prefix} update"),
-                format!("{prefix} install -y git curl"),
+                format!("{prefix} install -y git curl locales"),
             ]
         );
         Ok(())

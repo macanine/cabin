@@ -2,6 +2,8 @@
 //! (Networking is the Mac's: every VM connection goes through its gateway,
 //! so nothing here configures a proxy.)
 
+use std::io::Read;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -9,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::model::{EnvironmentReview, EnvironmentSpec, EnvironmentState, FieldState};
-use crate::ops::{Operation, Step, StepCtx};
+use crate::ops::{Lane, Operation, Step, StepCtx};
 use crate::system::{CommandSpec, privileged};
 use crate::util::now_millis;
 
@@ -99,35 +101,131 @@ pub fn timezones(ctx: &Context) -> Vec<String> {
     zones
 }
 
-/// `en_US.utf8` → `en_US.UTF-8`.
+/// `en_US.utf8` → `en_US.UTF-8`, `ca_ES.utf8@valencia` → `ca_ES.UTF-8@valencia`.
 fn normalize_locale(raw: &str) -> String {
-    match raw.split_once('.') {
-        Some((base, codeset))
-            if codeset.eq_ignore_ascii_case("utf8") || codeset.eq_ignore_ascii_case("utf-8") =>
-        {
-            format!("{base}.UTF-8")
-        }
-        _ => raw.to_string(),
+    let Some((base, rest)) = raw.split_once('.') else {
+        return raw.to_string();
+    };
+    let (codeset, modifier) = match rest.split_once('@') {
+        Some((codeset, modifier)) => (codeset, Some(modifier)),
+        None => (rest, None),
+    };
+    if !(codeset.eq_ignore_ascii_case("utf8") || codeset.eq_ignore_ascii_case("utf-8")) {
+        return raw.to_string();
+    }
+    match modifier {
+        Some(modifier) => format!("{base}.UTF-8@{modifier}"),
+        None => format!("{base}.UTF-8"),
     }
 }
 
-/// Locales generated on this machine (only these can be applied).
+/// Upper bounds for reading `SUPPORTED` (about 500 lines, 10 KB on Ubuntu).
+const SUPPORTED_MAX_BYTES: u64 = 256 * 1024;
+const SUPPORTED_MAX_ENTRIES: usize = 2048;
+
+/// Where the `locales` package keeps its generator and the list of locales
+/// that generator can build. The minimal cloud image ships without the
+/// package; provisioning and the base tools install add it.
+#[derive(Debug, Clone)]
+pub struct LocaleFiles {
+    supported: PathBuf,
+    generator: PathBuf,
+}
+
+impl LocaleFiles {
+    pub fn system() -> Self {
+        Self {
+            supported: PathBuf::from("/usr/share/i18n/SUPPORTED"),
+            generator: PathBuf::from("/usr/sbin/locale-gen"),
+        }
+    }
+
+    /// Whether `locale-gen` can build new locales on this machine.
+    pub fn can_generate(&self) -> bool {
+        self.generator.is_file() && self.supported.is_file()
+    }
+
+    /// The UTF-8 locales `locale-gen` can build, normalized.
+    fn supported(&self) -> Vec<String> {
+        if !self.can_generate() {
+            return Vec::new();
+        }
+        let mut text = String::new();
+        let read = std::fs::File::open(&self.supported)
+            .and_then(|file| file.take(SUPPORTED_MAX_BYTES).read_to_string(&mut text));
+        if read.is_err() {
+            return Vec::new();
+        }
+        text.lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let name = fields.next().filter(|name| !name.starts_with('#'))?;
+                let charset = fields.next()?;
+                let name = normalize_locale(name);
+                (charset.eq_ignore_ascii_case("UTF-8") && name.contains(".UTF-8")).then_some(name)
+            })
+            .take(SUPPORTED_MAX_ENTRIES)
+            .collect()
+    }
+}
+
+/// The locales that are generated and the ones that could be.
+#[derive(Debug, Default)]
+struct LocaleCatalog {
+    generated: Vec<String>,
+    /// Empty when `locale-gen` is missing.
+    supported: Vec<String>,
+    can_generate: bool,
+}
+
+impl LocaleCatalog {
+    fn read(ctx: &Context, files: &LocaleFiles) -> Self {
+        let spec = CommandSpec::new(["locale", "-a"]).timeout(Duration::from_secs(5));
+        let generated = ctx
+            .system
+            .check(&spec)
+            .map(|out| {
+                out.lines()
+                    .map(str::trim)
+                    .filter(|line| line.to_ascii_lowercase().contains("utf"))
+                    .map(normalize_locale)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            generated,
+            supported: files.supported(),
+            can_generate: files.can_generate(),
+        }
+    }
+
+    fn is_generated(&self, language: &str) -> bool {
+        self.generated.iter().any(|lang| lang == language)
+    }
+
+    fn can_build(&self, language: &str) -> bool {
+        self.can_generate && self.supported.iter().any(|lang| lang == language)
+    }
+
+    /// Everything that can be applied: generated locales and the supported
+    /// ones `locale-gen` builds on apply. Sorted and deduplicated.
+    fn available(&self) -> Vec<String> {
+        let mut list: Vec<String> = self
+            .generated
+            .iter()
+            .chain(&self.supported)
+            .cloned()
+            .collect();
+        list.sort();
+        list.dedup();
+        list
+    }
+}
+
+/// Locales that can be applied: the generated ones plus, when the `locales`
+/// package is installed, every supported UTF-8 locale (generated on apply).
 pub fn languages(ctx: &Context) -> Vec<String> {
-    let spec = CommandSpec::new(["locale", "-a"]).timeout(Duration::from_secs(5));
-    let mut list: Vec<String> = ctx
-        .system
-        .check(&spec)
-        .map(|out| {
-            out.lines()
-                .map(str::trim)
-                .filter(|line| line.to_ascii_lowercase().contains("utf"))
-                .map(normalize_locale)
-                .collect()
-        })
-        .unwrap_or_default();
-    list.sort();
-    list.dedup();
-    list
+    LocaleCatalog::read(ctx, &LocaleFiles::system()).available()
 }
 
 // ------------------------------------------------------------------ state
@@ -154,23 +252,38 @@ pub fn child_env(ctx: &Context) -> Vec<(String, String)> {
 
 // ----------------------------------------------------------------- review
 
-fn validate(spec: &EnvironmentSpec, languages: &[String]) -> Result<()> {
+fn validate(spec: &EnvironmentSpec, catalog: &LocaleCatalog) -> Result<()> {
     if spec.timezone.trim().is_empty() {
         return Err(Error::invalid("Choose a timezone"));
     }
-    if !languages.is_empty() && !languages.iter().any(|lang| lang == &spec.language) {
+    let language = spec.language.as_str();
+    // Nothing could be listed: leave the verdict to `localectl`.
+    if catalog.generated.is_empty() && catalog.supported.is_empty() {
+        return Ok(());
+    }
+    if catalog.is_generated(language) || catalog.can_build(language) {
+        return Ok(());
+    }
+    if !catalog.can_generate {
         return Err(Error::invalid(format!(
-            "The locale {} is not generated on this machine. Run `sudo locale-gen {}` or pick another language.",
-            spec.language, spec.language
+            "{language} is not installed yet. Language packs come with the base tools once the machine is online; until then pick an installed language."
         )));
     }
-    Ok(())
+    Err(Error::invalid(format!(
+        "{language} is not a language this machine supports. Pick another language."
+    )))
 }
 
 /// Field states, the change list and any blocking problem for a draft.
 pub fn review(ctx: &Context, draft: &EnvironmentSpec) -> EnvironmentReview {
+    review_with(ctx, draft, &LocaleFiles::system())
+}
+
+fn review_with(ctx: &Context, draft: &EnvironmentSpec, files: &LocaleFiles) -> EnvironmentReview {
     let committed = committed_spec(ctx);
-    let languages = languages(ctx);
+    let catalog = LocaleCatalog::read(ctx, files);
+    let languages = catalog.available();
+    let generate = !catalog.is_generated(&draft.language) && catalog.can_build(&draft.language);
     let system_tz = system_timezone(ctx);
     let system_lang = system_language(ctx);
 
@@ -186,9 +299,15 @@ pub fn review(ctx: &Context, draft: &EnvironmentSpec) -> EnvironmentReview {
         FieldState {
             field: "language".into(),
             enabled: !languages.is_empty(),
-            reason: languages
-                .is_empty()
-                .then(|| "Could not list installed locales (`locale -a`)".into()),
+            reason: if languages.is_empty() {
+                Some("Could not list installed locales (`locale -a`)".into())
+            } else if generate {
+                Some(format!("{} is generated when you apply", draft.language))
+            } else if !catalog.can_generate {
+                Some("More languages come with the base tools once the machine is online".into())
+            } else {
+                None
+            },
             suggestion: (draft.language != "en_US.UTF-8"
                 && languages.iter().any(|l| l == "en_US.UTF-8"))
             .then(|| "en_US.UTF-8".into()),
@@ -202,13 +321,14 @@ pub fn review(ctx: &Context, draft: &EnvironmentSpec) -> EnvironmentReview {
     }
     let current_lang = system_lang.unwrap_or(committed.language.clone());
     if current_lang != draft.language {
-        changes.push(format!("Language: {current_lang} → {}", draft.language));
+        let note = if generate { " (generated first)" } else { "" };
+        changes.push(format!("Language: {current_lang} → {}{note}", draft.language));
     }
 
     EnvironmentReview {
         fields,
         changes,
-        blocked: validate(draft, &languages)
+        blocked: validate(draft, &catalog)
             .err()
             .map(|error| error.to_string()),
         timezones: timezones(ctx),
@@ -236,6 +356,7 @@ fn environment_script(spec: &EnvironmentSpec) -> String {
 struct ValidateStep {
     ctx: Context,
     spec: EnvironmentSpec,
+    files: LocaleFiles,
 }
 
 impl Step for ValidateStep {
@@ -244,7 +365,7 @@ impl Step for ValidateStep {
     }
 
     fn prepare(&mut self, _ctx: &StepCtx<'_>) -> Result<()> {
-        validate(&self.spec, &languages(&self.ctx))
+        validate(&self.spec, &LocaleCatalog::read(&self.ctx, &self.files))
     }
 
     fn apply(&mut self, ctx: &StepCtx<'_>) -> Result<()> {
@@ -344,7 +465,10 @@ impl Step for TimezoneStep {
 struct LanguageStep {
     ctx: Context,
     target: String,
+    files: LocaleFiles,
     previous: Option<String>,
+    /// The target is not compiled yet; `locale-gen` builds it first.
+    generate: bool,
 }
 
 impl Step for LanguageStep {
@@ -354,10 +478,18 @@ impl Step for LanguageStep {
 
     fn prepare(&mut self, _ctx: &StepCtx<'_>) -> Result<()> {
         self.previous = system_language(&self.ctx);
+        self.generate = !LocaleCatalog::read(&self.ctx, &self.files).is_generated(&self.target);
         Ok(())
     }
 
     fn apply(&mut self, ctx: &StepCtx<'_>) -> Result<()> {
+        if self.generate {
+            // Offline: `locale-gen` compiles from the sources `locales` ships.
+            ctx.log(format!("Generating {}", self.target));
+            self.ctx.system.check(
+                &privileged(["locale-gen", self.target.as_str()]).timeout(PRIVILEGED_TIMEOUT),
+            )?;
+        }
         ctx.log("Changing the system locale");
         self.ctx.system.check(
             &privileged([
@@ -383,7 +515,10 @@ impl Step for LanguageStep {
         }
     }
 
-    fn rollback(&mut self, _ctx: &StepCtx<'_>) -> Result<()> {
+    fn rollback(&mut self, ctx: &StepCtx<'_>) -> Result<()> {
+        if self.generate {
+            ctx.log(format!("{} stays generated; it is unused until selected", self.target));
+        }
         match &self.previous {
             Some(previous) if system_language(&self.ctx).as_ref() != Some(previous) => self
                 .ctx
@@ -438,12 +573,24 @@ impl Step for CommitStep {
 
 /// Build the single "Apply environment" operation for `spec`.
 pub fn apply_operation(ctx: &Context, spec: EnvironmentSpec) -> Result<Operation> {
+    apply_operation_with(ctx, spec, &LocaleFiles::system())
+}
+
+fn apply_operation_with(
+    ctx: &Context,
+    spec: EnvironmentSpec,
+    files: &LocaleFiles,
+) -> Result<Operation> {
+    // Its own lane: the network gate waits for this change, so it must not
+    // queue behind an install that waits for the network (see `Lane`).
     let mut operation = Operation::new("environment.apply", "Apply environment")
         .key("environment")
+        .lane(Lane::Environment)
         .request(serde_json::to_value(&spec)?)
         .step(ValidateStep {
             ctx: ctx.clone(),
             spec: spec.clone(),
+            files: files.clone(),
         })
         .step(ScriptStep {
             ctx: ctx.clone(),
@@ -461,7 +608,9 @@ pub fn apply_operation(ctx: &Context, spec: EnvironmentSpec) -> Result<Operation
         operation = operation.step(LanguageStep {
             ctx: ctx.clone(),
             target: spec.language.clone(),
+            files: files.clone(),
             previous: None,
+            generate: false,
         });
     }
     Ok(operation.step(CommitStep {
@@ -488,11 +637,18 @@ mod tests {
     }
 
     /// A fake OS whose timezone/locale can be read and changed; `localectl
-    /// set-locale` fails when `locale_fails` is true.
+    /// set-locale` fails when `locale_fails` is true. `locale-gen` adds to
+    /// the generated list, and `localectl` refuses a locale that is not
+    /// generated, as systemd-localed does.
     fn machine(locale_fails: bool) -> Machine {
         let fake = Arc::new(FakeSystem::default());
         let tz = Arc::new(Mutex::new("UTC".to_string()));
         let lang = Arc::new(Mutex::new("en_US.UTF-8".to_string()));
+        let generated = Arc::new(Mutex::new(vec![
+            "C.utf8".to_string(),
+            "en_US.utf8".into(),
+            "de_DE.utf8".into(),
+        ]));
         let (tz_read, tz_write) = (tz.clone(), tz.clone());
         let (lang_read, lang_write) = (lang.clone(), lang.clone());
         fake.on(move |spec| {
@@ -507,14 +663,21 @@ mod tests {
                     Some(ok(""))
                 }
                 ["timedatectl", "list-timezones"] => Some(ok("UTC\nAsia/Tokyo\n")),
-                ["locale", "-a"] => Some(ok("C.utf8\nen_US.utf8\nde_DE.utf8\n")),
+                ["locale", "-a"] => Some(ok(&generated.lock().unwrap().join("\n"))),
+                ["locale-gen", name] => {
+                    generated.lock().unwrap().push(name.replace("UTF-8", "utf8"));
+                    Some(ok(""))
+                }
                 ["localectl", "status"] => Some(ok(&format!(
                     "   System Locale: LANG={}\n",
                     lang_read.lock().unwrap()
                 ))),
                 ["localectl", "set-locale", arg] => {
+                    let name = arg.trim_start_matches("LANG=").replace("UTF-8", "utf8");
                     if locale_fails {
                         Some(fail("Access denied"))
+                    } else if !generated.lock().unwrap().contains(&name) {
+                        Some(fail("Locale is not installed, refusing"))
                     } else {
                         *lang_write.lock().unwrap() = arg.trim_start_matches("LANG=").to_string();
                         Some(ok(""))
@@ -534,6 +697,30 @@ mod tests {
         }
     }
 
+    /// `locales` absent, as on the minimal cloud image.
+    fn no_locales(dir: &std::path::Path) -> LocaleFiles {
+        LocaleFiles {
+            supported: dir.join("missing/SUPPORTED"),
+            generator: dir.join("missing/locale-gen"),
+        }
+    }
+
+    /// `locales` installed with a small `SUPPORTED` catalog.
+    fn with_locales(dir: &std::path::Path) -> LocaleFiles {
+        let root = dir.join("i18n");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("SUPPORTED"),
+            "# comment\nen_US.UTF-8 UTF-8\nen_US ISO-8859-1\nko_KR.UTF-8 UTF-8\nko_KR.EUC-KR EUC-KR\nca_ES.UTF-8@valencia UTF-8\nsr_RS@latin UTF-8\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("locale-gen"), "#!/bin/sh\n").unwrap();
+        LocaleFiles {
+            supported: root.join("SUPPORTED"),
+            generator: root.join("locale-gen"),
+        }
+    }
+
     fn draft() -> EnvironmentSpec {
         EnvironmentSpec {
             timezone: "Asia/Tokyo".into(),
@@ -547,7 +734,7 @@ mod tests {
         let machine = machine(false);
         let ctx = context(dir.path(), machine.fake.clone());
         let ops = OperationManager::new(ctx.store.clone());
-        let record = ops.run(apply_operation(&ctx, draft())?)?;
+        let record = ops.run(apply_operation_with(&ctx, draft(), &no_locales(dir.path()))?)?;
         assert_eq!(record.state, OperationState::Succeeded, "{record:?}");
         assert_eq!(*machine.tz.lock().unwrap(), "Asia/Tokyo");
         assert_eq!(*machine.lang.lock().unwrap(), "de_DE.UTF-8");
@@ -563,7 +750,7 @@ mod tests {
         let machine = machine(true);
         let ctx = context(dir.path(), machine.fake.clone());
         let ops = OperationManager::new(ctx.store.clone());
-        let record = ops.run(apply_operation(&ctx, draft())?)?;
+        let record = ops.run(apply_operation_with(&ctx, draft(), &no_locales(dir.path()))?)?;
         assert_eq!(record.state, OperationState::RolledBack, "{record:?}");
         assert_eq!(*machine.tz.lock().unwrap(), "UTC", "timezone restored");
         assert_eq!(committed_spec(&ctx), EnvironmentSpec::default());
@@ -584,14 +771,10 @@ mod tests {
         let ctx = context(dir.path(), machine(false).fake);
         let mut spec = draft();
         spec.language = "ko_KR.UTF-8".into();
-        let review = review(&ctx, &spec);
-        assert!(
-            review
-                .blocked
-                .as_deref()
-                .unwrap()
-                .contains("ko_KR.UTF-8 is not generated")
-        );
+        let review = review_with(&ctx, &spec, &no_locales(dir.path()));
+        let blocked = review.blocked.as_deref().unwrap();
+        assert!(blocked.contains("ko_KR.UTF-8 is not installed yet"), "{blocked}");
+        assert!(blocked.contains("once the machine is online") && !blocked.contains("sudo"));
         assert!(
             review
                 .changes
@@ -600,6 +783,104 @@ mod tests {
         );
         assert_eq!(review.fields.len(), 2, "timezone and language only");
         Ok(())
+    }
+
+    #[test]
+    fn supported_locales_are_listed_and_generated_on_apply() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let machine = machine(false);
+        let ctx = context(dir.path(), machine.fake.clone());
+        let files = with_locales(dir.path());
+        let mut spec = draft();
+        spec.language = "ko_KR.UTF-8".into();
+
+        let review = review_with(&ctx, &spec, &files);
+        assert_eq!(review.blocked, None);
+        assert_eq!(
+            review.languages,
+            [
+                "C.UTF-8",
+                "ca_ES.UTF-8@valencia",
+                "de_DE.UTF-8",
+                "en_US.UTF-8",
+                "ko_KR.UTF-8"
+            ]
+        );
+        assert!(review.changes.iter().any(|c| c.ends_with("ko_KR.UTF-8 (generated first)")));
+
+        let record = OperationManager::new(ctx.store.clone())
+            .run(apply_operation_with(&ctx, spec, &files)?)?;
+        assert_eq!(record.state, OperationState::Succeeded, "{record:?}");
+        assert_eq!(*machine.lang.lock().unwrap(), "ko_KR.UTF-8");
+        let calls = machine.fake.calls();
+        let generate = calls.iter().position(|c| c.ends_with("locale-gen ko_KR.UTF-8"));
+        let set = calls
+            .iter()
+            .position(|c| c.ends_with("localectl set-locale LANG=ko_KR.UTF-8"));
+        assert!(generate.is_some() && generate < set, "{calls:?}");
+
+        // An unsupported name is still refused, without sudo advice.
+        let mut unknown = draft();
+        unknown.language = "xx_XX.UTF-8".into();
+        let blocked = review_with(&ctx, &unknown, &files).blocked.unwrap();
+        assert!(blocked.contains("not a language this machine supports"), "{blocked}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_generated_locale_is_not_generated_again() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let machine = machine(false);
+        let ctx = context(dir.path(), machine.fake.clone());
+        let record = OperationManager::new(ctx.store.clone())
+            .run(apply_operation_with(&ctx, draft(), &with_locales(dir.path()))?)?;
+        assert_eq!(record.state, OperationState::Succeeded, "{record:?}");
+        assert!(!machine.fake.calls().iter().any(|c| c.contains("locale-gen")));
+        Ok(())
+    }
+
+    #[test]
+    fn environment_apply_does_not_wait_for_a_running_install() -> Result<()> {
+        use std::sync::mpsc::channel;
+        let dir = tempfile::tempdir()?;
+        let machine = machine(false);
+        let ctx = context(dir.path(), machine.fake.clone());
+        let ops = Arc::new(OperationManager::new(ctx.store.clone()));
+        let (started_tx, started) = channel();
+        let (release, release_rx) = channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let install = ops.clone();
+        let apt = std::thread::spawn(move || {
+            install.run(Operation::new("setup.installBase", "Install base tools").step(
+                crate::ops::FnStep::new(
+                    "Refresh package lists",
+                    move |_ctx: &StepCtx<'_>| {
+                        started_tx.send(()).ok();
+                        release_rx
+                            .lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(10))
+                            .map_err(|_| Error::Internal("never released".into()))
+                    },
+                    |_ctx: &StepCtx<'_>| Ok(()),
+                ),
+            ))
+        });
+        started.recv().unwrap();
+        let record = ops.run(apply_operation_with(&ctx, draft(), &no_locales(dir.path()))?)?;
+        assert_eq!(record.state, OperationState::Succeeded, "{record:?}");
+        assert!(!apt.is_finished(), "the install is still waiting");
+        release.send(()).unwrap();
+        assert_eq!(apt.join().unwrap()?.state, OperationState::Succeeded);
+        Ok(())
+    }
+
+    #[test]
+    fn locale_names_normalize_codeset_and_keep_modifiers() {
+        assert_eq!(normalize_locale("en_US.utf8"), "en_US.UTF-8");
+        assert_eq!(normalize_locale("ca_ES.utf8@valencia"), "ca_ES.UTF-8@valencia");
+        assert_eq!(normalize_locale("en_US.ISO-8859-1"), "en_US.ISO-8859-1");
+        assert_eq!(normalize_locale("POSIX"), "POSIX");
     }
 
     #[test]

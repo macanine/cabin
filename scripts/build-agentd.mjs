@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 // Guest triple, first match wins: `--target <triple>`, CABIN_GUEST_ARCH
 // (aarch64|x86_64), TAURI_ENV_TARGET_TRIPLE, then the host. The macOS product
@@ -60,9 +61,13 @@ const zigbuild = has("cargo-zigbuild");
 const argv = zigbuild
   ? ["zigbuild", ...args]
   : ["build", ...args];
+// The bundle resources (tauri.<platform>.conf.json) and the prebuilt check
+// above read core/target, so pin it even when the host build uses a shared
+// CARGO_TARGET_DIR (scripts/tauri.mjs sets one on macOS and Windows).
 const result = spawnSync("cargo", argv, {
   stdio: "inherit",
   cwd: new URL("../core", import.meta.url),
+  env: { ...process.env, CARGO_TARGET_DIR: fileURLToPath(new URL("../core/target", import.meta.url)) },
   shell: process.platform === "win32",
 });
 process.exit(result.status ?? 1);

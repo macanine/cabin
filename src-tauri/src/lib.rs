@@ -11,6 +11,7 @@ mod network_gate;
 mod network_health;
 mod storage;
 mod sync;
+mod system_route;
 mod task;
 mod window_chrome;
 
@@ -255,6 +256,7 @@ mod tests {
             crate::host_permissions::FolderAccessState::decl(&config),
             crate::host_permissions::FolderAccess::decl(&config),
             crate::host_permissions::MacProjectAccess::decl(&config),
+            crate::system_route::SystemRoute::decl(&config),
         ] {
             generated.push_str(&format!("export {declaration}\n"));
         }

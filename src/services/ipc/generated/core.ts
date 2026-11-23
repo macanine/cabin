@@ -380,6 +380,12 @@ export type NetworkStatus = { available: boolean, route: NetworkRoute, running: 
  */
 gateError: string | null, gate: NetworkGateMode, connectivity: NetworkConnectivity, failedChecks: number, connectivityError: string | null, gatewaySession: number | null, paused: boolean, autoRecover: boolean,
 /**
+ * When a check fails only because the machine's time zone differs from
+ * the verified exit, the Mac sets the machine to the exit's zone and
+ * checks again.
+ */
+regionFollowsExit: boolean,
+/**
  * Stable identity of the route and guest environment this grant covers.
  */
 revision: string,

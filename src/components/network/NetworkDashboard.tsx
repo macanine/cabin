@@ -1,8 +1,9 @@
 import { useAutoRefresh } from "../../lib/useAutoRefresh";
 import { Button, Loader, Select, Switch, Tooltip } from "@mantine/core";
-import { IconAlertTriangle, IconPlus, IconRoute } from "@tabler/icons-react";
+import { IconAlertTriangle, IconInfoCircle, IconPlus, IconRoute, IconTransfer } from "@tabler/icons-react";
 import { useCallback, useMemo, useState } from "react";
 import type { GeoInfo } from "../../services/ipc/generated/core";
+import type { SystemRoute } from "../../services/ipc/generated/common";
 import { interfaceOptions, normalizeRoute, type NetworkInterface, type NetworkRoute } from "../../lib/networkRoute";
 import { toIpcError } from "../../services/ipc/common";
 import { exitIpTypeLabel } from "../../lib/networkSummary";
@@ -47,14 +48,16 @@ export function NetworkDashboard() {
   const [selection, setSelection] = useState<string>("exit");
   const [interfaces, setInterfaces] = useState<NetworkInterface[] | null>(null);
   const [interfaceError, setInterfaceError] = useState<string | null>(null);
+  const [systemRoute, setSystemRoute] = useState<SystemRoute | null>(null);
   const tests = useNodeTests();
   const active = useMemo(() => normalizeRoute(status.route), [status.route]);
 
   useAutoRefresh(async (isCurrent) => {
     try {
-      const found = await networkIpc.interfaces();
+      const [found, route] = await Promise.all([networkIpc.interfaces(), networkIpc.systemRoute().catch(() => null)]);
       if (isCurrent()) {
         setInterfaces(found);
+        setSystemRoute(route);
         setInterfaceError(null);
       }
     } catch (error) {
@@ -149,7 +152,14 @@ export function NetworkDashboard() {
     : draft.bindInterface ? [{ value: draft.bindInterface, label: draft.bindInterface, disabled: true }] : [];
   const unavailableInterface = draft.bindInterface != null && interfaces != null && !interfaceError
     && !interfaces.some((item) => item.name === draft.bindInterface && item.available);
-  const activeInterface = active.bindInterface == null ? "System route"
+  const interfaceLabel = (name: string | null | undefined) =>
+    interfaces?.find((item) => item.name === name)?.label || name || null;
+  const tunnel = systemRoute?.tunnel ? systemRoute : null;
+  const systemRouteLabel = tunnel?.internetInterface ? `System route · via ${tunnel.internetInterface}` : "System route";
+  // The physical adapter under a tunnel, when it can be bound right now.
+  const bypass = tunnel?.defaultInterface && interfaces?.some((item) => item.name === tunnel.defaultInterface && item.available)
+    ? tunnel.defaultInterface : null;
+  const activeInterface = active.bindInterface == null ? systemRouteLabel
     : interfaces?.find((item) => item.name === active.bindInterface)?.label || active.bindInterface;
   const interfaceOnly = dirty && sameRoute({ ...draft, bindInterface: active.bindInterface }, active);
   const deferred = !machineConnected || status.paused;
@@ -247,8 +257,19 @@ export function NetworkDashboard() {
               <Select
                 size="xs"
                 className="w-full max-w-[300px]"
-                label="Mac network interface"
-                data={[{ value: SYSTEM_ROUTE, label: "System route" }, ...options]}
+                label={(
+                  <span className="inline-flex items-center gap-1">
+                    Mac network interface
+                    <Tooltip
+                      multiline
+                      w={300}
+                      label="System route follows macOS routing, including VPNs and TUN proxies. A bound adapter sends the VM's traffic, DNS and the route's first hop out of that adapter only, bypassing any tunnel; internet access closes while it is disconnected."
+                    >
+                      <IconInfoCircle size={13} className="text-faint" aria-label="About interface binding" />
+                    </Tooltip>
+                  </span>
+                )}
+                data={[{ value: SYSTEM_ROUTE, label: systemRouteLabel }, ...options]}
                 value={draft.bindInterface ?? SYSTEM_ROUTE}
                 onChange={(value) => { if (value != null) editRoute({ ...draft, bindInterface: value === SYSTEM_ROUTE ? null : value }); }}
                 allowDeselect={false}
@@ -264,12 +285,21 @@ export function NetworkDashboard() {
               )}
             </div>
             {interfaceOnly && blocked && !unavailableInterface && <p className="net-interface-error" role="status">{blocked}</p>}
-            {interfaceOnly && deferred && !blocked && <p className="mt-1.5 mb-0 text-xs text-faint">The saved interface needs a network check before it can carry traffic.</p>}
-            <details className="net-interface-note group">
-              <summary className="cursor-pointer list-none text-xs text-faint hover:text-muted [&::-webkit-details-marker]:hidden">How interface binding works <span className="inline-block transition-transform group-open:rotate-90">›</span></summary>
-              <p className="mt-1.5 mb-1">The system route follows macOS routing, including VPN routes. Choosing a physical interface binds the VM gateway's outgoing connections to that interface. Internet access closes if the adapter disconnects.</p>
-              <p className="m-0">With a selected interface, guest UDP DNS (UDP/53) uses DNS over HTTPS through the route. Bootstrap lookups, including proxy node names, use unencrypted UDP DNS and require access to public DNS servers on that interface. The system route uses the macOS resolver.</p>
-            </details>
+            {interfaceOnly && deferred && !blocked && <p className="mt-1.5 mb-0 text-xs text-faint">Checked when the machine is online.</p>}
+            {tunnel && draft.bindInterface == null && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-warn/30 bg-warn/8 px-3 py-2 text-sm" role="status">
+                <IconTransfer size={15} className="shrink-0 text-warn" aria-hidden="true" />
+                <span className="min-w-0 flex-1">
+                  {tunnel.fakeIp ? "A TUN proxy (such as Clash)" : "A VPN"} on <span className="font-mono">{tunnel.internetInterface}</span> carries the system route.
+                </span>
+                {bypass && (
+                  <Button size="compact-xs" variant="light" disabled={!status.available || applying}
+                    onClick={() => editRoute({ ...draft, bindInterface: bypass })}>
+                    Bind {interfaceLabel(bypass)}
+                  </Button>
+                )}
+              </div>
+            )}
             {interfaceError && <p className="net-interface-error" role="alert">Could not load interfaces: {interfaceError}</p>}
             {unavailableInterface && <p className="net-interface-error" role="status">The selected interface is unavailable. Choose another interface or the system route.</p>}
           </div>

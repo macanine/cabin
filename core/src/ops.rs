@@ -109,11 +109,47 @@ where
     }
 }
 
+/// The queue an operation waits in. Operations in one lane run one at a
+/// time; operations in different lanes may run at the same time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Lane {
+    /// Installs and config edits (apt, npm, agent and MCP config, Node.js).
+    /// Everything runs here unless it opts out, so these stay globally
+    /// serialized.
+    #[default]
+    System,
+    /// The VM's timezone and language (`environment`). These change local
+    /// system settings through systemd-timedated, systemd-localed and
+    /// `locale-gen`, need no network, and must not queue behind a package
+    /// download that waits for the network to open: the network gate opens
+    /// only after the timezone and language match the exit.
+    ///
+    /// Running beside the system lane is safe: `timedatectl` and `localectl`
+    /// talk to their daemons over D-Bus, and `locale-gen` compiles locales
+    /// with `localedef`, which locks the locale archive itself. None of them
+    /// takes the dpkg or apt lock or reads the package lists, and no system
+    /// lane operation changes the timezone or locale.
+    Environment,
+}
+
+impl Lane {
+    const ALL: [Lane; 2] = [Lane::System, Lane::Environment];
+
+    fn index(self) -> usize {
+        match self {
+            Lane::System => 0,
+            Lane::Environment => 1,
+        }
+    }
+}
+
 pub struct Operation {
     pub kind: String,
     pub title: String,
     /// Rejects a duplicate while an operation with the same key is running.
     pub key: Option<String>,
+    /// Which queue the operation waits in (`Lane::System` by default).
+    pub lane: Lane,
     /// Stored so the operation can be rebuilt for a retry.
     pub request: Option<serde_json::Value>,
     pub steps: Vec<Box<dyn Step>>,
@@ -125,9 +161,15 @@ impl Operation {
             kind: kind.into(),
             title: title.into(),
             key: None,
+            lane: Lane::default(),
             request: None,
             steps: Vec::new(),
         }
+    }
+
+    pub fn lane(mut self, lane: Lane) -> Self {
+        self.lane = lane;
+        self
     }
 
     pub fn key(mut self, key: impl Into<String>) -> Self {
@@ -150,7 +192,8 @@ type Sink = Arc<dyn Fn(&OperationRecord) + Send + Sync>;
 
 pub struct OperationManager {
     store: Arc<Store>,
-    gate: Mutex<()>,
+    /// One gate per `Lane`, indexed by `Lane::index`.
+    gates: [Mutex<()>; Lane::ALL.len()],
     cancels: Mutex<HashMap<String, CancelToken>>,
     keys: Mutex<HashSet<String>>,
     sink: RwLock<Option<Sink>>,
@@ -200,7 +243,7 @@ impl OperationManager {
     pub fn new(store: Arc<Store>) -> Self {
         Self {
             store,
-            gate: Mutex::new(()),
+            gates: Lane::ALL.map(|_| Mutex::new(())),
             cancels: Mutex::new(HashMap::new()),
             keys: Mutex::new(HashSet::new()),
             sink: RwLock::new(None),
@@ -239,6 +282,7 @@ impl OperationManager {
             kind,
             title,
             key,
+            lane,
             request,
             mut steps,
         } = operation;
@@ -285,7 +329,7 @@ impl OperationManager {
             .insert(id.clone(), cancel.clone());
         let _cancel_guard = CancelGuard { manager: self, id };
 
-        let _gate = self.gate.locked();
+        let _gate = self.gates[lane.index()].locked();
         journal.update(|record| record.state = OperationState::Running);
 
         // Phase 1: prepare everything; nothing has changed yet.
@@ -596,6 +640,67 @@ mod tests {
         );
         let record = ops.run(Operation::new("t", "Same").key("k").step(nested))?;
         assert_eq!(record.state, OperationState::Succeeded);
+        Ok(())
+    }
+
+    /// A system-lane step that holds its gate until released, like an apt
+    /// update waiting for the network.
+    fn blocking_step(
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> impl Step {
+        let release = Mutex::new(release);
+        FnStep::new(
+            "wait",
+            move |_ctx: &StepCtx<'_>| {
+                started.send(()).ok();
+                release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .map_err(|_| Error::Internal("never released".into()))
+            },
+            |_ctx: &StepCtx<'_>| Ok(()),
+        )
+    }
+
+    #[test]
+    fn lanes_run_beside_each_other_and_serialize_within() -> Result<()> {
+        use std::sync::mpsc::channel;
+        let ops = Arc::new(manager());
+        let (started_tx, started) = channel();
+        let (release, release_rx) = channel();
+        let blocked = ops.clone();
+        let long = std::thread::spawn(move || {
+            blocked.run(Operation::new("t", "Long").step(blocking_step(started_tx, release_rx)))
+        });
+        started.recv().unwrap();
+
+        // The environment lane proceeds while the system lane is held.
+        let trace = Trace::default();
+        let record = ops.run(
+            Operation::new("environment.apply", "Env")
+                .lane(Lane::Environment)
+                .step(Probe::new("env", &trace)),
+        )?;
+        assert_eq!(record.state, OperationState::Succeeded);
+        assert!(!long.is_finished(), "the system-lane operation is still running");
+
+        // Another system-lane operation still waits for the first one.
+        let (done_tx, done) = channel();
+        let queued = ops.clone();
+        let second = std::thread::spawn(move || {
+            let record = queued.run(Operation::new("t", "Second"));
+            done_tx.send(()).ok();
+            record
+        });
+        assert!(
+            done.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+            "system lane stays serialized"
+        );
+        release.send(()).unwrap();
+        assert_eq!(long.join().unwrap()?.state, OperationState::Succeeded);
+        assert_eq!(second.join().unwrap()?.state, OperationState::Succeeded);
         Ok(())
     }
 

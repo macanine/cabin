@@ -82,7 +82,7 @@ It does not edit files owned by another workstream in the same wave.
   `CABIN_GUEST_ARCH`, falling back to the host.
 - `src-tauri/tauri.macos.conf.json`, `tauri.windows.conf.json`: bundle
   `build/vendor/<platform>/` as resource `vendor/`. `beforeBuildCommand` runs the fetch.
-  `package.json` scripts: `vendor`, `tauri:win`.
+  `package.json` scripts: `vendor`, `app:dev`, `app:build` (all through `scripts/tauri.mjs`).
 - `.github/workflows/build.yml`: matrix macos-14 (arm64) and windows-latest (x64). It runs
   frontend tests, `cargo test` for core/vm/src-tauri, the guest cross-build, vendor fetch,
   and `tauri build`, then uploads the installers as artifacts.
@@ -164,6 +164,6 @@ It does not edit files owned by another workstream in the same wave.
 
 ## Verification
 
-- macOS: `npm test`, `cargo test` in `core`, `vm`, and `src-tauri`, `npm run tauri:mac -- build`.
+- macOS: `npm test`, `cargo test` in `core`, `vm`, and `src-tauri`, `npm run app:build`.
 - Windows: the CI job (build, unit tests, NSIS artifact). A live install on a Windows 11 x64
   machine with WHPX on and then off covers the end-to-end flow.

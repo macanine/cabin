@@ -69,6 +69,9 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   `bind_interface` independent of the proxy chain's `enabled` flag. Scope route checks, node
   test keys, bootstrap DNS, and the first outbound hop to the selected adapter.
   [Routing behavior and recovery](PLAN.md#network-routing-and-recovery)
+- `network_gate::region_follow_zone` decides when a failed check may set the guest's time
+  zone to the verified exit's; `Host::follow_exit_region` applies it and re-probes within the
+  same attempt. Never relax a required check to work around an environment mismatch.
 - `Host::apply_network_route` saves interface-only changes when live verification is
   unavailable. `finish_check` commits a verified candidate, and `restore_gate` uses a
   rollback point tied to the gateway session and path revision. `poll_interface_paths`

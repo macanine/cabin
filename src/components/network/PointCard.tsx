@@ -1,7 +1,6 @@
 import { Loader, Tooltip } from "@mantine/core";
 import {
-  IconAlertTriangle, IconBuildingBroadcastTower, IconCheck, IconCopy, IconEye, IconEyeOff, IconMoon,
-  IconServer, IconSun,
+  IconAlertTriangle, IconCheck, IconCopy, IconEye, IconEyeOff, IconMoon, IconSun,
 } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import { clipboard } from "../../services/ipc/dialogs";
@@ -41,27 +40,25 @@ function Address({ ip, privacy }: { ip: string; privacy: boolean }) {
   }
 
   return (
-    <div className="net-exit-line net-ip">
-      {privacy ? (
-        <Tooltip label={VISIBILITY_LABEL[visibility]} openDelay={300}>
-          <button className="net-icon-button" onClick={cycle} aria-label={VISIBILITY_LABEL[visibility]}>
-            {visibility === "shown" ? <IconEye size={15} /> : <IconEyeOff size={15} />}
-          </button>
-        </Tooltip>
-      ) : (
-        <span className="net-line-icon"><IconServer size={15} /></span>
-      )}
+    <span className="flex min-w-0 items-center gap-1">
       <span className="net-ip-value mono" aria-label={visibility === "shown" ? ip : "Address, hidden"}>
         {maskIp(ip, visibility).map((part, index) => (
           <span key={index} className={part.blur ? "net-blur" : undefined}>{part.text}</span>
         ))}
       </span>
+      {privacy && (
+        <Tooltip label={VISIBILITY_LABEL[visibility]} openDelay={300}>
+          <button className="net-icon-button" onClick={cycle} aria-label={VISIBILITY_LABEL[visibility]}>
+            {visibility === "shown" ? <IconEye size={14} /> : <IconEyeOff size={14} />}
+          </button>
+        </Tooltip>
+      )}
       <Tooltip label={copied ? "Copied" : "Copy the address"} openDelay={200}>
         <button className="net-icon-button" aria-label="Copy the address" onClick={() => void clipboard.write(ip).then(() => setCopied(true)).catch(() => undefined)}>
-          {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
+          {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
         </button>
       </Tooltip>
-    </div>
+    </span>
   );
 }
 
@@ -83,13 +80,11 @@ function Daylight({ lat, lon, timeZone }: { lat: number; lon: number; timeZone: 
   }, []);
   const light = daylight(lat, lon, now);
   return (
-    <div className="net-exit-line net-daylight" title={timeZone ? `Local time (${timeZone})` : "Local time"}>
-      <span className={`net-line-icon ${light.day ? "sun" : "moon"}`}>{light.day ? <IconSun size={15} /> : <IconMoon size={15} />}</span>
-      <span className="net-daylight-text">
-        <strong className="mono">{clock(now, timeZone)}</strong>
-        <span> · {light.polar ?? light.phase.split(",")[0]}</span>
-      </span>
-    </div>
+    <span className="flex min-w-0 items-center gap-1.5" title={timeZone ? `Local time (${timeZone})` : "Local time"}>
+      {light.day ? <IconSun size={14} className="shrink-0 text-warn" /> : <IconMoon size={14} className="shrink-0 text-accent" />}
+      <strong className="mono font-semibold tabular-nums">{clock(now, timeZone)}</strong>
+      <span className="truncate text-muted">{light.polar ?? light.phase.split(",")[0]}</span>
+    </span>
   );
 }
 
@@ -108,16 +103,35 @@ export interface PointInfo {
   classification?: { label: string; detail: string | null };
 }
 
-/** One point of the route (this Mac, a node, the exit), always in full. */
-export function PointCard({ info }: { info: PointInfo }) {
+/** One labelled fact; every fact shares the label column so values align. */
+function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className={`net-exit${info.error && !info.ip ? " failed" : ""}`}>
-      <div className="net-exit-place">
+    <div className="net-point-fact">
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * One point of the route (this Mac, a node, the exit): the place and its IP
+ * type on top, then aligned facts (address, network and AS, local time).
+ */
+export function PointCard({ info }: { info: PointInfo }) {
+  const failed = Boolean(info.error && !info.ip);
+  return (
+    <div className={`net-point${failed ? " failed" : ""}`}>
+      <div className="flex min-w-0 items-center gap-3">
         <span className="net-flag" aria-hidden><Flag code={info.flag} size={16} /></span>
-        <div className="grow net-exit-title">
-          <div className="net-exit-name">{info.title}</div>
-          <div className="net-exit-sub">{info.sub}</div>
+        <div className="min-w-0 flex-1">
+          <div className="net-point-title">{info.title}</div>
+          <div className="truncate text-xs text-muted">{info.sub}</div>
         </div>
+        {info.classification && (
+          <Tooltip label={info.classification.detail ? `Source: ${info.classification.detail}` : "IP type"} openDelay={300} disabled={!info.classification.detail}>
+            <span className="net-point-badge">{info.classification.label}</span>
+          </Tooltip>
+        )}
       </div>
       {info.error && (
         <div className="net-exit-error" role="alert">
@@ -125,22 +139,26 @@ export function PointCard({ info }: { info: PointInfo }) {
           <span>{info.error}</span>
         </div>
       )}
-      {info.ip ? <Address key={info.ip} ip={info.ip} privacy={info.privacy} /> : info.loading && (
-        <div className="net-exit-line faint"><span className="net-line-icon"><Loader size={12} /></span>Looking it up…</div>
+      {(info.ip || info.loading || info.isp || info.place) && (
+        <dl className="net-point-facts">
+          {info.ip ? (
+            <Fact label="Address"><Address key={info.ip} ip={info.ip} privacy={info.privacy} /></Fact>
+          ) : info.loading && (
+            <Fact label="Address"><span className="flex items-center gap-1.5 text-faint"><Loader size={12} />Looking it up…</span></Fact>
+          )}
+          {info.isp && (
+            <Fact label="Network">
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="truncate" title={info.isp}>{info.isp}</span>
+                {info.asn != null && <span className="mono shrink-0 text-xs text-faint">AS{info.asn}</span>}
+              </span>
+            </Fact>
+          )}
+          {info.place && (
+            <Fact label="Local time"><Daylight lat={info.place.lat} lon={info.place.lon} timeZone={info.place.timeZone} /></Fact>
+          )}
+        </dl>
       )}
-      {info.classification && <div className="net-exit-line net-ip-classification">
-        <span>{info.classification.label}</span>
-        {info.classification.detail && <span className="truncate faint" title={info.classification.detail}>{info.classification.detail}</span>}
-      </div>}
-      {info.isp && (
-        <div className="net-exit-line net-isp">
-          <span className="net-line-icon"><IconBuildingBroadcastTower size={15} /></span>
-          <Tooltip label={info.asn != null ? `AS${info.asn}` : "No AS number reported"} openDelay={300}>
-            <span className="truncate">{info.isp}</span>
-          </Tooltip>
-        </div>
-      )}
-      {info.place && <Daylight lat={info.place.lat} lon={info.place.lon} timeZone={info.place.timeZone} />}
     </div>
   );
 }

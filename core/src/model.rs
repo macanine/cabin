@@ -1450,6 +1450,11 @@ pub struct NetworkStatus {
     pub gateway_session: Option<u64>,
     pub paused: bool,
     pub auto_recover: bool,
+    /// When a check fails only because the machine's time zone differs from
+    /// the verified exit, the Mac sets the machine to the exit's zone and
+    /// checks again.
+    #[serde(default = "network_status_true")]
+    pub region_follows_exit: bool,
     /// Stable identity of the route and guest environment this grant covers.
     pub revision: String,
     /// Monotonic in-process token used to discard stale checks.
@@ -1464,6 +1469,10 @@ pub struct NetworkStatus {
     #[cfg_attr(test, ts(type = "number"))]
     pub retry_attempt: u32,
     pub report: Option<NetworkCheckReport>,
+}
+
+fn network_status_true() -> bool {
+    true
 }
 
 impl Default for NetworkStatus {
@@ -1481,6 +1490,7 @@ impl Default for NetworkStatus {
             gateway_session: None,
             paused: false,
             auto_recover: true,
+            region_follows_exit: true,
             revision: String::new(),
             generation: 0,
             checked_at: None,
