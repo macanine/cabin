@@ -329,16 +329,16 @@ impl AsyncWrite for TcpConnection {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn async_buffer_and_lifecycle_changes_notify_the_wait_fd() {
-        use std::os::{fd::AsRawFd, unix::net::UnixStream};
+        use super::super::wake::loopback_udp_pair;
         use std::time::Duration;
 
-        let (_peer, tun) = UnixStream::pair().unwrap();
+        let (_peer, tun) = loopback_udp_pair(None).unwrap();
         let (wake, mut receiver) = Wake::new().unwrap();
         let control = Arc::new(TcpConnectionControl::new(32, 32));
         let mut connection = TcpConnection::new(control.clone(), wake);
@@ -348,11 +348,7 @@ mod tests {
                 .poll_write(&mut cx, b"request")
                 .is_ready()
         );
-        assert!(
-            receiver
-                .wait(tun.as_raw_fd(), Some(Duration::ZERO))
-                .unwrap()
-        );
+        assert!(receiver.wait(&tun, Some(Duration::from_secs(1))).unwrap());
         receiver.drain().unwrap();
         control.enqueue_recv_data(b"reply");
         assert!(
@@ -360,29 +356,17 @@ mod tests {
                 .poll_read(&mut cx, &mut ReadBuf::new(&mut [0; 32]))
                 .is_ready()
         );
-        assert!(
-            receiver
-                .wait(tun.as_raw_fd(), Some(Duration::ZERO))
-                .unwrap()
-        );
+        assert!(receiver.wait(&tun, Some(Duration::from_secs(1))).unwrap());
         receiver.drain().unwrap();
         assert!(
             Pin::new(&mut connection)
                 .poll_shutdown(&mut cx)
                 .is_pending()
         );
-        assert!(
-            receiver
-                .wait(tun.as_raw_fd(), Some(Duration::ZERO))
-                .unwrap()
-        );
+        assert!(receiver.wait(&tun, Some(Duration::from_secs(1))).unwrap());
         receiver.drain().unwrap();
         drop(connection);
-        assert!(
-            receiver
-                .wait(tun.as_raw_fd(), Some(Duration::ZERO))
-                .unwrap()
-        );
+        assert!(receiver.wait(&tun, Some(Duration::from_secs(1))).unwrap());
     }
 
     #[test]

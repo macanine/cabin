@@ -249,7 +249,7 @@ pub fn build_udp_packet(
     Ok(packet)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -337,11 +337,11 @@ mod tests {
 
     #[test]
     fn only_successful_response_enqueues_notify_the_stack() {
-        use std::os::{fd::AsRawFd, unix::net::UnixStream};
+        use super::super::wake::loopback_udp_pair;
         use std::time::Duration;
         use tokio::sync::mpsc;
 
-        let (_peer, tun) = UnixStream::pair().unwrap();
+        let (_peer, tun) = loopback_udp_pair(None).unwrap();
         let (wake, mut receiver) = Wake::new().unwrap();
         let (_, input) = mpsc::channel(1);
         let (output, queued) = mpsc::channel(1);
@@ -354,17 +354,13 @@ mod tests {
             )
         };
         writer.send_sync(message()).unwrap();
-        assert!(
-            receiver
-                .wait(tun.as_raw_fd(), Some(Duration::ZERO))
-                .unwrap()
-        );
+        assert!(receiver.wait(&tun, Some(Duration::from_secs(1))).unwrap());
         receiver.drain().unwrap();
         writer.send_sync(message()).unwrap();
         assert_eq!(queued.len(), 1);
         assert!(
             !receiver
-                .wait(tun.as_raw_fd(), Some(Duration::ZERO))
+                .wait(&tun, Some(Duration::ZERO))
                 .unwrap()
         );
         drop(queued);
@@ -374,7 +370,7 @@ mod tests {
         );
         assert!(
             !receiver
-                .wait(tun.as_raw_fd(), Some(Duration::ZERO))
+                .wait(&tun, Some(Duration::ZERO))
                 .unwrap()
         );
     }
