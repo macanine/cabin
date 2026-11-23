@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::{RecursiveMode, Watcher};
 
-use super::{GitHandling, IGNORE_FILE, SyncRules};
+use super::{GitHandling, IGNORE_FILE, SyncRules, ignored_patterns};
 
 /// Quiet time that ends a burst.
 const SETTLE: Duration = Duration::from_millis(200);
@@ -31,14 +31,18 @@ fn noise_filter(root: &Path, rules: &SyncRules) -> Gitignore {
         let _ = builder.add(root.join(".gitignore"));
     }
     let _ = builder.add(root.join(IGNORE_FILE));
-    for line in [".DS_Store", "._*", "*.vasync-tmp"].into_iter().map(str::to_string).chain(rules.ignore.iter().cloned()) {
-        let _ = builder.add_line(None, &line);
+    for line in &rules.ignore {
+        let _ = builder.add_line(None, line);
     }
     for path in &rules.excluded {
         let _ = builder.add_line(None, &format!("/{}", path.trim_matches('/')));
     }
     if rules.git != GitHandling::Sync {
         let _ = builder.add_line(None, "/.git");
+    }
+    // Internal paths stay ignored even when the project's rules unignore them.
+    for pattern in ignored_patterns() {
+        let _ = builder.add_line(None, &pattern);
     }
     builder.build().unwrap_or_else(|_| Gitignore::empty())
 }
@@ -47,7 +51,7 @@ fn noise_filter(root: &Path, rules: &SyncRules) -> Gitignore {
 fn scope_of(root: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(root).ok()?;
     let parent = rel.parent().unwrap_or(Path::new(""));
-    Some(parent.to_string_lossy().into_owned())
+    super::scan::wire_path(parent)
 }
 
 /// Collapse `a`, `a/b` into `a`; too many folders become one full scan.
@@ -75,10 +79,16 @@ pub fn watch(root: &Path, rules: &SyncRules) -> notify::Result<Batches> {
     let root: PathBuf = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let filter = noise_filter(&root, rules);
     let (events_tx, events) = mpsc::channel::<PathBuf>();
+    let watch_root = root.clone();
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+        use notify::event::{AccessKind, AccessMode, EventKind};
         if let Ok(event) = result {
-            for path in event.paths {
-                let _ = events_tx.send(path);
+            if event.need_rescan() {
+                let _ = events_tx.send(watch_root.clone());
+            } else if !matches!(event.kind, EventKind::Access(AccessKind::Read | AccessKind::Open(AccessMode::Read) | AccessKind::Close(AccessMode::Read))) {
+                for path in event.paths {
+                    let _ = events_tx.send(path);
+                }
             }
         }
     })?;
@@ -89,6 +99,10 @@ pub fn watch(root: &Path, rules: &SyncRules) -> notify::Result<Batches> {
             let Ok(first) = events.recv() else { return };
             let mut dirs = BTreeSet::new();
             let mut add = |path: PathBuf| {
+                if path == root {
+                    dirs.insert(String::new());
+                    return;
+                }
                 let ignored = path
                     .strip_prefix(&root)
                     .map(|rel| filter.matched_path_or_any_parents(rel, path.is_dir()).is_ignore())
@@ -157,6 +171,26 @@ mod tests {
         assert!(!filter.matched_path_or_any_parents("src/main.rs", false).is_ignore());
         assert_eq!(scope_of(dir.path(), &dir.path().join("a.txt")).as_deref(), Some(""));
         assert_eq!(scope_of(dir.path(), &dir.path().join("src/a.rs")).as_deref(), Some("src"));
+        assert_eq!(scope_of(dir.path(), &dir.path().join("src").join("deep").join("a.rs")).as_deref(), Some("src/deep"));
+    }
+
+    #[test]
+    fn internal_temp_files_are_ignored_by_the_watcher_and_scanner() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let probe = format!("{}abc.tmp", super::super::ACCESS_PROBE_PREFIX);
+        let stage = format!("src/{}abc.tmp", super::super::STAGED_FILE_PREFIX);
+        for name in [&*probe, &*stage, "src/draft.tmp"] {
+            std::fs::write(root.join(name), b"test").unwrap();
+        }
+        let rules = SyncRules::default();
+        let filter = noise_filter(root, &rules);
+        assert!(filter.matched_path_or_any_parents(&probe, false).is_ignore());
+        assert!(filter.matched_path_or_any_parents(&stage, false).is_ignore());
+        assert!(!filter.matched_path_or_any_parents("src/draft.tmp", false).is_ignore());
+        let paths: Vec<_> = super::super::scan(root, &rules, None).unwrap().into_iter().map(|entry| entry.path).collect();
+        assert_eq!(paths, ["src", "src/draft.tmp"]);
     }
 
     #[test]

@@ -9,10 +9,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use ts_rs::TS;
 
-use super::{IGNORE_FILE, SyncRules};
-
-/// Never synced: Finder litter and the sync's own temporary files.
-const ALWAYS_IGNORED: [&str; 3] = [".DS_Store", "._*", "*.vasync-tmp"];
+use super::{IGNORE_FILE, SyncRules, ignored_patterns};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
@@ -58,7 +55,7 @@ pub fn in_scope(path: &str, scope: Option<&[String]>) -> bool {
 pub fn scan(root: &Path, rules: &SyncRules, scope: Option<&[String]>) -> std::io::Result<Vec<Entry>> {
     let mut overrides = OverrideBuilder::new(root);
     let mut add = |glob: String| overrides.add(&glob).map(|_| ()).map_err(std::io::Error::other);
-    for pattern in ALWAYS_IGNORED {
+    for pattern in ignored_patterns() {
         add(format!("!{pattern}"))?;
     }
     for pattern in rules.ignore.iter().map(|p| p.trim()).filter(|p| !p.is_empty() && !p.starts_with('#')) {
@@ -171,15 +168,18 @@ fn entry_from(path: String, kind: EntryKind, meta: &std::fs::Metadata, full: &Pa
     }
 }
 
-fn relative(root: &Path, path: &Path) -> Option<String> {
-    let rel = path.strip_prefix(root).ok()?;
-    let text = rel.to_str()?;
-    // Entry paths are `/`-separated on the wire, whatever the host uses.
-    let text = if std::path::MAIN_SEPARATOR == '/' {
+pub(super) fn wire_path(path: &Path) -> Option<String> {
+    let text = path.to_str()?;
+    // Entries and watcher scopes share `/` separators on the wire.
+    Some(if std::path::MAIN_SEPARATOR == '/' {
         text.to_owned()
     } else {
         text.replace(std::path::MAIN_SEPARATOR, "/")
-    };
+    })
+}
+
+fn relative(root: &Path, path: &Path) -> Option<String> {
+    let text = wire_path(path.strip_prefix(root).ok()?)?;
     (!text.is_empty()).then_some(text)
 }
 

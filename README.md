@@ -32,7 +32,11 @@ shows progress and logs with cancel and retry controls.
   directions, or **Mirror** to make the guest copy match the Mac. Review conflicts per file.
   Sync respects `.gitignore`, `.cabinignore`, and excluded paths. Safe and Two-way
   copy `.git` once by default. **Settings → Mac permissions** shows folder access and lets
-  you request it. Two-way uses read and write access on the Mac.
+  you request it. Two-way uses read and write access on the host. On Windows it stops
+  before syncing when names collide under Windows path rules, including directory names
+  that differ only by case. Rename the conflicting file or folder to a distinct name,
+  or exclude it from sync. Windows Two-way still checks the full included tree before
+  applying changes; Cabin's temporary files do not trigger sync.
 - **Tasks.** Choose a workspace and agent in **New Task**, then enter a prompt. The sidebar
   groups tasks by project, session, recency, or unread state. For a Git workspace,
   **Worktree** starts from the selected committed ref in a detached checkout inside the VM.

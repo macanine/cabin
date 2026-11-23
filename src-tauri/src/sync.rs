@@ -31,12 +31,19 @@ use agent_core::util::now_millis;
 
 use crate::host_permissions::check_folder;
 
+#[cfg(any(windows, test))]
+mod windows_paths;
+
 type Base = BTreeMap<String, BaseRecord>;
 type Sink = Arc<dyn Fn(AppEvent) + Send + Sync>;
 
 /// A full cycle at least this often, whatever the watchers say.
 const FULL_EVERY: Duration = Duration::from_secs(600);
 const RETRY_EVERY: Duration = Duration::from_secs(30);
+
+fn project_requires_full_scan(project: &SyncProject) -> bool {
+    cfg!(windows) && project.mode == SyncMode::TwoWay
+}
 
 enum Kick {
     Scope(Vec<String>),
@@ -349,6 +356,16 @@ impl SyncManager {
             let _guard = lock.locked();
             check_folder(&host, !keep_mac).require(&host).map_err(err)?;
             let scope = vec![parent_of(path)];
+            #[cfg(windows)]
+            {
+                let ours = scan::scan(&host, &project.rules, None).map_err(err)?;
+                let theirs = remote_scan(&guest, &project.guest_path, &project.rules, None)?;
+                windows_paths::check_names(ours.iter().chain(&theirs).map(|entry| entry.path.as_str()).chain([path]))?;
+                let local = ours.iter().any(|entry| entry.path == path);
+                if !local {
+                    windows_paths::require_local_absence(&host, path)?;
+                }
+            }
             if keep_mac {
                 let (push, delete) = match scan::stat(&host, path).map_err(err)? {
                     Some(_) => (vec![path.to_string()], vec![]),
@@ -530,16 +547,16 @@ impl SyncManager {
                     (_, _) => scope = None,
                 }
             }
-            if scope.is_none() {
+            let scope = scope.map(|dirs| agent_core::sync::watch::collapse(dirs.into_iter().collect()))
+                .filter(|dirs| dirs != &[String::new()]);
+            let Ok(project) = self.project(id) else { break };
+            if failed || project_requires_full_scan(&project) || scope.is_none() {
                 last_full = Instant::now();
             }
-            let scope = scope.map(|dirs| agent_core::sync::watch::collapse(dirs.into_iter().collect()));
-            let Ok(project) = self.project(id) else { break };
             let result = if failed {
-                last_full = Instant::now();
                 self.first_cycle(&project)
             } else {
-                self.cycle(&project, scope.filter(|dirs| dirs != &[String::new()]))
+                self.cycle(&project, scope)
             };
             failed = result.is_err();
             if let Err(error) = result {
@@ -593,6 +610,9 @@ impl SyncManager {
         let guest = self.guest().ok_or("The machine is not connected")?;
         let host = PathBuf::from(&project.host_path);
         check_folder(&host, project.mode == SyncMode::TwoWay).require(&host).map_err(err)?;
+        // A scoped scan can miss an alias that differs in a parent directory's
+        // spelling. Windows Two-way needs both full namespaces before writing.
+        let scope = if project_requires_full_scan(project) { None } else { scope };
         let scope_ref = scope.as_deref();
         macro_rules! mark {
             ($label:expr, $started:expr) => {
@@ -667,8 +687,8 @@ impl SyncManager {
                 .partition(|(path, _)| scan::in_scope(path, scope_ref));
             (to_map(mac_entries), to_map(vm_entries), base_in, base_out, files)
         };
-        // Both sides still match the recorded base exactly: there is no plan
-        // to build and no base to rewrite. This is the common steady state.
+        // Nothing can be applied if both snapshots still match the base.
+        // Skip both planning and Windows alias sorting on this read-only path.
         if self.base_path(&project.id).exists() && plan::base_is_current(&base_in, &mac, &vm) {
             self.set_status(&project.id, |s| {
                 s.state = SyncState::Watching;
@@ -676,6 +696,13 @@ impl SyncManager {
                 s.files = files;
             });
             return Ok(());
+        }
+        #[cfg(windows)]
+        if project.mode == SyncMode::TwoWay {
+            // Baseline-only paths absent on both sides cannot produce actions.
+            // Checking the live namespace lets users fix an old collision by
+            // renaming the offending file without throwing away sync history.
+            windows_paths::check_names(mac.keys().chain(vm.keys()).map(String::as_str))?;
         }
         let started = Instant::now();
         let actions = plan::reconcile(project.mode, &base_in, &mac, &vm);
@@ -693,6 +720,14 @@ impl SyncManager {
                 Action::Pull(p) => pull.push(p.clone()),
                 Action::DeleteMac(p) => delete_mac.push(p.clone()),
                 Action::Conflict(p) => conflicts.push(p.clone()),
+            }
+        }
+        #[cfg(windows)]
+        if project.mode == SyncMode::TwoWay {
+            // A scan may omit an ignored spelling or a Windows alias. Do not
+            // infer a deletion or allow a new pull to overwrite such a file.
+            for path in delete_vm.iter().chain(pull.iter().filter(|path| !mac.contains_key(*path))) {
+                windows_paths::require_local_absence(&host, path)?;
             }
         }
         if !push.is_empty() || !delete_vm.is_empty() {

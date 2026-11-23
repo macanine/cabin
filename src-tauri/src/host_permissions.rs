@@ -136,7 +136,11 @@ mod probe {
     }
 
     pub fn write(path: &Path) -> io::Result<()> {
-        tempfile::tempfile_in(path).map(|_| ())
+        tempfile::Builder::new()
+            .prefix(agent_core::sync::ACCESS_PROBE_PREFIX)
+            .suffix(".tmp")
+            .tempfile_in(path)?
+            .close()
     }
 }
 
@@ -277,6 +281,20 @@ mod tests {
             check_folder(&existing, false).state,
             FolderAccessState::Unavailable
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_write_probe_does_not_schedule_a_sync() {
+        use agent_core::sync::{SyncRules, watch};
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let watched = watch::watch(dir.path(), &SyncRules::default()).unwrap();
+        assert_eq!(check_folder(dir.path(), true).state, FolderAccessState::Available);
+        assert_eq!(watched.batches.recv_timeout(Duration::from_millis(750)), Err(std::sync::mpsc::RecvTimeoutError::Timeout));
+        std::fs::write(dir.path().join("real-change.tmp"), b"user edit").unwrap();
+        assert_eq!(watched.batches.recv_timeout(Duration::from_secs(5)).unwrap(), [""]);
     }
 
     #[test]

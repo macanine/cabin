@@ -27,6 +27,19 @@ pub use scan::{Entry, EntryKind, scan};
 /// Name of the per-project ignore file (gitignore syntax), on either side.
 pub const IGNORE_FILE: &str = ".cabinignore";
 
+/// Prefix for Cabin's write-access probes inside a project folder.
+pub const ACCESS_PROBE_PREFIX: &str = ".cabin-sync-probe-";
+const STAGED_FILE_PREFIX: &str = ".vasync-";
+const ALWAYS_IGNORED: &[&str] = &[".DS_Store", "._*", "*.vasync-tmp"];
+
+/// Keep the watcher and the scanner in agreement about internal files.
+fn ignored_patterns() -> impl Iterator<Item = String> {
+    ALWAYS_IGNORED.iter().map(|pattern| (*pattern).to_owned()).chain([
+        format!("{ACCESS_PROBE_PREFIX}*.tmp"),
+        format!("{STAGED_FILE_PREFIX}*.tmp"),
+    ])
+}
+
 /// What flows where.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[cfg_attr(test, derive(TS))]

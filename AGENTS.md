@@ -167,11 +167,15 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   the guest. `SyncManager` drives both sides and stores projects and binary bases under
   `<home>/sync`. Reuse the SSH transport for short commands. Two-way scans both sides in
   parallel. Safe skips the guest scan when the Mac matches the base. Ignore rules include
-  `.gitignore`, `.cabinignore`, configured patterns, and unticked paths.
+  `.gitignore`, `.cabinignore`, configured patterns, and unticked paths. The scanner and
+  watcher share rules for Cabin's temporary files. Watcher scopes use `/` on every host,
+  and explicit watcher rescan signals request a full cycle.
 - Keep both versions of a conflict until `sync_resolve` selects one. Publish regular
   files atomically after checking the staged payload length and preserve ignored paths.
   Reject writes through symlinked directories and
-  abort unreadable scans before planning. Mirror syncs `.git` with the project. Other modes
+  abort unreadable scans before planning. Windows Two-way scans both complete trees before
+  planning, stops on path aliases, and checks on disk before treating a missing local entry
+  as a deletion or a new pull destination. Mirror syncs `.git` with the project. Other modes
   default to `copyOnce` so each side can commit independently. Mac permissions inspect
   selected folder access at launch and on foreground return. Two-way needs write access. An
   explicit access request can trigger a protected read and the macOS prompt.

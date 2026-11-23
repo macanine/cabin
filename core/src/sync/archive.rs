@@ -197,7 +197,7 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
             // Exclusive creation prevents a pre-existing file or symlink from
             // being truncated, and a random name lets concurrent applies coexist.
             let (tmp, mut file) = loop {
-                let tmp = full.with_file_name(format!(".vasync-{}.tmp", uuid::Uuid::new_v4()));
+                let tmp = full.with_file_name(format!("{}{}.tmp", super::STAGED_FILE_PREFIX, uuid::Uuid::new_v4()));
                 let mut options = fs::OpenOptions::new();
                 options.write(true).create_new(true);
                 #[cfg(unix)]

@@ -94,15 +94,11 @@ pub fn base_is_current(
     mac: &BTreeMap<String, Entry>,
     vm: &BTreeMap<String, Entry>,
 ) -> bool {
-    base.keys()
-        .chain(mac.keys())
-        .chain(vm.keys())
-        .all(|path| match (base.get(path), mac.get(path), vm.get(path)) {
-            (Some(record), Some(mac), Some(vm)) => {
-                same(mac, vm) && record.mac.matches(mac) && record.vm.matches(vm)
-            }
-            (None, None, None) => true,
-            _ => false,
+    base.len() == mac.len()
+        && base.len() == vm.len()
+        && base.iter().zip(mac).zip(vm).all(|(((path, record), (mac_path, mac)), (vm_path, vm))| {
+            path == mac_path && path == vm_path
+                && same(mac, vm) && record.mac.matches(mac) && record.vm.matches(vm)
         })
 }
 
@@ -270,6 +266,8 @@ mod tests {
         assert!(base_is_current(&base, &mac, &vm));
         assert!(!base_is_current(&BTreeMap::new(), &mac, &vm));
         assert!(!base_is_current(&base, &map(&[file("a", 2, 10)]), &vm));
+        assert!(!base_is_current(&base, &map(&[file("b", 1, 10)]), &vm));
+        assert!(!base_is_current(&base, &mac, &map(&[file("A", 1, 10)])));
     }
 
     #[test]
