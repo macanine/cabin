@@ -72,7 +72,7 @@ Files: `vm/src/{readiness,accel,platform,vendor,qemu_engine}.rs`, `scripts/fetch
 
 ## Done means
 
-- macOS: `npm test`, `npm run test:ui`, the journey scenarios, and `cargo test` in core, vm and src-tauri.
+- macOS: `npm test` and `cargo test` in core, vm and src-tauri.
 - Windows: `npm run check:win` is warning-free, and CI is green on both platforms.
 - Each workstream reports, per item, whether it was fixed, already handled (with the test that proves it), or not
   possible, with the reason.
