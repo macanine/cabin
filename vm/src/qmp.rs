@@ -1,28 +1,31 @@
-//! Minimal QMP and QEMU guest-agent clients.
+//! Minimal QMP and QEMU guest-agent clients over AF_UNIX sockets.
 
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use crate::Result;
-use crate::sockets::{DuplexStream, Endpoint};
+use crate::sockets::UnixStream;
 use crate::util::message;
 
 pub struct QmpClient {
-    stream: DuplexStream,
-    reader: BufReader<DuplexStream>,
+    stream: UnixStream,
+    reader: BufReader<UnixStream>,
     next_id: u64,
 }
 
 impl QmpClient {
-    pub fn connect(endpoint: &Endpoint, timeout: Duration) -> Result<Self> {
-        let stream = endpoint
-            .connect(timeout)
-            .map_err(|error| crate::Error::Message(format!(
+    pub fn connect(path: &Path, timeout: Duration) -> Result<Self> {
+        let stream = UnixStream::connect(path).map_err(|error| {
+            crate::Error::Message(format!(
                 "cannot connect to QMP socket {}: {error}",
-                endpoint.describe()
-            )))?;
+                path.display()
+            ))
+        })?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
         let reader = BufReader::new(stream.try_clone()?);
         let mut client = Self {
             stream,
@@ -31,10 +34,7 @@ impl QmpClient {
         };
         let greeting = client.read_message()?;
         if greeting.get("QMP").is_none() {
-            return message(format!(
-                "unexpected QMP greeting from {}",
-                endpoint.describe()
-            ));
+            return message(format!("unexpected QMP greeting from {}", path.display()));
         }
         client.execute("qmp_capabilities", None)?;
         Ok(client)
@@ -87,23 +87,25 @@ impl QmpClient {
 
 impl Drop for QmpClient {
     fn drop(&mut self) {
-        let _ = self.stream.shutdown_both();
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
     }
 }
 
 pub struct QgaClient {
-    stream: DuplexStream,
-    reader: BufReader<DuplexStream>,
+    stream: UnixStream,
+    reader: BufReader<UnixStream>,
 }
 
 impl QgaClient {
-    pub fn connect(endpoint: &Endpoint, timeout: Duration) -> Result<Self> {
-        let stream = endpoint
-            .connect(timeout)
-            .map_err(|error| crate::Error::Message(format!(
+    pub fn connect(path: &Path, timeout: Duration) -> Result<Self> {
+        let stream = UnixStream::connect(path).map_err(|error| {
+            crate::Error::Message(format!(
                 "cannot connect to guest-agent socket {}: {error}",
-                endpoint.describe()
-            )))?;
+                path.display()
+            ))
+        })?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
         let reader = BufReader::new(stream.try_clone()?);
         Ok(Self { stream, reader })
     }
@@ -136,11 +138,11 @@ impl QgaClient {
 
 impl Drop for QgaClient {
     fn drop(&mut self) {
-        let _ = self.stream.shutdown_both();
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
     }
 }
 
-pub fn qmp_query_status(endpoint: &Endpoint, timeout: Duration) -> Option<Value> {
-    let mut client = QmpClient::connect(endpoint, timeout).ok()?;
+pub fn qmp_query_status(path: &Path, timeout: Duration) -> Option<Value> {
+    let mut client = QmpClient::connect(path, timeout).ok()?;
     client.execute("query-status", None).ok()
 }

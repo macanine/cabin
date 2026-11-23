@@ -62,6 +62,7 @@ pub mod sockets;
 pub mod startup;
 pub mod storage;
 pub mod steps;
+pub mod transport;
 pub mod util;
 pub mod vendor;
 pub mod vm;

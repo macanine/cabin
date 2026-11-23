@@ -20,18 +20,16 @@ use crate::network_probe_targets::{ALTERNATE_PROBE_V4, PUBLIC_PROBE_V4};
 use crate::util::LockExt;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, TcpListener};
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use shoes::embed::{HttpRelay, RelayGate, RelayTicket};
 
-use crate::compat::{POLLIN, PollItem, WakeSocket, poll, poll_in};
-use crate::sockets::{DuplexStream, Endpoint};
+use crate::sockets::{UnixListener, UnixStream};
+use crate::transport::{Readiness, packet_pair};
 use crate::{Error, Result};
 
 pub const GATEWAY_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 3, 1);
@@ -541,9 +539,6 @@ impl Upstream {
     }
 }
 
-/// Interface-bound DNS bootstrap. Unix-only: shoes' interface binding has no
-/// Windows counterpart, so adapter-scoped routes are rejected up front there.
-#[cfg(unix)]
 fn bound_dns(upstream: &Upstream) -> Result<Option<shoes::embed::BoundDns>> {
     upstream.interface().map(|name| {
         let servers = [([223, 5, 5, 5], 53), ([119, 29, 29, 29], 53), ([1, 1, 1, 1], 53)]
@@ -552,22 +547,10 @@ fn bound_dns(upstream: &Upstream) -> Result<Option<shoes::embed::BoundDns>> {
     }).transpose()
 }
 
-#[cfg(not(unix))]
-fn bound_dns(_upstream: &Upstream) -> Result<Option<shoes::embed::BoundDns>> {
-    Ok(None)
-}
-
 /// The shoes `client_chain` for `upstream`: direct, one hop, or a sequence.
 fn client_chain(upstream: &Upstream) -> Result<serde_yaml::Value> {
-    #[cfg(unix)]
     if let Some(name) = upstream.interface() {
         crate::network_interfaces::require_available(name)?;
-    }
-    #[cfg(not(unix))]
-    if upstream.interface().is_some() {
-        return Err(Error::Message(
-            "Selecting a network adapter is not supported on Windows".into(),
-        ));
     }
     client_chain_value(upstream)
 }
@@ -606,46 +589,13 @@ fn client_chain_value(upstream: &Upstream) -> Result<serde_yaml::Value> {
     if clean.len() == 1 { Ok(clean.remove(0)) } else { Ok(Value::Sequence(clean)) }
 }
 
-/// The shoes TUN config for `upstream` on packet descriptor `fd` (Unix).
-#[cfg(unix)]
-pub fn shoes_config(fd: i32, upstream: &Upstream) -> Result<String> {
-    shoes_config_blocking(fd, upstream, &BLOCKED)
-}
-
-/// The shoes TUN config for `upstream` on Windows: the packet device is
-/// passed separately, so the config carries no `device_fd`.
-#[cfg(not(unix))]
+/// The shoes TUN config for `upstream`. The packet device is a socket passed
+/// to the stack, so `device_fd` is only the schema tag that marks a TUN config.
 pub fn shoes_config(upstream: &Upstream) -> Result<String> {
     shoes_config_blocking(upstream, &BLOCKED)
 }
 
-#[cfg(unix)]
-fn shoes_config_blocking(fd: i32, upstream: &Upstream, blocked_masks: &[&str]) -> Result<String> {
-    let mut tun = shoes_tun_mapping(upstream, blocked_masks)?;
-    tun.insert(
-        serde_yaml::Value::String("device_fd".into()),
-        serde_yaml::Value::Number(fd.into()),
-    );
-    finish_tun_config(tun)
-}
-
-#[cfg(not(unix))]
 fn shoes_config_blocking(upstream: &Upstream, blocked_masks: &[&str]) -> Result<String> {
-    let mut tun = shoes_tun_mapping(upstream, blocked_masks)?;
-    // The config schema tags TUN configs by the device_fd field; the packet
-    // device itself is handed to the stack as a socket, so the value is a
-    // placeholder.
-    tun.insert(
-        serde_yaml::Value::String("device_fd".into()),
-        serde_yaml::Value::Number(serde_yaml::Number::from(0)),
-    );
-    finish_tun_config(tun)
-}
-
-fn shoes_tun_mapping(
-    upstream: &Upstream,
-    blocked_masks: &[&str],
-) -> Result<serde_yaml::Mapping> {
     use serde_yaml::{Mapping, Value};
     let string = |s: &str| Value::String(s.to_string());
     let mut block = Mapping::new();
@@ -665,20 +615,15 @@ fn shoes_tun_mapping(
     }
     rules.push(Value::Mapping(allow));
     let mut tun = Mapping::new();
+    tun.insert(string("device_fd"), Value::Number(0.into()));
     tun.insert(string("packet_information"), Value::Bool(false));
     tun.insert(string("mtu"), Value::Number((MTU as u64).into()));
     tun.insert(string("tcp_enabled"), Value::Bool(true));
     tun.insert(string("udp_enabled"), Value::Bool(true));
     tun.insert(string("icmp_enabled"), Value::Bool(false));
     tun.insert(string("rules"), Value::Sequence(rules));
-    Ok(tun)
-}
-
-fn finish_tun_config(tun: serde_yaml::Mapping) -> Result<String> {
-    serde_yaml::to_string(&serde_yaml::Value::Sequence(vec![
-        serde_yaml::Value::Mapping(tun),
-    ]))
-    .map_err(|error| Error::Message(error.to_string()))
+    serde_yaml::to_string(&Value::Sequence(vec![Value::Mapping(tun)]))
+        .map_err(|error| Error::Message(error.to_string()))
 }
 
 // ---------------------------------------------------------------- runtime
@@ -849,34 +794,8 @@ struct Stack {
 }
 
 impl Stack {
-    #[cfg(unix)]
-    fn start(fd: i32, upstream: &Upstream, error: Arc<Mutex<Option<String>>>) -> Result<Self> {
-        Self::start_with(shoes_config(fd, upstream)?, upstream, error, None)
-    }
-
-    /// Windows: the packet device is the stack's half of the loopback pair.
-    #[cfg(not(unix))]
-    fn start(device: WakeSocket, upstream: &Upstream, error: Arc<Mutex<Option<String>>>) -> Result<Self> {
-        Self::start_with(shoes_config(upstream)?, upstream, error, Some(device))
-    }
-
-    fn start_with(
-        config: String,
-        upstream: &Upstream,
-        error: Arc<Mutex<Option<String>>>,
-        #[cfg(not(unix))] device: Option<WakeSocket>,
-        #[cfg(unix)] _device: Option<WakeSocket>,
-    ) -> Result<Self> {
-        let stack = Self::with_config_dns(config, error.clone(), bound_dns(upstream)?, {
-            #[cfg(not(unix))]
-            {
-                device
-            }
-            #[cfg(unix)]
-            {
-                None
-            }
-        })?;
+    fn start(device: UdpSocket, upstream: &Upstream, error: Arc<Mutex<Option<String>>>) -> Result<Self> {
+        let stack = Self::with_config_dns(shoes_config(upstream)?, error.clone(), bound_dns(upstream)?, device)?;
         // Configuration and socket errors are reported by the stack thread.
         // Surface immediate failures before considering a switch successful.
         std::thread::sleep(Duration::from_millis(200));
@@ -888,17 +807,16 @@ impl Stack {
         Ok(stack)
     }
 
-    #[cfg(all(unix, test))]
-    fn with_config(config: String, error: Arc<Mutex<Option<String>>>) -> Result<Self> {
-        Self::with_config_dns(config, error, None, None)
+    #[cfg(test)]
+    fn with_config(config: String, error: Arc<Mutex<Option<String>>>, device: UdpSocket) -> Result<Self> {
+        Self::with_config_dns(config, error, None, device)
     }
 
     fn with_config_dns(
         config: String,
         error: Arc<Mutex<Option<String>>>,
         dns: Option<shoes::embed::BoundDns>,
-        #[cfg(not(unix))] device: Option<WakeSocket>,
-        #[cfg(unix)] _device: Option<WakeSocket>,
+        device: UdpSocket,
     ) -> Result<Self> {
         let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
         let gate = RelayGate::default();
@@ -913,20 +831,10 @@ impl Stack {
                     .map_err(|e| e.to_string())
                     .and_then(|runtime| {
                         runtime.block_on(async {
-                            #[cfg(unix)]
-                            {
-                                if let Some(dns) = dns {
-                                    shoes::embed::run_tun_controlled_with_bound_dns(&config, shutdown_rx, stack_gate, dns).await
-                                } else {
-                                    shoes::embed::run_tun_controlled(&config, shutdown_rx, stack_gate).await
-                                }
-                            }
-                            #[cfg(not(unix))]
-                            {
-                                let device = device.ok_or_else(|| {
-                                    std::io::Error::other("the packet device is missing")
-                                })?;
-                                shoes::embed::run_tun_controlled_with_device(&config, shutdown_rx, stack_gate, device).await
+                            if let Some(dns) = dns {
+                                shoes::embed::run_tun_controlled_with_bound_dns(&config, shutdown_rx, stack_gate, dns, device).await
+                            } else {
+                                shoes::embed::run_tun_controlled(&config, shutdown_rx, stack_gate, device).await
                             }
                         }).map_err(|e| e.to_string())
                     });
@@ -961,19 +869,20 @@ pub struct GatewayTraffic {
 }
 
 struct PacketPath {
-    host: WakeSocket,
-    stack: WakeSocket,
+    host: UdpSocket,
+    stack: UdpSocket,
 }
 
 impl PacketPath {
     fn new() -> Result<Self> {
-        let (host, stack) = crate::compat::packet_pair()?;
+        let (host, stack) = packet_pair()?;
         Ok(Self { host, stack })
     }
 
     fn clear(&self) {
+        let mut scratch = [0u8; 2048];
         for socket in [&self.host, &self.stack] {
-            while socket.recv(&mut [0]).is_ok() {}
+            while socket.recv(&mut scratch).is_ok() {}
         }
     }
 }
@@ -1060,7 +969,7 @@ fn hold_packet(packet: &[u8]) -> bool {
 
 struct Shared {
     dns: Vec<Ipv4Addr>,
-    guest: Mutex<Option<DuplexStream>>,
+    guest: Mutex<Option<UnixStream>>,
     egress: Mutex<GuestEgress>,
     held_ready: Condvar,
     stop: AtomicBool,
@@ -1079,7 +988,7 @@ struct GatewayStacks {
 
 /// The gateway: listens on `socket` for QEMU and runs the proxy stack.
 pub struct Gateway {
-    socket: Endpoint,
+    socket: PathBuf,
     shared: Arc<Shared>,
     /// The Mac's SSH port, relayed to the guest.
     forward: Option<Arc<crate::net_forward::SshForward>>,
@@ -1097,7 +1006,7 @@ impl Shared {
             true
         } else {
             // A partial frame would make later writes unreadable.
-            let _ = stream.shutdown_both();
+            let _ = stream.shutdown(std::net::Shutdown::Both);
             false
         }
     }
@@ -1171,20 +1080,18 @@ impl Shared {
     }
 
     fn run_down(&self) {
-        let mut ready: Vec<PollItem> = self
-            .paths
-            .each_ref()
-            .map(|path| poll_in(&path.host))
-            .into_iter()
-            .collect();
+        let Ok(mut ready) = Readiness::new() else { return };
+        for lane in [Lane::Ordinary, Lane::Verification] {
+            if ready.watch(lane as usize, &self.paths[lane as usize].host, true, false).is_err() {
+                return;
+            }
+        }
         let mut packet = vec![0u8; 65_536];
         while !self.stop.load(Ordering::Relaxed) {
-            let count = poll(&mut ready, 500).unwrap_or(0);
-            if count > 0 {
-                for lane in [Lane::Ordinary, Lane::Verification] {
-                    if ready[lane as usize].revents & POLLIN != 0 {
-                        self.receive_ip(lane, &mut packet);
-                    }
+            let Ok(events) = ready.wait(Some(Duration::from_millis(500))) else { continue };
+            for lane in [Lane::Ordinary, Lane::Verification] {
+                if events.iter().any(|event| event.key == lane as usize && event.readable) {
+                    self.receive_ip(lane, &mut packet);
                 }
             }
         }
@@ -1198,7 +1105,7 @@ impl Shared {
                 if let Some(packet) = egress.held_packets.front() {
                     let retry = self.send_ordinary_ip(packet).is_err_and(|error| {
                         matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted)
-                            || cfg!(unix) && error.raw_os_error() == Some(libc::ENOBUFS)
+                            || error.raw_os_error() == Some(libc::ENOBUFS)
                     });
                     if !retry {
                         egress.held_packets.pop_front();
@@ -1325,12 +1232,6 @@ impl GatewayStacks {
             let slot = &mut self.active[lane as usize];
             if slot.is_none() {
                 *shared.error.locked() = None;
-                #[cfg(unix)]
-                let started = {
-                    let fd = shared.paths[lane as usize].stack.as_raw_fd();
-                    Stack::start(fd, upstream, shared.error.clone())
-                };
-                #[cfg(not(unix))]
                 let started = Stack::start(
                     shared.paths[lane as usize].stack.try_clone()?,
                     upstream,
@@ -1353,28 +1254,7 @@ impl GatewayStacks {
     }
 }
 
-#[cfg(all(unix, test))]
-fn datagram_pair() -> Result<(std::os::unix::net::UnixDatagram, std::os::unix::net::UnixDatagram)> {
-    let (ours, theirs) = std::os::unix::net::UnixDatagram::pair()?;
-    for socket in [&ours, &theirs] {
-        // macOS defaults to tiny Unix datagram buffers.
-        let size: libc::c_int = 4 * 1024 * 1024;
-        for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
-            unsafe {
-                libc::setsockopt(
-                    socket.as_raw_fd(),
-                    libc::SOL_SOCKET,
-                    option,
-                    (&size as *const libc::c_int).cast(),
-                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                );
-            }
-        }
-    }
-    Ok((ours, theirs))
-}
-
-fn read_frame(stream: &mut DuplexStream, buffer: &mut Vec<u8>) -> std::io::Result<()> {
+fn read_frame(stream: &mut UnixStream, buffer: &mut Vec<u8>) -> std::io::Result<()> {
     let mut length = [0u8; 4];
     stream.read_exact(&mut length)?;
     let length = u32::from_be_bytes(length) as usize;
@@ -1385,7 +1265,7 @@ fn read_frame(stream: &mut DuplexStream, buffer: &mut Vec<u8>) -> std::io::Resul
     stream.read_exact(buffer)
 }
 
-fn write_frame(stream: &mut DuplexStream, frame: &[u8]) -> std::io::Result<()> {
+fn write_frame(stream: &mut UnixStream, frame: &[u8]) -> std::io::Result<()> {
     let mut message = Vec::with_capacity(4 + frame.len());
     message.extend_from_slice(&(frame.len() as u32).to_be_bytes());
     message.extend_from_slice(frame);
@@ -1397,7 +1277,7 @@ impl Gateway {
     /// `upstream`. Packets are answered by the stack only while it runs.
     /// `ssh` is the Mac-side address relayed to the guest's port 22.
     pub fn start(
-        socket: &Endpoint,
+        socket: &Path,
         dns: Vec<Ipv4Addr>,
         upstream: &Upstream,
         ssh: std::net::SocketAddr,
@@ -1408,7 +1288,7 @@ impl Gateway {
     /// Start with the internet path closed. With no upstream, only local
     /// management traffic is possible until a route is installed.
     pub fn start_closed(
-        socket: &Endpoint,
+        socket: &Path,
         dns: Vec<Ipv4Addr>,
         upstream: Option<&Upstream>,
         ssh: std::net::SocketAddr,
@@ -1417,60 +1297,31 @@ impl Gateway {
     }
 
     fn start_with_egress(
-        socket: &Endpoint,
+        socket: &Path,
         dns: Vec<Ipv4Addr>,
         upstream: Option<&Upstream>,
         ssh: std::net::SocketAddr,
         egress: EgressMode,
     ) -> Result<Self> {
-        #[cfg(unix)]
-        let socket_path = match socket {
-            Endpoint::Unix(path) => path.clone(),
-            Endpoint::Tcp(_) => {
-                return Err(Error::Message(
-                    "TCP gateway sockets are only used on Windows".into(),
-                ));
-            }
-        };
-        if crate::sockets::Endpoint::connect(socket, Duration::from_millis(250)).is_ok() {
+        if socket.exists() && UnixStream::connect(socket).is_ok() {
             return Err(Error::Message(format!(
                 "A network gateway is already listening at {}",
-                socket.describe()
+                socket.display()
             )));
         }
-        #[cfg(unix)]
-        let listener = {
-            let _ = std::fs::remove_file(&socket_path);
-            if let Some(parent) = socket_path.parent() {
-                crate::util::ensure_dir(parent)?;
-            }
-            std::os::unix::net::UnixListener::bind(&socket_path).map_err(|error| {
-                Error::Message(format!(
-                    "Could not open the VM's network socket {}: {error}",
-                    socket_path.display()
-                ))
-            })?
-        };
-        #[cfg(not(unix))]
-        let listener = match socket {
-            Endpoint::Tcp(port) => TcpListener::bind((Ipv4Addr::LOCALHOST, *port)).map_err(
-                |error| {
-                    Error::Message(format!(
-                        "Could not open the VM's network socket {}: {error}",
-                        socket.describe()
-                    ))
-                },
-            )?,
-            Endpoint::Unix(_) => {
-                return Err(Error::Message(
-                    "Unix sockets are not available on this platform".into(),
-                ));
-            }
-        };
+        let _ = std::fs::remove_file(socket);
+        if let Some(parent) = socket.parent() {
+            crate::util::ensure_dir(parent)?;
+        }
+        let listener = UnixListener::bind(socket).map_err(|error| {
+            Error::Message(format!(
+                "Could not open the VM's network socket {}: {error}",
+                socket.display()
+            ))
+        })?;
         // Until the gateway is up, a failure removes the socket again, so
         // QEMU never finds a dead one.
-        #[cfg(unix)]
-        let mut cleanup = RemoveOnDrop(Some(socket_path.clone()));
+        let mut cleanup = RemoveOnDrop(Some(socket.to_path_buf()));
         let resolver = upstream.map(Resolver::start).transpose()?.map(Arc::new);
         let dns_gate = RelayGate::default();
         dns_gate.suspend(|| {});
@@ -1548,8 +1399,8 @@ impl Gateway {
             threads.push(std::thread::Builder::new().name("vm-net-up".into()).spawn(
                 move || {
                     while !shared.stop.load(Ordering::Relaxed) {
-                        let mut stream: DuplexStream = match listener.accept() {
-                            Ok((stream, _)) => stream.into(),
+                        let mut stream = match listener.accept() {
+                            Ok((stream, _)) => stream,
                             Err(_) => {
                                 std::thread::sleep(Duration::from_millis(100));
                                 continue;
@@ -1596,12 +1447,9 @@ impl Gateway {
             threads.push(std::thread::Builder::new().name("vm-net-held".into())
                 .spawn(move || held.run_held())?);
         }
-        #[cfg(unix)]
-        {
-            cleanup.0 = None;
-        }
+        cleanup.0 = None;
         Ok(Self {
-            socket: socket.clone(),
+            socket: socket.to_path_buf(),
             shared,
             forward: Some(forward),
             stacks: Mutex::new(stacks),
@@ -1740,10 +1588,8 @@ impl Gateway {
 }
 
 /// Removes a path when dropped, unless disarmed.
-#[cfg(unix)]
 struct RemoveOnDrop(Option<PathBuf>);
 
-#[cfg(unix)]
 impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
         if let Some(path) = self.0.take() {
@@ -1767,23 +1613,19 @@ impl Drop for Gateway {
             .locked()
             .take()
         {
-            let _ = guest.shutdown_both();
+            let _ = guest.shutdown(std::net::Shutdown::Both);
         }
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
         self.forward = None;
-        #[cfg(unix)]
-        if let crate::sockets::Endpoint::Unix(path) = &self.socket {
-            let _ = std::fs::remove_file(path);
-        }
+        let _ = std::fs::remove_file(&self.socket);
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use std::net::TcpStream;
-    use std::os::fd::OwnedFd;
     use std::time::Instant;
 
     use super::*;
@@ -2119,12 +1961,12 @@ mod tests {
 
     #[test]
     fn shoes_config_blocks_private_ranges_first() {
-        let yaml = shoes_config(7, &Upstream::Direct).unwrap();
+        let yaml = shoes_config(&Upstream::Direct).unwrap();
         let block = yaml.find("action: block").unwrap();
         let allow = yaml.find("action: allow").unwrap();
         assert!(block < allow, "{yaml}");
         assert!(
-            yaml.contains("device_fd: 7") && yaml.contains("packet_information: false"),
+            yaml.contains("device_fd: 0") && yaml.contains("packet_information: false"),
             "{yaml}"
         );
         assert!(yaml.contains("192.168.0.0/16"));
@@ -2137,7 +1979,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("netgw-taken-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let gateway = Gateway::start(
-            &Endpoint::Unix(dir.join("net.sock")),
+            &dir.join("net.sock"),
             Vec::new(),
             &Upstream::Direct,
             (Ipv4Addr::LOCALHOST, port).into(),
@@ -2166,12 +2008,12 @@ mod tests {
             hop("entry", "198.51.100.1:1080"),
             hop("exit", "203.0.113.1:1080"),
         ]);
-        let yaml = shoes_config(7, &upstream).unwrap();
+        let yaml = shoes_config(&upstream).unwrap();
         let entry = yaml.find("198.51.100.1:1080").unwrap();
         let exit = yaml.find("203.0.113.1:1080").unwrap();
         assert!(entry < exit, "{yaml}");
         assert!(!yaml.contains("name: entry"), "{yaml}");
-        assert!(shoes_config(7, &Upstream::Chain(Vec::new())).is_err());
+        assert!(shoes_config(&Upstream::Chain(Vec::new())).is_err());
     }
 
     fn tcp_syn(src: Ipv4Addr, sport: u16, dst: Ipv4Addr, dport: u16) -> Vec<u8> {
@@ -2224,11 +2066,10 @@ mod tests {
     fn stack_turns_packets_into_real_connections() {
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = server.local_addr().unwrap().port();
-        let (ours, theirs) = datagram_pair().unwrap();
-        let theirs: OwnedFd = theirs.into();
-        let config = shoes_config_blocking(theirs.as_raw_fd(), &Upstream::Direct, &[]).unwrap();
+        let (ours, theirs) = packet_pair().unwrap();
+        let config = shoes_config_blocking(&Upstream::Direct, &[]).unwrap();
         let error = Arc::new(Mutex::new(None));
-        let _stack = Stack::with_config(config, error.clone()).unwrap();
+        let _stack = Stack::with_config(config, error.clone(), theirs).unwrap();
         std::thread::sleep(Duration::from_millis(300));
 
         ours.send(&tcp_syn(GUEST_IP, 40000, Ipv4Addr::LOCALHOST, port))
@@ -2263,10 +2104,9 @@ mod tests {
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = server.local_addr().unwrap().port();
         server.set_nonblocking(true).unwrap();
-        let (ours, theirs) = datagram_pair().unwrap();
-        let theirs: OwnedFd = theirs.into();
-        let config = shoes_config(theirs.as_raw_fd(), &Upstream::Direct).unwrap();
-        let _stack = Stack::with_config(config, Arc::new(Mutex::new(None))).unwrap();
+        let (ours, theirs) = packet_pair().unwrap();
+        let config = shoes_config(&Upstream::Direct).unwrap();
+        let _stack = Stack::with_config(config, Arc::new(Mutex::new(None)), theirs).unwrap();
         std::thread::sleep(Duration::from_millis(300));
         ours.send(&tcp_syn(GUEST_IP, 40001, Ipv4Addr::LOCALHOST, port))
             .unwrap();
@@ -2317,7 +2157,7 @@ mod tests {
     }
 
     impl GuestTcp {
-        fn start(link: &mut DuplexStream, port: u16) -> Self {
+        fn start(link: &mut UnixStream, port: u16) -> Self {
             write_frame(
                 link,
                 &frame(
@@ -2342,7 +2182,7 @@ mod tests {
             guest
         }
 
-        fn send(&self, link: &mut DuplexStream, data: &[u8]) {
+        fn send(&self, link: &mut UnixStream, data: &[u8]) {
             let packet = tcp_segment(
                 (GUEST_IP, self.port),
                 (PUBLIC_PROBE_V4, 443),
@@ -2354,7 +2194,7 @@ mod tests {
             write_frame(link, &frame(GATEWAY_MAC, ETH_IPV4, &packet)).unwrap();
         }
 
-        fn receive(&mut self, link: &mut DuplexStream, expected: &[u8]) {
+        fn receive(&mut self, link: &mut UnixStream, expected: &[u8]) {
             let mut reply = Vec::new();
             loop {
                 read_frame(link, &mut reply).unwrap();
@@ -2384,7 +2224,7 @@ mod tests {
         );
     }
 
-    fn exchange_dhcp(link: &mut DuplexStream) {
+    fn exchange_dhcp(link: &mut UnixStream) {
         write_frame(link, &frame([0xff; 6], ETH_IPV4, &dhcp(1))).unwrap();
         let mut reply = Vec::new();
         read_frame(link, &mut reply).unwrap();
@@ -2397,8 +2237,8 @@ mod tests {
         upstream.set_nonblocking(true).unwrap();
         let hop = serde_yaml::from_str(&format!("{{address: '{}', protocol: {{type: http}}}}", upstream.local_addr().unwrap())).unwrap();
         let dir = std::env::temp_dir().join(format!("netgw-aaaa-{}", std::process::id()));
-        let gateway = Gateway::start(&Endpoint::Unix(dir.join("net.sock")), vec![], &Upstream::Chain(vec![hop]), (Ipv4Addr::LOCALHOST, 0).into()).unwrap();
-        let mut link = Endpoint::Unix(dir.join("net.sock").into()).connect(Duration::from_secs(2)).unwrap();
+        let gateway = Gateway::start(&dir.join("net.sock"), vec![], &Upstream::Chain(vec![hop]), (Ipv4Addr::LOCALHOST, 0).into()).unwrap();
+        let mut link = UnixStream::connect(dir.join("net.sock")).unwrap();
         link.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
         exchange_dhcp(&mut link);
         let mut query = vec![0u8; 12];
@@ -2454,7 +2294,7 @@ mod tests {
     }
 
     #[test]
-    fn hold_packet_queue_is_bounded_and_retries_a_full_socket() {
+    fn hold_packet_queue_is_bounded_and_flushes_in_order() {
         let proxy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         proxy.set_nonblocking(true).unwrap();
         let hop = serde_yaml::from_str(&format!(
@@ -2463,10 +2303,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("netgw-hold-{}", std::process::id()));
         let socket = dir.join("net.sock");
         let gateway = Gateway::start_closed(
-            &Endpoint::Unix(socket.clone()), vec![], Some(&Upstream::Chain(vec![hop])), (Ipv4Addr::LOCALHOST, 0).into(),
+            &socket, vec![], Some(&Upstream::Chain(vec![hop])), (Ipv4Addr::LOCALHOST, 0).into(),
         ).unwrap();
         gateway.set_egress_mode(EgressMode::Suspended);
-        let mut link = Endpoint::Unix(socket.clone()).connect(Duration::from_secs(2)).unwrap();
+        let mut link = UnixStream::connect(&socket).unwrap();
         link.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let syn = tcp_syn(GUEST_IP, 40001, PUBLIC_PROBE_V4, 443);
         write_frame(&mut link, &frame(GATEWAY_MAC, ETH_IPV4, &syn)).unwrap();
@@ -2484,27 +2324,14 @@ mod tests {
         assert_eq!(gateway.traffic(), GatewayTraffic::default());
         assert_eq!(gateway.shared.egress.lock().unwrap().held_packets.len(), HELD_PACKETS);
 
-        // Drain to the packet socket directly so all TCP/UDP stays local.
+        // Flush through the packet socket directly so all TCP/UDP stays local.
         gateway.set_egress_mode(EgressMode::Suspended);
         let path = &gateway.shared.paths[Lane::Ordinary as usize];
-        let filler = [0; MTU];
-        let mut fillers = 0;
-        while path.host.send(&filler).is_ok() {
-            fillers += 1;
-            assert!(fillers < 10_000, "socket must eventually exert backpressure");
-        }
-        // Small packets may still fit after the last MTU-sized packet.
-        while path.host.send(&filler[..syn.len()]).is_ok() {
-            fillers += 1;
-        }
         {
             let mut egress = gateway.shared.egress.lock().unwrap();
             egress.mode = EgressMode::Open;
             gateway.shared.held_ready.notify_one();
         }
-        std::thread::sleep(Duration::from_millis(25));
-        assert_eq!(gateway.traffic(), GatewayTraffic::default());
-        assert_eq!(gateway.shared.egress.lock().unwrap().held_packets.len(), HELD_PACKETS);
         let deadline = Instant::now() + Duration::from_secs(5);
         let recv = |expected: &[u8]| {
             let mut data = [0; MTU];
@@ -2522,17 +2349,13 @@ mod tests {
                 }
             }
         };
-        // A Unix datagram write is all-or-nothing, including under pressure.
-        for _ in 0..fillers {
-            let n = path.stack.recv(&mut [0; MTU]).unwrap();
-            assert!(n == MTU || n == syn.len());
-        }
         recv(&syn);
         recv(&syn);
         for index in 0..HELD_PACKETS - 2 {
             recv(&udp(index));
         }
         assert!(path.stack.recv(&mut [0; MTU]).is_err());
+        assert!(gateway.shared.egress.lock().unwrap().held_packets.is_empty());
         drop(link);
         drop(gateway);
         let _ = std::fs::remove_dir_all(dir);
@@ -2547,9 +2370,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("netgw-discard-{}", std::process::id()));
         let socket = dir.join("net.sock");
         let gateway = Gateway::start_closed(
-            &Endpoint::Unix(socket.clone()), vec![], Some(&Upstream::Chain(vec![hop])), (Ipv4Addr::LOCALHOST, 0).into(),
+            &socket, vec![], Some(&Upstream::Chain(vec![hop])), (Ipv4Addr::LOCALHOST, 0).into(),
         ).unwrap();
-        let mut link = Endpoint::Unix(socket.clone()).connect(Duration::from_secs(2)).unwrap();
+        let mut link = UnixStream::connect(&socket).unwrap();
         link.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut query = vec![0u8; 12];
         query[5] = 1;
@@ -2573,7 +2396,7 @@ mod tests {
                 "upstream" => gateway.set_upstream(&Upstream::Direct).unwrap(),
                 "disconnect" => {
                     drop(link);
-                    link = Endpoint::Unix(socket.clone()).connect(Duration::from_secs(2)).unwrap();
+                    link = UnixStream::connect(&socket).unwrap();
                     link.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                     exchange_dhcp(&mut link);
                 }
@@ -2599,7 +2422,7 @@ mod tests {
         let thread = std::thread::spawn(move || {
             let dir = std::env::temp_dir().join(format!("netgw-wake-{}", std::process::id()));
             let gateway = Gateway::start(
-                &Endpoint::Unix(dir.join("net.sock")),
+                &dir.join("net.sock"),
                 Vec::new(),
                 &Upstream::Direct,
                 (Ipv4Addr::LOCALHOST, 0).into(),
@@ -2632,13 +2455,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("netgw-modes-{}", std::process::id()));
         let socket = dir.join("net.sock");
         let gateway = Gateway::start(
-            &Endpoint::Unix(socket.clone()),
+            &socket,
             Vec::new(),
             &upstream,
             (Ipv4Addr::LOCALHOST, 0).into(),
         )
         .unwrap();
-        let mut link = Endpoint::Unix(socket.clone()).connect(Duration::from_secs(2)).unwrap();
+        let mut link = UnixStream::connect(&socket).unwrap();
         let normal_timeout = Some(Duration::from_secs(5));
         let quiet_timeout = Some(Duration::from_millis(150));
         link.set_read_timeout(normal_timeout).unwrap();
@@ -2765,13 +2588,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("netgw-{}", std::process::id()));
         let socket = dir.join("net.sock");
         let gateway = Gateway::start(
-            &Endpoint::Unix(socket.clone()),
+            &socket,
             vec![Ipv4Addr::new(9, 9, 9, 9)],
             &Upstream::Direct,
             (Ipv4Addr::LOCALHOST, 0).into(),
         )
         .unwrap();
-        let mut qemu = Endpoint::Unix(socket.clone()).connect(Duration::from_secs(2)).unwrap();
+        let mut qemu = UnixStream::connect(&socket).unwrap();
         qemu.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         write_frame(&mut qemu, &frame([0xff; 6], ETH_IPV4, &dhcp(1))).unwrap();
         let mut reply = Vec::new();

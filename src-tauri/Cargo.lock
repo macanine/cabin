@@ -636,6 +636,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.21.7",
  "libc",
+ "polling",
  "regex",
  "serde",
  "serde_json",
@@ -649,6 +650,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "ts-rs",
+ "uds_windows",
  "ureq",
  "url",
  "windows-sys 0.59.0",
@@ -2919,7 +2921,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e9ec52138abedcc58dc17a7c6c0c00a2bdb4f3427c7f63fa97fd0d859155caf"
 dependencies = [
  "gtk-sys",
- "libloading 0.7.4",
+ "libloading",
  "once_cell",
 ]
 
@@ -2946,16 +2948,6 @@ checksum = "b67380fd3b2fbe7527a606e18729d21c6f3951633d0500574c4dc22d2d638b9f"
 dependencies = [
  "cfg-if",
  "winapi",
-]
-
-[[package]]
-name = "libloading"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1832accd5a4ca2795ace4d05d15c4039be15b62d3b950eff99746a990e3cc10"
-dependencies = [
- "cfg-if",
- "windows-link",
 ]
 
 [[package]]
@@ -5015,6 +5007,7 @@ dependencies = [
  "notify",
  "parking_lot",
  "percent-encoding",
+ "polling",
  "quinn",
  "rand",
  "rand_core",
@@ -5030,7 +5023,6 @@ dependencies = [
  "subtle",
  "tokio",
  "tokio-util",
- "tun",
  "url",
  "webpki-roots 1.0.12",
  "windows-sys 0.61.2",
@@ -6170,28 +6162,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tun"
-version = "0.8.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bb55e468c585e02ef89ba7a1a9848871ac942dfc64547ad4d1166b0f61a98be"
-dependencies = [
- "bytes",
- "cfg-if",
- "futures",
- "futures-core",
- "ipnet",
- "libc",
- "log",
- "nix 0.31.3",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "windows-sys 0.61.2",
- "wintun-bindings",
-]
-
-[[package]]
 name = "typed-path"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7110,20 +7080,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "wintun-bindings"
-version = "0.7.40"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4316764300a7eb4aecf4770c81ae629ff1161b54905d48721a6832fd296ce5f"
-dependencies = [
- "blocking",
- "futures",
- "libloading 0.9.1",
- "log",
- "thiserror 2.0.21",
  "windows-sys 0.61.2",
 ]
 
