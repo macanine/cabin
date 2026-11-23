@@ -260,12 +260,15 @@ impl Attempt {
     }
 
     pub(crate) fn add_fact(&self, label: &str, value: String) {
-        self.state.locked()
-            .facts
-            .push(StartFact {
+        let mut state = self.state.locked();
+        if let Some(fact) = state.facts.iter_mut().find(|fact| fact.label == label) {
+            fact.value = value;
+        } else {
+            state.facts.push(StartFact {
                 label: label.into(),
                 value,
             });
+        }
     }
 
     pub(crate) fn machine_facts(&self, cfg: &Config) {
@@ -276,19 +279,7 @@ impl Attempt {
         if cfg!(target_os = "macos") {
             self.add_fact("QEMU release", crate::qemu_engine::RELEASE.into());
         }
-        let accel = crate::platform::accel();
-        self.add_fact(
-            "Accelerator",
-            format!(
-                "{} ({})",
-                accel.accel,
-                if accel.emulated {
-                    "software emulation"
-                } else {
-                    "hardware virtualization"
-                }
-            ),
-        );
+        self.accelerator_fact();
         self.add_fact(
             "Resources",
             format!(
@@ -305,6 +296,25 @@ impl Attempt {
             ),
         );
         self.add_fact("Machine folder", cfg.instance_dir().display().to_string());
+    }
+
+    pub(crate) fn accelerator_fact(&self) {
+        let accel = crate::platform::accel();
+        self.add_fact(
+            "Accelerator",
+            format!(
+                "{} ({})",
+                accel.accel,
+                if accel.emulated {
+                    "software emulation"
+                } else {
+                    "hardware virtualization"
+                }
+            ),
+        );
+        if let Some(reason) = crate::accel::fallback_reason().filter(|_| cfg!(windows)) {
+            self.add_fact("WHPX fallback", format!("{reason:?}"));
+        }
     }
 
     /// The serial console of a cold boot appends to a shared file. Record its
@@ -341,9 +351,7 @@ impl Attempt {
             facts: state.facts.clone(),
             phases: state.phases.clone(),
             log_path: log_path.map(|path| path.display().to_string()),
-            log_tail: log_path
-                .map(|path| tail(&read_from(path, 0)))
-                .unwrap_or_default(),
+            log_tail: log_path.map(log_tail).unwrap_or_default(),
             serial_path,
             serial_tail,
         }
@@ -394,6 +402,10 @@ fn tail(text: &str) -> Vec<String> {
         .collect();
     lines.reverse();
     lines
+}
+
+pub(crate) fn log_tail(path: &Path) -> Vec<String> {
+    tail(&read_from(path, 0))
 }
 
 fn read_from(path: &Path, offset: u64) -> String {

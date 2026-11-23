@@ -290,6 +290,8 @@ impl Runner {
     fn apply_steps_locked(&self, lock: &FileLock, attempt: Option<&Attempt>) -> Result<()> {
         self.require_exclusive_operation_lock(lock, "apply")?;
         let cfg = &self.cfg;
+        let lifecycle = crate::vm::Lifecycle::for_home(&cfg.home);
+        lifecycle.check()?;
         self.preflight()?;
         self.config_conflicts()?;
         if let Some(attempt) = attempt {
@@ -301,6 +303,7 @@ impl Runner {
         fields.insert("fingerprint".to_string(), json!(cfg.fingerprint()));
         self.journal.append("apply_start", fields)?;
         for step in &self.steps {
+            lifecycle.check()?;
             let mut ctx = StepContext::new(
                 cfg,
                 step.id(),
@@ -339,6 +342,7 @@ impl Runner {
                 }
                 ctx.log(&format!("not satisfied: {}", result.detail));
                 ctx.log(&format!("applying: {}", step.title()));
+                lifecycle.check()?;
                 step.apply(&mut ctx)?;
                 step.save_applied(cfg, &ctx, "applied", None)?;
                 let mut fields = Map::new();

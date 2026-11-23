@@ -17,26 +17,28 @@ use crate::util::message;
 mod raw {
     use std::io::{Read, Write};
     use std::os::unix::io::AsRawFd;
-    use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::time::Duration;
 
     use crate::Result;
+    use crate::sockets;
     use crate::util::message;
 
     pub fn attach(socket_path: &Path) -> Result<()> {
+        sockets::validate_path(socket_path)?;
         if !socket_path.exists() {
             return message(format!(
                 "console socket is missing: {}; start the VM with 'vmctl start --name ...'",
                 socket_path.display()
             ));
         }
-        let mut socket = UnixStream::connect(socket_path).map_err(|error| {
-            crate::Error::Message(format!(
-                "cannot connect to guest console {}: {error}",
-                socket_path.display()
-            ))
-        })?;
+        let mut socket =
+            sockets::connect(socket_path, Duration::from_secs(3)).map_err(|error| {
+                crate::Error::Message(format!(
+                    "cannot connect to guest console {}: {error}",
+                    socket_path.display()
+                ))
+            })?;
         socket.set_nonblocking(true)?;
         let stdin_fd = libc::STDIN_FILENO;
         let interactive = unsafe { libc::isatty(stdin_fd) } == 1;
@@ -99,7 +101,10 @@ mod raw {
                     Err(_) => break,
                 }
             }
-            std::thread::sleep(Duration::from_millis(5));
+            let closed = libc::POLLHUP | libc::POLLERR | libc::POLLNVAL;
+            if pollfds.iter().any(|fd| fd.revents & closed != 0) {
+                break;
+            }
         }
         if let Some(attrs) = old_attrs {
             unsafe {

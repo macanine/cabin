@@ -159,9 +159,97 @@ pub fn fallback_reason() -> Option<AccelProblem> {
     fallback().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// Run under TCG from now on, recording the reason.
-pub fn fall_back_to_tcg(reason: AccelProblem) {
-    *fallback().lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+/// Record the first real boot failure and keep using TCG in this process.
+fn fall_back_to_tcg(reason: AccelProblem) {
+    fallback()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert(reason);
+}
+
+pub(crate) fn retry_start_with_tcg<T>(
+    mut start: impl FnMut() -> Result<T, (crate::Error, Option<AccelProblem>)>,
+    fall_back: impl FnOnce(&crate::Error, AccelProblem),
+) -> crate::Result<T> {
+    match start() {
+        Ok(value) => Ok(value),
+        Err((error, Some(reason))) => {
+            fall_back(&error, reason);
+            start().map_err(|(error, _)| error)
+        }
+        Err((error, None)) => Err(error),
+    }
+}
+
+fn start_fallback_path(home: &Path) -> PathBuf {
+    crate::paths::StatePaths::new(home)
+        .global_state()
+        .join("whpx-start.json")
+}
+
+fn start_fallback_key(engine: &Path) -> Option<serde_json::Value> {
+    let meta = std::fs::metadata(engine).ok()?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(serde_json::json!({
+        "engine": engine,
+        "size": meta.len(),
+        "modified": [modified.as_secs(), u64::from(modified.subsec_nanos())],
+    }))
+}
+
+fn saved_start_fallback(home: &Path, engine: &Path, boot_time: u64) -> Option<AccelProblem> {
+    let key = start_fallback_key(engine)?;
+    let mut saved = crate::util::read_json(&start_fallback_path(home))?;
+    // On Windows sysinfo estimates boot time from wall time and tick count.
+    if saved["key"] != key || saved["boot"].as_u64()?.abs_diff(boot_time) > 2 {
+        return None;
+    }
+    serde_json::from_value(saved["reason"].take()).ok()
+}
+
+/// Try WHPX again after a host reboot or a QEMU update, when the failure
+/// may have been fixed. Across Cabin restarts on the same boot, keep the reason.
+pub(crate) fn restore_start_fallback(home: &Path, engine: &Path) {
+    if cfg!(windows)
+        && fallback_reason().is_none()
+        && let Some(reason) = saved_start_fallback(home, engine, sysinfo::System::boot_time())
+    {
+        fall_back_to_tcg(reason);
+    }
+}
+
+pub(crate) fn remember_start_fallback(
+    home: &Path,
+    engine: &Path,
+    reason: AccelProblem,
+    log: &std::sync::Arc<Mutex<std::fs::File>>,
+) {
+    if let Some(key) = start_fallback_key(engine)
+        && let Err(error) = write_start_fallback(home, key, sysinfo::System::boot_time(), &reason)
+    {
+        crate::util::log_line(
+            log,
+            &format!("Could not save the WHPX fallback reason: {error}"),
+        );
+    }
+    fall_back_to_tcg(reason);
+}
+
+fn write_start_fallback(
+    home: &Path,
+    key: serde_json::Value,
+    boot_time: u64,
+    reason: &AccelProblem,
+) -> crate::Result<()> {
+    crate::util::atomic_write_json(
+        &start_fallback_path(home),
+        &serde_json::json!({"key": key, "boot": boot_time, "reason": reason}),
+        0o600,
+    )
 }
 
 /// Forget a recorded fallback (tests).
@@ -260,10 +348,46 @@ mod tests {
     }
 
     #[test]
+    fn real_start_failure_retries_once_and_returns_the_second_error() {
+        let mut launches = 0;
+        let mut fallbacks = 0;
+        let result = retry_start_with_tcg(
+            || {
+                launches += 1;
+                let error = crate::Error::Message(format!("failed launch {launches}"));
+                Err::<(), _>((error, Some(AccelProblem::VirtualizationOff)))
+            },
+            |error, reason| {
+                fallbacks += 1;
+                assert_eq!(error.to_string(), "failed launch 1");
+                assert_eq!(reason, AccelProblem::VirtualizationOff);
+            },
+        );
+        assert_eq!(launches, 2);
+        assert_eq!(fallbacks, 1);
+        assert_eq!(result.unwrap_err().to_string(), "failed launch 2");
+    }
+
+    #[test]
+    fn remembered_fallback_is_bound_to_boot_and_engine() {
+        let dir = crate::sockets::test_dir();
+        let engine = dir.join("qemu");
+        std::fs::write(&engine, "old engine").unwrap();
+        let reason = AccelProblem::HypervisorConflict;
+        write_start_fallback(&dir, start_fallback_key(&engine).unwrap(), 42, &reason).unwrap();
+        assert_eq!(saved_start_fallback(&dir, &engine, 42), Some(reason));
+        assert_eq!(saved_start_fallback(&dir, &engine, 60), None);
+        std::fs::write(&engine, "fixed engine with a different size").unwrap();
+        assert_eq!(saved_start_fallback(&dir, &engine, 42), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn fallback_is_recorded_and_visible() {
         reset_fallback();
         assert_eq!(fallback_reason(), None);
         fall_back_to_tcg(AccelProblem::VirtualizationOff);
+        fall_back_to_tcg(AccelProblem::WhpxFeatureOff);
         assert_eq!(fallback_reason(), Some(AccelProblem::VirtualizationOff));
         reset_fallback();
     }
