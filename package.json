@@ -15,7 +15,6 @@
     "vendor": "node scripts/fetch-vendor.mjs",
     "build:agentd": "node scripts/build-agentd.mjs",
     "test:ui": "node tests/ui/smoke.mjs",
-    "test:journey": "node tests/ui/journey.mjs",
     "check:win": "node scripts/check-windows.mjs"
   },
   "dependencies": {
