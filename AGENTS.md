@@ -239,12 +239,14 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 - macOS (Apple Silicon) is the product target with HVF, the pinned macanine QEMU engine,
   Unix sockets, `hdiutil`, and the AppKit window chrome. Linux development uses distro QEMU
   (KVM or TCG), `xorriso`, and PATH tools. Windows x64 uses an amd64 guest and QEMU from
-  PATH or Program Files. `vm/src/compat.rs` maps process control, socket pairs,
-  readiness polling, entropy, volumes, adapters (`GetAdaptersAddresses`), and time to the
-  native APIs; `vm/src/sockets.rs` replaces Unix control sockets with loopback TCP ports
-  persisted per instance in `sockets.json`; `vm/src/iso.rs` writes the seed ISO in process;
-  and the gateway packet path runs over a loopback UDP pair through the same shoes stack
-  (see `third_party/shoes/VENDORED.txt`). The guest side of `core` stays Unix-only: the
+  PATH or Program Files. `vm/src/compat.rs` maps process control, entropy, volumes,
+  adapters (`GetAdaptersAddresses`), and time to the native APIs. Every host uses the same
+  transport (`vm/src/sockets.rs`, `vm/src/transport.rs`): QMP, the guest agent, the serial
+  console, and the gateway `-netdev stream` are AF_UNIX sockets at the instance paths
+  (`uds_windows` supplies the Windows `UnixStream`/`UnixListener`; QEMU 7.1 or later
+  accepts the paths), and the gateway reaches the shoes stack through a connected loopback
+  UDP pair waited on with `polling` (see `third_party/shoes/VENDORED.txt`). Keep socket
+  paths within about 104 bytes. `vm/src/iso.rs` writes the seed ISO in process. The guest side of `core` stays Unix-only: the
   host links only `hello`, `model`, `sync` (host half), `store`, `proxy`, `ipv4`, `fsx`,
   `error`, `paths`, and `util`; `agent_core::hello` carries the handshake the shell
   compares builds with. Windows app data lives under `%APPDATA%\cabin`, WebView2 data

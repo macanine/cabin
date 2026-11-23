@@ -114,8 +114,10 @@ fn network(args: &[String]) -> io::Result<()> {
         }
         Some("http") => {
             let url = args.get(1).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing URL"))?;
-            let address: Vec<_> = url.trim_start_matches("https://").trim_start_matches("http://")
-                .split('/').next().unwrap_or_default().to_socket_addrs()?.collect();
+            let host = url.trim_start_matches("https://").trim_start_matches("http://")
+                .split('/').next().unwrap_or_default();
+            let port = if url.starts_with("http://") { 80 } else { 443 };
+            let address: Vec<_> = if host.contains(':') { host.to_socket_addrs()?.collect() } else { (host, port).to_socket_addrs()?.collect() };
             let mut stream = TcpStream::connect(address.first().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no address"))?)?;
             stream.write_all(b"GET / HTTP/1.0\r\n\r\n")?;
             let mut buf = [0; 1024];
