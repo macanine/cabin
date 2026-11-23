@@ -129,6 +129,24 @@ export function explainFailure(text: string): FailureHelp {
       advice: "Check this computer’s connection or proxy, then retry. Cabin can continue from the saved partial download.",
     };
   }
+  if (t.includes("--disk-size") || t.includes("could not check free disk space")) {
+    return {
+      title: "The VM disk size could not be checked",
+      advice: "Check the available space on the volume that holds Cabin’s data and retry with a valid disk size.",
+    };
+  }
+  if (t.includes("qemu-img") && /permission denied|access is denied|being used by another process|sharing violation/.test(t)) {
+    return {
+      title: "The VM disk file could not be opened for writing",
+      advice: "Check that Cabin can write to its data folder and that no other program is holding the file, then retry.",
+    };
+  }
+  if (t.includes("qemu-img") && (t.includes("failed (exit") || t.includes("timed out while preparing"))) {
+    return {
+      title: "The VM disk could not be prepared",
+      advice: "Check the disk step log for the tool’s error, then retry.",
+    };
+  }
   if (t.includes("could not find a") || t.includes("builds are listed") || t.includes("lists an arm64 image") || t.includes("lists an image for this architecture") || t.includes("no valid image checksum") || t.includes("no image build is pinned")) {
     return {
       title: "The system image could not be found",
@@ -181,6 +199,12 @@ export function explainFailure(text: string): FailureHelp {
     return {
       title: "Cabin's bundled QEMU is missing",
       advice: "Cabin's files are damaged or incomplete. Reinstall Cabin, then open it again.",
+    };
+  }
+  if (t.includes('step "disk" failed') || t.includes("could not read base image")) {
+    return {
+      title: "The VM disk could not be prepared",
+      advice: "Check the disk step log and that Cabin can write to its data folder, then retry.",
     };
   }
   if (t.includes('step "qemu" failed')) {

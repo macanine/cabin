@@ -79,6 +79,7 @@ test("install input failures describe the cause and a recovery action", async ()
   const { explainFailure } = await import("../src/lib/wizard.ts");
   for (const [error, title, advice] of [
     ['step "image" failed: not enough free space to download to image.img.part', /disk space/, /Free up space/],
+    ['step "disk" failed: not enough free disk space at instances: 1 GiB available', /disk space/, /Free up space/],
     ["another vmctl operation is in progress (lock owner: pid=42)", /already running/, /Wait/],
     ["could not find a Ubuntu 24.04 LTS image: could not download index: TLS verification or handshake failed", /secure download/, /date and time/],
     ["download received an HTML page instead of the file from https://mirror.test; sign in to the network if it requires a captive portal", /sign-in page/, /sign in/],
@@ -88,6 +89,9 @@ test("install input failures describe the cause and a recovery action", async ()
     ["download server rejected the saved partial range from https://mirror.test", /could not be downloaded/, /connection/],
     ["could not find a Ubuntu 24.04 LTS image: no valid image checksum in https://mirror.test/SHA256SUMS", /system image/, /Ubuntu/],
     ["checksum mismatch for https://mirror.test: expected digest, got different-digest", /checksum/, /pinned image/],
+    ['step "disk" failed: qemu-img convert failed (exit 1): Permission denied', /opened for writing/, /data folder/],
+    ["qemu-img convert failed (exit 1): The process cannot access the file because it is being used by another process", /opened for writing/, /other program/],
+    ["qemu-img resize failed (exit 1): unexpected error", /disk could not be prepared/, /disk step log/],
   ]) {
     const help = explainFailure(error);
     assert.match(help.title, title, error);
