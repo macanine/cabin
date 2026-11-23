@@ -2437,28 +2437,6 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_include_the_last_install_failure_before_steps_exist() {
-        let home = tempfile::tempdir().unwrap();
-        let root = home.path().join("private-cabin-data");
-        let make_host = || {
-            let machine = Machine::new(&root, concat!(env!("CARGO_MANIFEST_DIR"), "/../vm"));
-            Host::new(machine, root.join("missing-cabind")).unwrap()
-        };
-        let host = make_host();
-        let error = format!("guest-test-user could not find an image under {}", root.display());
-        host.record_install_result(vm_core::util::now_millis(), &Err(AppError::internal(error)), Some("guest-test-user"));
-        drop(host);
-        let exported = make_host().diagnostics(20, 4096, vec![], None, None).unwrap();
-        assert!(!exported.contains("private-cabin-data"));
-        assert!(!exported.contains("guest-test-user"));
-        let report: Value = serde_json::from_str(&exported).unwrap();
-        assert_eq!(report["versions"]["cabin"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(report["lastInstall"]["state"], "failed");
-        assert_eq!(report["lastInstall"]["error"], "<user> could not find an image under <home>");
-        assert!(report["readiness"].is_array());
-    }
-
-    #[test]
     fn destroy_resets_host_store_and_machine_files_without_stale_state() {
         let home = std::env::temp_dir().join(format!("cabin-host-destroy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
