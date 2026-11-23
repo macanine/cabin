@@ -14,12 +14,18 @@ impl GlobalNetwork {
         self.expire_hold(&mut self.runtime(), Instant::now())
     }
 
+    /// Claim the notification even if a status read already closed the gate.
+    pub fn take_hold_timeout_notice(&self) -> bool {
+        std::mem::take(&mut self.runtime().hold_timeout_pending)
+    }
+
     pub(super) fn expire_hold(&self, runtime: &mut Runtime, now: Instant) -> bool {
         if !runtime.connectivity.expire(now) {
             return false;
         }
         let reason = "The network recheck timed out. A fresh check is required.";
         self.block_hold(runtime, reason);
+        runtime.hold_timeout_pending = true;
         runtime.apply_policy();
         self.journal(runtime, "blocked", reason, None);
         true
@@ -419,6 +425,11 @@ mod tests {
         assert_eq!(status.gate, NetworkGateMode::Closed);
         assert_eq!(status.connectivity, NetworkConnectivity::Blocked);
         assert!(status.gate_error.unwrap().contains("timed out"));
+        // A reader has already expired the hold. The recovery worker can
+        // still claim its notification once, even on another expiry pass.
+        assert!(!network.expire_hold_now());
+        assert!(network.take_hold_timeout_notice());
+        assert!(!network.take_hold_timeout_notice());
         network.stop();
     }
 

@@ -60,6 +60,7 @@ struct Runtime {
     interface_paths: BTreeMap<String, InterfacePath>,
     grant: GateState,
     connectivity: Connectivity,
+    hold_timeout_pending: bool,
     installing: bool,
     sleeping: bool,
     gateway_session: u64,
@@ -463,6 +464,7 @@ impl GlobalNetwork {
     pub fn stop(&self) {
         let mut runtime = self.runtime();
         runtime.installing = false;
+        runtime.hold_timeout_pending = false;
         runtime.grant.invalidate("The network gateway stopped");
         runtime.apply_policy();
         if runtime.gateway.take().is_some() {

@@ -182,6 +182,7 @@ impl GlobalNetwork {
         let opened = runtime.grant.finish_observation(&attempt.token, report);
         if opened {
             runtime.connectivity.clear();
+            runtime.hold_timeout_pending = false;
             runtime.verified_exit = public_ip;
             runtime.verified_samples = samples
                 .iter()

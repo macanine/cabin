@@ -87,8 +87,8 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   [its documented provider order](ip-detection/README.md#provider-order). Publish the
   address first, cache the classification by IP, and discard observations when the path
   identity changes. Sample visible gateway traffic once a second and retain up to 30 samples
-  per route. The Network Check lists blockers and their fixes first, then folds passed
-  checks and history.
+  per route. The Network Check lists blockers and their fixes first and folds passed
+  checks. Its timeline shows observed exit IP and environment changes.
 - Sway uses pixman. noVNC connects to the guest-loopback `wayvnc` through SSH. SPICE adds a
   virtio GPU and a private QEMU socket on machines without the device profile. Both viewers
   share a Sway session. `cabind native-display` manages display transactions and

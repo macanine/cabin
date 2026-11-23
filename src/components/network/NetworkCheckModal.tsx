@@ -1,96 +1,71 @@
+import { Loader, Modal } from "@mantine/core";
+import { useMemo, useRef, useState } from "react";
 import { useAutoRefresh } from "../../lib/useAutoRefresh";
-import { Button, Loader, Modal } from "@mantine/core";
-import { useEffect, useRef, useState } from "react";
+import { networkTimeline } from "../../lib/networkTimeline";
+import { formatDateTime, isoTimestamp } from "../../lib/time";
 import { toIpcError } from "../../services/ipc/common";
-import type { NetworkHistoryEntry, NetworkStatus } from "../../services/ipc/generated/core";
+import type { NetworkHistoryEntry } from "../../services/ipc/generated/core";
 import { networkIpc } from "../../services/ipc/network";
 import { useApp } from "../../state/store";
 import { uiActions, useUi } from "../../state/ui";
-import { NetworkCheckReportView, NetworkGatePanel } from "./NetworkGatePanel";
-import { formatGuestDateTime, isoTimestamp } from "../../lib/time";
-import { hostTime } from "../../lib/clock";
-import { DisclosureChevron, Reveal } from "../motion";
+import { NetworkGatePanel } from "./NetworkGatePanel";
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE = 100;
+const HISTORY_LIMIT = 500;
 
-function mergeHistory(current: NetworkHistoryEntry[], page: NetworkHistoryEntry[]) {
-  const unique = new Map(current.map((entry) => [entry.id, entry]));
-  for (const entry of page) unique.set(entry.id, entry);
-  return [...unique.values()].sort((a, b) => b.id - a.id);
-}
-
-function NetworkHistory({ status, open }: { status: NetworkStatus; open: boolean }) {
+function NetworkChangeTimeline({ reportId }: { reportId: string | undefined }) {
   const [entries, setEntries] = useState<NetworkHistoryEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [revision, setRevision] = useState(0);
-  useAutoRefresh(() => setRevision((value) => value + 1), { enabled: open, initial: false, interval: 30_000 });
-  const [hasMore, setHasMore] = useState(true);
-  const [moreError, setMoreError] = useState<string | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    let active = true;
-    void networkIpc.history(null, PAGE_SIZE).then((page) => {
-      if (!active) return;
-      setEntries((current) => current ? mergeHistory(current, page) : page);
-      setError(null);
-    }).catch((error: unknown) => {
-      if (active) setError(toIpcError(error).message);
-    });
-    return () => { active = false; };
-  }, [open, status, revision]);
-
-  async function older(beforeId: number) {
-    setLoadingMore(true);
-    setMoreError(null);
+  useAutoRefresh(async (isCurrent) => {
     try {
-      const page = await networkIpc.history(beforeId, PAGE_SIZE);
-      setEntries((current) => mergeHistory(current ?? [], page));
-      setHasMore(page.length === PAGE_SIZE);
+      const latest: NetworkHistoryEntry[] = [];
+      const previous = entries ?? [];
+      let beforeId: number | null = null;
+      while (latest.length < HISTORY_LIMIT) {
+        const page = await networkIpc.history(beforeId, PAGE_SIZE);
+        if (!isCurrent()) return;
+        latest.push(...page);
+        if (page.length < PAGE_SIZE) break;
+        beforeId = page[page.length - 1].id;
+        const overlap = previous.findIndex((entry) => entry.id === beforeId);
+        if (overlap >= 0) {
+          const remaining = HISTORY_LIMIT - latest.length;
+          latest.push(...previous.slice(overlap + 1, overlap + 1 + remaining));
+          break;
+        }
+      }
+      setEntries(latest);
+      setError(null);
     } catch (error) {
-      setMoreError(toIpcError(error).message);
-    } finally {
-      setLoadingMore(false);
+      if (isCurrent()) setError(toIpcError(error).message);
     }
-  }
+  }, { interval: 30_000, refreshKey: reportId });
 
-  const oldestId = entries && entries.length >= PAGE_SIZE ? entries[entries.length - 1].id : null;
+  const timeline = useMemo(() => entries ? networkTimeline(entries) : [], [entries]);
   const feedback = "flex items-center gap-2 text-sm text-faint";
-  const DOT = { bad: "bg-bad", warn: "bg-warn", ok: "bg-ok" } as const;
   return (
-    <div className="grid gap-2 pt-1.5">
-      {error ? (
-        <div className={feedback} role="alert">{error}</div>
-      ) : !entries ? (
-        <div className={feedback} role="status"><Loader size={14} /> Loading history</div>
-      ) : entries.length === 0 ? (
-        <div className={feedback}>No checks yet.</div>
-      ) : null}
-      {entries && entries.length > 0 && (
-        <ol className="m-0 max-h-80 list-none overflow-y-auto p-0">
-          {entries.map((entry) => {
-            const tone = entry.kind === "blocked" ? "bad" : entry.kind === "rechecking" || entry.failedChecks > 0 ? "warn" : "ok";
-            return (
-              <li key={entry.id} className="flex items-start gap-2.5 border-b border-line/60 py-2 text-sm last:border-0">
-                <span className={`mt-1.5 size-[7px] shrink-0 rounded-full ${DOT[tone]}`} aria-hidden="true" />
-                <div className="min-w-0 flex-1">
-                  {entry.report ? (
-                    <details>
-                      <summary className="cursor-pointer"><span>{entry.message}</span>{entry.failedChecks > 0 && <small className="text-faint"> · {entry.failedChecks} failed</small>}</summary>
-                      <div className="mt-2 mb-1"><NetworkCheckReportView report={entry.report} /></div>
-                    </details>
-                  ) : <span>{entry.message}</span>}
+    <section aria-labelledby="network-change-heading" className="mt-3 grid gap-2 border-t border-line/70 pt-3">
+      <h3 id="network-change-heading" className="m-0 text-sm font-medium">IP and environment changes</h3>
+      {error && <div className={feedback} role="alert">{error}</div>}
+      {!error && !entries && <div className={feedback} role="status"><Loader size={14} /> Loading changes</div>}
+      {!error && entries && timeline.length === 0 && <div className={feedback}>No changes recorded.</div>}
+      {timeline.length > 0 && (
+        <ol className="m-0 max-h-80 list-none overflow-y-auto pl-1 pr-2">
+          {timeline.map(({ id, at, changes }) => (
+            <li key={id} className="relative grid gap-1 border-l border-line py-2 pl-4 text-sm">
+              <span className="absolute -left-[4px] top-3 size-[7px] rounded-full bg-muted" aria-hidden="true" />
+              <time className="text-xs text-faint" dateTime={isoTimestamp(at)}>{formatDateTime(at)}</time>
+              {changes.map(({ label, before, after }) => (
+                <div key={label} className="min-w-0 break-words">
+                  <span className="font-medium">{label}</span>{" "}
+                  <span className="text-muted">{before}</span>{" → "}{after}
                 </div>
-                <time className="shrink-0 text-xs text-faint" dateTime={isoTimestamp(hostTime(entry.at))}>{formatGuestDateTime(entry.at)}</time>
-              </li>
-            );
-          })}
+              ))}
+            </li>
+          ))}
         </ol>
       )}
-      {moreError && <div className={feedback} role="alert">{moreError}</div>}
-      {oldestId != null && hasMore && <Button size="xs" variant="default" loading={loadingMore} onClick={() => void older(oldestId)}>Older</Button>}
-    </div>
+    </section>
   );
 }
 
@@ -98,16 +73,12 @@ export function NetworkCheckModal() {
   const opened = useUi((state) => state.networkCheckOpen);
   const status = useApp((state) => state.network);
   const destination = useRef<"route" | "region" | "browser" | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historySeen, setHistorySeen] = useState(false);
 
   return (
     <Modal
       opened={opened}
       onClose={uiActions.closeNetworkCheck}
       onExitTransitionEnd={() => {
-        setHistoryOpen(false);
-        setHistorySeen(false);
         const target = destination.current;
         destination.current = null;
         if (target === "browser") uiActions.openBrowserEnvironment();
@@ -122,13 +93,7 @@ export function NetworkCheckModal() {
         destination.current = target;
         uiActions.closeNetworkCheck();
       }} />
-      <div className="mt-3 border-t border-line/70 pt-2">
-        <button type="button" aria-expanded={historyOpen} onClick={() => { setHistorySeen(true); setHistoryOpen(!historyOpen); }} className="press -ml-1 inline-flex cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-1.5 py-1 text-xs text-faint hover:bg-hover hover:text-muted">
-          <DisclosureChevron open={historyOpen} />
-          History
-        </button>
-        <Reveal open={historyOpen}>{historySeen && <NetworkHistory status={status} open={historyOpen} />}</Reveal>
-      </div>
+      {opened && <NetworkChangeTimeline reportId={status?.report?.id} />}
     </Modal>
   );
 }

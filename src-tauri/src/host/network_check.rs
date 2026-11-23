@@ -233,6 +233,7 @@ impl Host {
         let Some(attempt) = self.network.begin_check(route_revision(route), !candidate_changed) else {
             return Err(unavailable("The network changed before verification could start. Check again when the connection is ready."));
         };
+        self.notify_hold_timeout();
         self.emit_network()?;
 
         let observed = std::thread::scope(|scope| {
@@ -436,14 +437,19 @@ impl Host {
             let _ = self.emit_network();
         }
         // Expiry also runs while a different verification owns the transaction.
-        if self.network.expire_hold_now() {
+        let expired_here = self.network.expire_hold_now();
+        if expired_here {
             let _ = self.emit_network();
-            self.fail_guest_chats("The network recheck timed out. Internet access is blocked.");
         }
         if self.status.read_lock().connection != GuestConnection::Connected {
             return;
         }
         let Ok(_transaction) = self.network.transaction.try_lock() else { return; };
+        // Keep delivery ordered with verification so a late notice cannot stop
+        // chats that started after a fresh grant opened the route.
+        if self.notify_hold_timeout() && !expired_here {
+            let _ = self.emit_network();
+        }
         self.sync_environment_revision();
         let (due, expired) = self.network.gate_due();
         if expired {
@@ -555,6 +561,14 @@ impl Host {
             .map_err(|error| unavailable(format!("Could not start network monitoring: {error}")))?;
         self.network.set_health_wake(sender);
         Ok(())
+    }
+
+    fn notify_hold_timeout(&self) -> bool {
+        if !self.network.take_hold_timeout_notice() {
+            return false;
+        }
+        self.fail_guest_chats("The network recheck timed out. Internet access is blocked.");
+        true
     }
 
     fn stop_chats_after_hold(&self) {
