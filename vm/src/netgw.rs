@@ -969,7 +969,7 @@ fn hold_packet(packet: &[u8]) -> bool {
 
 struct Shared {
     dns: Vec<Ipv4Addr>,
-    guest: Mutex<Option<UnixStream>>,
+    guest: Mutex<Option<Arc<UnixStream>>>,
     egress: Mutex<GuestEgress>,
     held_ready: Condvar,
     stop: AtomicBool,
@@ -998,11 +998,11 @@ pub struct Gateway {
 
 impl Shared {
     fn write_guest(&self, frame: &[u8]) -> bool {
-        let mut guest = self.guest.locked();
-        let Some(stream) = guest.as_mut() else {
+        let guest = self.guest.locked();
+        let Some(stream) = guest.as_ref() else {
             return false;
         };
-        if write_frame(stream, frame).is_ok() {
+        if write_frame(&mut &**stream, frame).is_ok() {
             true
         } else {
             // A partial frame would make later writes unreadable.
@@ -1254,18 +1254,49 @@ impl GatewayStacks {
     }
 }
 
-fn read_frame(stream: &mut UnixStream, buffer: &mut Vec<u8>) -> std::io::Result<()> {
+#[cfg(test)]
+fn read_frame(stream: &mut impl Read, buffer: &mut Vec<u8>) -> std::io::Result<()> {
+    read_frame_until(stream, buffer, &AtomicBool::new(false))
+}
+
+/// Read one length-prefixed frame. The stream has a short read timeout so
+/// a stop request is seen without relying on another thread's shutdown()
+/// waking a blocked read (not dependable for AF_UNIX on Windows); bytes
+/// already read are kept, so a pause mid-frame never loses framing.
+fn read_frame_until(stream: &mut impl Read, buffer: &mut Vec<u8>, stop: &AtomicBool) -> std::io::Result<()> {
     let mut length = [0u8; 4];
-    stream.read_exact(&mut length)?;
+    fill(stream, &mut length, stop)?;
     let length = u32::from_be_bytes(length) as usize;
     if length > 65_536 {
         return Err(std::io::Error::other("oversized frame"));
     }
     buffer.resize(length, 0);
-    stream.read_exact(buffer)
+    fill(stream, buffer, stop)
 }
 
-fn write_frame(stream: &mut UnixStream, frame: &[u8]) -> std::io::Result<()> {
+fn fill(stream: &mut impl Read, buffer: &mut [u8], stop: &AtomicBool) -> std::io::Result<()> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match stream.read(&mut buffer[filled..]) {
+            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Ok(read) => filled += read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                if stop.load(Ordering::Relaxed) {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn write_frame(stream: &mut impl Write, frame: &[u8]) -> std::io::Result<()> {
     let mut message = Vec::with_capacity(4 + frame.len());
     message.extend_from_slice(&(frame.len() as u32).to_be_bytes());
     message.extend_from_slice(frame);
@@ -1393,7 +1424,7 @@ impl Gateway {
             threads.push(std::thread::Builder::new().name("vm-net-up".into()).spawn(
                 move || {
                     while !shared.stop.load(Ordering::Relaxed) {
-                        let mut stream = match listener.accept() {
+                        let stream = match listener.accept() {
                             Ok((stream, _)) => stream,
                             Err(_) => {
                                 std::thread::sleep(Duration::from_millis(100));
@@ -1401,15 +1432,15 @@ impl Gateway {
                             }
                         };
                         let _ = stream.set_nonblocking(false);
-                        // Reads must preserve frame boundaries even if the sender
-                        // pauses after writing part of a length or payload.
-                        let _ = stream.set_read_timeout(None);
+                        // One handle shared by this reader and the writers:
+                        // no socket duplication, the same on every host.
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
                         let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
-                        *shared.guest.locked() =
-                            stream.try_clone().ok();
+                        let stream = Arc::new(stream);
+                        *shared.guest.locked() = Some(stream.clone());
                         let mut frame = Vec::new();
                         while !shared.stop.load(Ordering::Relaxed) {
-                            match read_frame(&mut stream, &mut frame) {
+                            match read_frame_until(&mut &*stream, &mut frame, &shared.stop) {
                                 Ok(()) => {}
                                 Err(_) => break,
                             }

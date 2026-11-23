@@ -115,6 +115,7 @@ jobs:
       # platforms run the same tests and both must pass.
       - name: cargo test (vm, src-tauri)
         shell: bash
+        timeout-minutes: 25
         run: |
           cargo test --manifest-path vm/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml
