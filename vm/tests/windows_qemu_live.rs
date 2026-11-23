@@ -1,6 +1,6 @@
 //! Opt-in live check of the Windows QEMU integration: the distro engine and
 //! firmware are discovered, the exact app argv boots QEMU under TCG, the QMP
-//! control channel answers over its loopback port, and the stop flow tears
+//! control channel answers on its AF_UNIX socket, and the stop flow tears
 //! everything down. Skipped silently when QEMU is not on PATH.
 //!
 //! cargo test --test windows_qemu_live -- --ignored --nocapture
@@ -11,9 +11,6 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use vm_core::paths::InstancePaths;
-use vm_core::sockets::Endpoint;
-use vm_core::util::read_json;
 use vm_core::vm::Runtime;
 use vm_core::{Config, build_config};
 
@@ -150,8 +147,8 @@ fn the_app_argv_boots_qmp_and_stops_cleanly() {
         .spawn()
         .unwrap_or_else(|error| panic!("QEMU spawn failed: {error}"));
 
-    // QMP answers on the persisted loopback port as soon as QEMU is up.
-    let endpoint = vm_core::sockets::qmp_endpoint(&cfg);
+    // QMP answers on the instance's AF_UNIX socket as soon as QEMU is up.
+    let endpoint = cfg.qmp_socket();
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut status = None;
     while Instant::now() < deadline {
@@ -167,16 +164,6 @@ fn the_app_argv_boots_qmp_and_stops_cleanly() {
     let status = status.expect("QMP never became ready");
     assert_eq!(status["status"], "running");
 
-    // The instance's port set is persisted for every process to read.
-    let ports: serde_json::Value =
-        read_json(&InstancePaths::new(cfg.instance_dir()).file("sockets.json"))
-            .expect("sockets.json recorded");
-    assert!(ports["qmp"].as_u64().unwrap() > 0);
-    match endpoint {
-        Endpoint::Tcp(port) => assert_eq!(port, ports["qmp"].as_u64().unwrap() as u16),
-        Endpoint::Unix(_) => panic!("Windows uses loopback TCP endpoints"),
-    }
-
     // The full stop flow: QMP quit, then termination, then cleanup.
     let runtime = Runtime::new(&cfg);
     let log = log(&cfg.instance_logs_dir().join("windows-live.log"));
@@ -188,7 +175,7 @@ fn the_app_argv_boots_qmp_and_stops_cleanly() {
 
 #[test]
 #[ignore = "needs QEMU for Windows on PATH"]
-fn gateway_mode_connects_qemu_to_the_loopback_gateway() {
+fn gateway_mode_connects_qemu_to_the_gateway_socket() {
     if !qemu_available() {
         eprintln!("skipping: QEMU is not on PATH");
         return;
@@ -197,8 +184,8 @@ fn gateway_mode_connects_qemu_to_the_loopback_gateway() {
     let cfg = boot_config(&scratch.0.join("vm"), "gateway");
     prepare_drives(&cfg);
 
-    // The gateway listens on the instance's data port before QEMU starts.
-    let socket = vm_core::sockets::net_endpoint(&cfg);
+    // The gateway listens on the instance's data socket before QEMU starts.
+    let socket = cfg.net_socket();
     let gateway = vm_core::netgw::Gateway::start_closed(
         &socket,
         Vec::new(),
@@ -212,18 +199,9 @@ fn gateway_mode_connects_qemu_to_the_loopback_gateway() {
         .iter()
         .find(|arg| arg.contains("stream,id=data"))
         .expect("gateway netdev in argv");
-    assert!(netdev.contains("addr.type=inet"), "{netdev}");
-    // QEMU must dial the same port the gateway is listening on.
-    let ports: serde_json::Value =
-        read_json(&InstancePaths::new(cfg.instance_dir()).file("sockets.json"))
-            .expect("sockets.json recorded");
     assert!(
-        netdev.contains(&format!(
-            "addr.port={}",
-            ports["net"].as_u64().unwrap()
-        )),
-        "{netdev} vs {}",
-        ports["net"]
+        netdev.contains(&format!("addr.path={}", socket.display())),
+        "QEMU must dial the gateway's socket: {netdev}"
     );
 
     let mut command = Command::new(&args[0]);
@@ -235,7 +213,7 @@ fn gateway_mode_connects_qemu_to_the_loopback_gateway() {
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let status =
-            vm_core::qmp::qmp_query_status(&vm_core::sockets::qmp_endpoint(&cfg), Duration::from_secs(2));
+            vm_core::qmp::qmp_query_status(&cfg.qmp_socket(), Duration::from_secs(2));
         if let Some(status) = status {
             assert_eq!(status["status"], "running");
             break;
@@ -250,12 +228,12 @@ fn gateway_mode_connects_qemu_to_the_loopback_gateway() {
         );
         std::thread::sleep(Duration::from_millis(300));
     }
-    // QEMU's data NIC dials the gateway's loopback port.
+    // QEMU's data NIC dials the gateway's socket.
     let connected = Instant::now() + Duration::from_secs(30);
     while !gateway.connected() && Instant::now() < connected {
         std::thread::sleep(Duration::from_millis(300));
     }
-    assert!(gateway.connected(), "QEMU connected to the loopback gateway");
+    assert!(gateway.connected(), "QEMU connected to the gateway socket");
     drop(child.kill());
     let _ = child.wait();
 }

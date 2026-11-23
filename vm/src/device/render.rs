@@ -434,10 +434,10 @@ pub fn network_args(cfg: &Config, resolved: &Value) -> Result<Vec<String>> {
             let qemu = crate::vm::resolve_qemu(cfg)?.qemu_bin;
             return Ok(vec![
                 "-netdev".into(),
-                crate::sockets::stream_netdev(
-                    &crate::sockets::net_endpoint(cfg),
-                    "data",
-                    &crate::vm::stream_reconnect_option(&qemu),
+                format!(
+                    "stream,id=data,server=off,addr.type=unix,addr.path={},{}",
+                    cfg.net_socket().display(),
+                    crate::vm::stream_reconnect_option(&qemu)
                 ),
                 "-device".into(),
                 format!("{nic},netdev=data,mac={}", cfg.mac_data()),
@@ -570,15 +570,15 @@ pub fn full_args(
         "-monitor".to_string(),
         "none".to_string(),
         "-chardev".to_string(),
-        crate::sockets::listen_chardev(
-            &crate::sockets::console_endpoint(cfg),
-            "console0",
-            &format!(",logfile={},logappend=on", serial_log.display()),
+        format!(
+            "socket,id=console0,path={},server=on,wait=off,logfile={},logappend=on",
+            cfg.console_socket().display(),
+            serial_log.display()
         ),
         "-serial".to_string(),
         "chardev:console0".to_string(),
         "-qmp".to_string(),
-        crate::sockets::qmp_listen_arg(&crate::sockets::qmp_endpoint(cfg)),
+        format!("unix:{},server=on,wait=off", cfg.qmp_socket().display()),
         "-pidfile".to_string(),
         cfg.pidfile().display().to_string(),
     ]);

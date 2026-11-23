@@ -247,7 +247,10 @@ pub fn build_qemu_args(
         "-device".to_string(),
         "virtio-serial-pci".to_string(),
         "-chardev".to_string(),
-        crate::sockets::listen_chardev(&crate::sockets::qga_endpoint(cfg), "qga0", ""),
+        format!(
+            "socket,path={},server=on,wait=off,id=qga0",
+            cfg.qga_socket().display()
+        ),
         "-device".to_string(),
         "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0".to_string(),
     ]);
@@ -292,15 +295,15 @@ pub fn build_qemu_args(
         "-monitor".to_string(),
         "none".to_string(),
         "-chardev".to_string(),
-        crate::sockets::listen_chardev(
-            &crate::sockets::console_endpoint(cfg),
-            "console0",
-            &format!(",logfile={},logappend=on", serial_log.display()),
+        format!(
+            "socket,id=console0,path={},server=on,wait=off,logfile={},logappend=on",
+            cfg.console_socket().display(),
+            serial_log.display()
         ),
         "-serial".to_string(),
         "chardev:console0".to_string(),
         "-qmp".to_string(),
-        crate::sockets::qmp_listen_arg(&crate::sockets::qmp_endpoint(cfg)),
+        format!("unix:{},server=on,wait=off", cfg.qmp_socket().display()),
         "-pidfile".to_string(),
         cfg.pidfile().display().to_string(),
     ]);
@@ -320,10 +323,10 @@ pub fn build_qemu_args(
         "gateway" => {
             args.extend([
                 "-netdev".to_string(),
-                crate::sockets::stream_netdev(
-                    &crate::sockets::net_endpoint(cfg),
-                    "data",
-                    &stream_reconnect_option(&args[0]),
+                format!(
+                    "stream,id=data,server=off,addr.type=unix,addr.path={},{}",
+                    cfg.net_socket().display(),
+                    stream_reconnect_option(&args[0])
                 ),
                 "-device".to_string(),
                 format!("virtio-net-pci,netdev=data,mac={}", cfg.mac_data()),
@@ -467,14 +470,14 @@ impl Runtime {
     }
 
     pub fn qmp(&self, timeout: Duration) -> Option<QmpClient> {
-        QmpClient::connect(&crate::sockets::qmp_endpoint(&self.cfg), timeout).ok()
+        QmpClient::connect(&self.cfg.qmp_socket(), timeout).ok()
     }
 
     pub fn running(&self) -> bool {
         if !self.alive() {
             return false;
         }
-        match qmp_query_status(&crate::sockets::qmp_endpoint(&self.cfg), Duration::from_secs(3)) {
+        match qmp_query_status(&self.cfg.qmp_socket(), Duration::from_secs(3)) {
             Some(status) => matches!(
                 status.get("status").and_then(Value::as_str),
                 Some("running") | Some("paused")
@@ -487,7 +490,7 @@ impl Runtime {
         let pid = self.pid();
         let alive = pid_alive(pid);
         let qmp = if alive {
-            qmp_query_status(&crate::sockets::qmp_endpoint(&self.cfg), Duration::from_secs(2))
+            qmp_query_status(&self.cfg.qmp_socket(), Duration::from_secs(2))
         } else {
             None
         };
@@ -524,7 +527,6 @@ impl Runtime {
                 self.cfg.qga_socket(),
                 self.cfg.console_socket(),
             ] {
-                // sockets.json keeps the loopback ports for the next start.
                 let _ = fs::remove_file(path);
             }
         }
@@ -544,7 +546,7 @@ impl Runtime {
                     }
                 ));
             }
-            if qmp_query_status(&crate::sockets::qmp_endpoint(&self.cfg), Duration::from_secs(1)).is_some() {
+            if qmp_query_status(&self.cfg.qmp_socket(), Duration::from_secs(1)).is_some() {
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(100));
@@ -718,8 +720,8 @@ impl Runtime {
             "ssh_port": self.cfg.ssh_port,
             "network_mode": self.cfg.network_mode,
             "serial_log": serial_log.display().to_string(),
-            "qmp_socket": crate::sockets::qmp_endpoint(&self.cfg).describe(),
-            "qga_socket": crate::sockets::qga_endpoint(&self.cfg).describe(),
+            "qmp_socket": self.cfg.qmp_socket().display().to_string(),
+            "qga_socket": self.cfg.qga_socket().display().to_string(),
         });
         if let Err(error) =
             crate::util::atomic_write_json(&self.cfg.runtime_path(), &runtime, 0o600)
@@ -977,7 +979,7 @@ impl Runtime {
         if self.cfg.device_enabled() {
             return false;
         }
-        match QgaClient::connect(&crate::sockets::qga_endpoint(&self.cfg), Duration::from_secs(3)) {
+        match QgaClient::connect(&self.cfg.qga_socket(), Duration::from_secs(3)) {
             Ok(mut client) => client.execute("guest-ping", None).is_ok(),
             Err(_) => false,
         }

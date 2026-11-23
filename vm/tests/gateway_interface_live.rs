@@ -166,7 +166,7 @@ fn bound_interface_gateway_dns_https_and_system_route() {
         .expect("test interface must be active with IPv4");
     let temp = TempDir::new();
     let gateway = Gateway::start_closed(
-        &vm_core::sockets::Endpoint::Unix(temp.0.join("gateway.sock")),
+        &temp.0.join("gateway.sock"),
         vec![],
         None,
         (Ipv4Addr::LOCALHOST, 0).into(),

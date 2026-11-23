@@ -23,6 +23,7 @@ fs4 = { version = "1", default-features = false, features = ["sync"] }
 getrandom = "0.4"
 libc = "0.2"
 netdev = { version = "0.48", default-features = false, features = ["gateway"] }
+polling = "3"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -42,4 +43,4 @@ url = "2"
 which = "8"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Networking_WinSock"] }
+uds_windows = "1"

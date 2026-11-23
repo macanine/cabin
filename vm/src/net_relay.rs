@@ -55,7 +55,7 @@ fn is_host_address(ip: Ipv4Addr) -> io::Result<bool> {
     }
     #[cfg(windows)]
     {
-        Ok(crate::compat::is_host_address_windows(ip))
+        Ok(crate::network_interfaces::is_host_address(ip))
     }
 }
 

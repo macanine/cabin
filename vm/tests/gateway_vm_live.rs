@@ -85,8 +85,7 @@ fn guest_dns_tcp_proxy_switch_and_fail_closed() {
         temp.join("vars.fd"),
     )
     .unwrap();
-    let socket = vm_core::sockets::Endpoint::Unix(temp.join("net.sock"));
-    let socket_path = temp.join("net.sock");
+    let socket = temp.join("net.sock");
     let gateway = Gateway::start(
         &socket,
         vec![Ipv4Addr::new(1, 1, 1, 1)],
@@ -100,7 +99,7 @@ fn guest_dns_tcp_proxy_switch_and_fail_closed() {
         .unwrap()
         .port();
     let log = std::fs::File::create(temp.join("serial.log")).unwrap();
-    let child = Command::new("qemu-system-aarch64").args(["-machine", "virt,accel=hvf", "-cpu", "host", "-m", "1024", "-smp", "2", "-display", "none", "-monitor", "none", "-serial", "stdio", "-drive", "if=pflash,format=raw,unit=0,readonly=on,file=/opt/homebrew/share/qemu/edk2-aarch64-code.fd", "-drive"]).arg(format!("if=pflash,format=raw,unit=1,file={}", temp.join("vars.fd").display())).arg("-drive").arg(format!("if=virtio,format=qcow2,file={}", disk.display())).arg("-drive").arg(format!("if=virtio,format=raw,readonly=on,file={}", iso.display())).args(["-netdev", &format!("user,id=mgmt,restrict=on,ipv6=off,hostfwd=tcp:127.0.0.1:{port}-:22"), "-device", "virtio-net-pci,netdev=mgmt,mac=52:54:00:12:34:56", "-netdev", &format!("stream,id=data,server=off,addr.type=unix,addr.path={},reconnect-ms=1000", socket_path.display()), "-device", &format!("virtio-net-pci,netdev=data,mac={data_mac}")]).stdout(Stdio::from(log)).stderr(Stdio::null()).spawn().unwrap();
+    let child = Command::new("qemu-system-aarch64").args(["-machine", "virt,accel=hvf", "-cpu", "host", "-m", "1024", "-smp", "2", "-display", "none", "-monitor", "none", "-serial", "stdio", "-drive", "if=pflash,format=raw,unit=0,readonly=on,file=/opt/homebrew/share/qemu/edk2-aarch64-code.fd", "-drive"]).arg(format!("if=pflash,format=raw,unit=1,file={}", temp.join("vars.fd").display())).arg("-drive").arg(format!("if=virtio,format=qcow2,file={}", disk.display())).arg("-drive").arg(format!("if=virtio,format=raw,readonly=on,file={}", iso.display())).args(["-netdev", &format!("user,id=mgmt,restrict=on,ipv6=off,hostfwd=tcp:127.0.0.1:{port}-:22"), "-device", "virtio-net-pci,netdev=mgmt,mac=52:54:00:12:34:56", "-netdev", &format!("stream,id=data,server=off,addr.type=unix,addr.path={},reconnect-ms=1000", socket.display()), "-device", &format!("virtio-net-pci,netdev=data,mac={data_mac}")]).stdout(Stdio::from(log)).stderr(Stdio::null()).spawn().unwrap();
     let _vm = Vm(child);
     let started = Instant::now();
     loop {

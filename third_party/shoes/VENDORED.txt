@@ -2,7 +2,8 @@ shoes 0.3.2 from crates.io (https://github.com/cfal/shoes), MIT licensed.
 
 Local changes (keep this list exact when upgrading):
 - src/embed.rs added: `validate` and `run` entry points for in-process listeners, and
-  `run_tun` (one TUN config on a host-owned packet fd, used by the VM network gateway).
+  `run_tun_controlled` (one TUN config on a host-owned packet socket, used by the VM
+  network gateway; see the TUN device entry below).
 - src/embed.rs: `run_tun_controlled` accepts a host pause barrier, and `HttpRelay`
   exposes the existing HTTP handler for caller-owned TCP sockets and cancellation.
   Embedded listeners and TUN use the IPv4-only resolver policy and reject
@@ -35,7 +36,7 @@ Local changes (keep this list exact when upgrading):
   Bound listener mode supports HTTP, SOCKS and mixed TCP listeners with IP-literal
   bind addresses, and rejects custom DNS configuration.
 - src/lib.rs: `pub mod embed;`
-- Cargo.toml: library builds as rlib only; bin and test targets removed.
+- Cargo.toml: bin and test targets removed (the library builds as rlib only).
 - Removed from the published crate: android/, examples/, scripts/, include/, tests/.
 - src/main.rs and the tikv-jemallocator dependency removed (binary only).
 - src/embed.rs parses YAML itself because upstream gates load_config_str behind the ffi feature.
@@ -48,13 +49,29 @@ Local changes (keep this list exact when upgrading):
 - src/tcp/tcp_client_handler_factory.rs: wraps the Shadowsocks handler with
   `ObfsClientHandler` when `plugin` is set.
 - src/lib.rs: `mod obfs;` (and the client type re-exports in config/types/mod.rs).
-- Windows host support (Cabin addition): the embedded TUN stack can run on
-  Windows with a caller-owned packet device instead of a TUN fd. `src/tun`
-  is no longer Unix-only; `Wake` uses a loopback UDP pair there, and
-  `tcp_stack_direct` reads/writes IP packets through one half of that pair
-  (`TunDescriptor` = `Arc<UdpSocket>`). New entry points:
-  `embed::run_tun_controlled_with_device(config, shutdown, gate, device)` and
-  `tun::run_tun_from_config_controlled_with_device`. `RelayGate`/`RelayTicket`
-  are re-exported on all platforms. Unix fd paths are unchanged. Tests that
-  need Unix sockets are gated `#[cfg(all(test, unix))]`. Cargo.toml gains
-  `[target.'cfg(windows)'.dependencies] windows-sys` (Foundation + WinSock).
+- TUN device (Cabin change, one code path on every platform): the stack reads and
+  writes raw IP packets, one datagram each, on a `std::net::UdpSocket` the embedder
+  passes in (one half of `embed::loopback_udp_pair`, a connected non-blocking
+  loopback UDP pair whose buffers the caller may size through socket2; on Windows it
+  also clears SIO_UDP_CONNRESET). Entry points: `embed::run_tun_controlled(config,
+  shutdown, gate, device)` and `run_tun_controlled_with_bound_dns(.., bound, device)`.
+  The TUN config's `device_fd` is only the schema tag that marks a TUN config; its
+  value is ignored.
+  * src/tun/wake.rs: `Wake` is a loopback UDP pair, and `WakeReceiver::wait` waits on
+    the wake socket and the packet socket with the `polling` crate (level-triggered
+    epoll, kqueue or wepoll). `loopback_udp_pair` lives here.
+  * src/tun/tcp_stack_direct.rs: one `DirectDevice` and one stack loop over the UDP
+    socket. Fd I/O, TUN packet-information headers and EOF detection are removed.
+  * src/tun/{mod,tun_server}.rs: one `run_tun_server` taking the device. Real TUN
+    device creation, `raw_fd`, `close_fd_on_drop`, `packet_information`, interface
+    naming, `start_tun_server` and `run_tun_from_config` are removed, and so is the
+    `tun` crate dependency.
+  * src/tcp/tcp_server.rs, src/ffi/common.rs: a TUN server in the config-driven path
+    and mobile TUN descriptors return `Unsupported`.
+  * Tests that used Unix socket pairs use UDP pairs; the EOF-shutdown and
+    packet-information tests are removed.
+- Cargo.toml: `polling` added and `tun` removed;
+  `[target.'cfg(windows)'.dependencies] windows-sys` (Foundation, WinSock) is used
+  for SIO_UDP_CONNRESET.
+- src/tcp/tcp_server.rs: `PathBuf` and the Unix socket path binding are unused on
+  Windows, so they carry the matching cfg to keep the build warning-free.

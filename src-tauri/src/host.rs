@@ -87,10 +87,9 @@ fn start_gateway(
     cfg: &vm_core::config::Config,
     route: Option<&NetworkRoute>,
 ) -> Result<(), AppError> {
-    let socket = vm_core::sockets::net_endpoint(cfg);
     match route {
-        Some(route) => network.start_with(&socket, cfg.ssh_port, route)?,
-        None => network.start(&socket, cfg.ssh_port)?,
+        Some(route) => network.start_with(&cfg.net_socket(), cfg.ssh_port, route)?,
+        None => network.start(&cfg.net_socket(), cfg.ssh_port)?,
     }
     if let Err(error) = cfg.set_ssh_relay_port(network.ssh_port()) {
         eprintln!("cabin: could not record the SSH relay port: {error}");
@@ -2113,18 +2112,6 @@ impl Host {
 
 #[cfg(test)]
 mod tests {
-    fn gateway_endpoint(dir: &std::path::Path) -> vm_core::sockets::Endpoint {
-        #[cfg(unix)]
-        {
-            vm_core::sockets::Endpoint::Unix(dir.join("gateway.sock"))
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = dir;
-            vm_core::sockets::Endpoint::Tcp(0)
-        }
-    }
-
     use super::*;
 
     #[test]
@@ -2135,7 +2122,7 @@ mod tests {
             machine.install_config(&InstallOptions::default()).unwrap().save_instance_meta().unwrap();
             let host = Host::new(machine, PathBuf::from("/missing/agentd")).unwrap();
             if running {
-                host.network.start(&gateway_endpoint(home.path()), 0).unwrap();
+                host.network.start(&home.path().join("gateway.sock"), 0).unwrap();
                 host.network.set_paused(paused).unwrap();
                 host.update(|status| {
                     status.state = MachineState::Running;
@@ -2167,7 +2154,7 @@ mod tests {
         let machine = Machine::new(home.path(), concat!(env!("CARGO_MANIFEST_DIR"), "/../vm"));
         let host = Host::new(machine, PathBuf::from("/missing/agentd")).unwrap();
         let route = NetworkRoute::default();
-        host.network.start(&gateway_endpoint(home.path()), 0).unwrap();
+        host.network.start(&home.path().join("gateway.sock"), 0).unwrap();
         host.network.begin_check(route_revision(&route), false).unwrap();
         assert_eq!(host.network.status(true).unwrap().gate, NetworkGateMode::Checking);
         host.sync_environment_revision();
