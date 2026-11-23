@@ -175,10 +175,11 @@ fn relative(root: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(root).ok()?;
     let text = rel.to_str()?;
     // Entry paths are `/`-separated on the wire, whatever the host uses.
-    #[cfg(windows)]
-    let text = text.replace('\\', "/");
-    #[cfg(unix)]
-    let text = text.to_owned();
+    let text = if std::path::MAIN_SEPARATOR == '/' {
+        text.to_owned()
+    } else {
+        text.replace(std::path::MAIN_SEPARATOR, "/")
+    };
     (!text.is_empty()).then_some(text)
 }
 

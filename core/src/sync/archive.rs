@@ -9,8 +9,6 @@
 
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -183,8 +181,7 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
         tar::EntryType::Directory => {
             clear_for(&full, true)?;
             fs::create_dir_all(&full)?;
-            #[cfg(unix)]
-            fs::set_permissions(&full, fs::Permissions::from_mode(mode | 0o700))?;
+            crate::fsx::set_mode(&full, mode | 0o700)?;
         }
         tar::EntryType::Symlink => {
             let target = entry.link_name()?.ok_or_else(|| io::Error::other("symlink without a target"))?.into_owned();
@@ -192,8 +189,7 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
             if fs::symlink_metadata(&full).is_ok() {
                 fs::remove_file(&full)?;
             }
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&target, &full)?;
+            crate::fsx::symlink(&target, &full)?;
             fs::set_times_nofollow(&full, times)?;
         }
         tar::EntryType::Regular | tar::EntryType::Continuous => {
@@ -204,9 +200,10 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
                 let tmp = full.with_file_name(format!(".vasync-{}.tmp", uuid::Uuid::new_v4()));
                 let mut options = fs::OpenOptions::new();
                 options.write(true).create_new(true);
-                #[cfg(unix)]
-                options.mode(0o600);
-                match options.open(&tmp) {
+                match options.open(&tmp).and_then(|file| {
+                    crate::fsx::set_mode(&tmp, 0o600)?;
+                    Ok(file)
+                }) {
                     Ok(file) => break (tmp, file),
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                     Err(error) => return Err(error),
@@ -214,8 +211,7 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
             };
             let written = (|| {
                 io::copy(entry, &mut file)?;
-                #[cfg(unix)]
-                file.set_permissions(fs::Permissions::from_mode(mode))?;
+                crate::fsx::set_mode(&tmp, mode)?;
                 file.set_times(times)?;
                 drop(file);
                 clear_for(&full, false)?;
@@ -234,16 +230,16 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::{SyncRules, scan};
 
     #[cfg(unix)]
     #[test]
     fn a_tree_round_trips_with_modes_mtimes_and_symlinks() {
+        use crate::sync::{SyncRules, scan};
         let src = tempfile::tempdir().unwrap();
         let dst = tempfile::tempdir().unwrap();
         fs::create_dir_all(src.path().join("bin")).unwrap();
         fs::write(src.path().join("bin/run"), "#!/bin/sh\n").unwrap();
-        fs::set_permissions(src.path().join("bin/run"), fs::Permissions::from_mode(0o755)).unwrap();
+        crate::fsx::set_mode(&src.path().join("bin/run"), 0o755).unwrap();
         fs::set_times(
             src.path().join("bin/run"),
             fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 5)),
@@ -265,7 +261,7 @@ mod tests {
         for (a, b) in entries.iter().zip(&copied) {
             assert!(crate::sync::plan::same(a, b), "{a:?} vs {b:?}");
         }
-        assert_eq!(fs::metadata(dst.path().join("bin/run")).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(crate::fsx::mode_of(&fs::metadata(dst.path().join("bin/run")).unwrap()), 0o755);
         assert_eq!(fs::read_link(dst.path().join("link")).unwrap(), Path::new("bin/run"));
         assert_eq!(fs::read_to_string(dst.path().join(&long)).unwrap(), "long");
     }

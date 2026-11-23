@@ -1,17 +1,16 @@
 //! Host-platform differences: CPU acceleration, UEFI firmware locations and
-//! the cloud-init seed ISO tooling.
+//! the few Unix-only process and permission checks.
 //!
 //! The product targets macOS (HVF). Linux is supported for development and
 //! testing: KVM when `/dev/kvm` is usable, otherwise TCG emulation. Windows
-//! uses a native-architecture guest and the bundled QEMU and OpenSSH.
-//! It builds the seed ISO in-process (`iso`).
+//! uses a native-architecture guest and the bundled QEMU and OpenSSH. Every
+//! host builds the seed ISO in process (`iso`).
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use crate::Result;
 use crate::arch::GuestArch;
-use crate::util::{capture, message, which};
+use crate::util::which;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Accel {
@@ -23,8 +22,8 @@ pub struct Accel {
     pub emulated: bool,
 }
 
-/// Whether the Windows Hypervisor Platform feature is enabled (WHPX needs it).
-#[cfg(windows)]
+/// Whether the Windows Hypervisor Platform feature is enabled (WHPX needs it);
+/// false on every other OS, where `SystemRoot` is unset.
 fn whpx_enabled() -> bool {
     std::env::var_os("SystemRoot")
         .map(|root| {
@@ -38,16 +37,10 @@ fn whpx_enabled() -> bool {
 
 /// Whether WHPX can be tried: the feature's DLL is present, no WHPX start
 /// failed in this process and no probe rejected it.
-#[cfg(windows)]
 pub fn whpx_available() -> bool {
     whpx_enabled()
         && crate::accel::fallback_reason().is_none()
         && crate::accel::cached_whpx_problem().is_none()
-}
-
-#[cfg(not(windows))]
-pub fn whpx_available() -> bool {
-    false
 }
 
 pub fn accel() -> Accel {
@@ -131,7 +124,6 @@ pub fn qemu_system() -> &'static str {
 }
 
 /// Linux distribution firmware pairs (code, writable variables template).
-#[cfg(unix)]
 pub fn distro_firmware_pairs() -> Vec<(PathBuf, PathBuf)> {
     GuestArch::current().distro_firmware_paths()
 }
@@ -139,8 +131,10 @@ pub fn distro_firmware_pairs() -> Vec<(PathBuf, PathBuf)> {
 /// The distribution's QEMU on a Linux development host. macOS uses the
 /// bundled or downloaded engine and Windows only the bundled one (see
 /// `qemu_engine`), so this is `None` there and never searches PATH.
-#[cfg(target_os = "linux")]
 pub fn distro_qemu() -> Option<crate::qemu_engine::Engine> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
     let (qemu, qemu_img) = (which(qemu_system())?, which("qemu-img")?);
     let (code, vars) = distro_firmware_pairs()
         .into_iter()
@@ -152,11 +146,6 @@ pub fn distro_qemu() -> Option<crate::qemu_engine::Engine> {
         firmware_code: code,
         firmware_vars: vars,
     })
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn distro_qemu() -> Option<crate::qemu_engine::Engine> {
-    None
 }
 
 /// `ssh`, `ssh-keygen` or another OpenSSH tool: the bundled one on Windows,
@@ -181,168 +170,69 @@ pub fn resolve_ssh_argv(mut argv: Vec<String>) -> Vec<String> {
     argv
 }
 
-/// Tools the VM pipeline needs on this host.
+/// Tools the VM pipeline needs on every host. The seed ISO and the password
+/// hash are built in process.
 pub fn required_tools() -> &'static [&'static str] {
-    if cfg!(target_os = "macos") {
-        &["ssh", "ssh-keygen", "hdiutil", "openssl"]
-    } else if cfg!(windows) {
-        // OpenSSH ships in the bundle, the seed ISO is built in-process and
-        // the password hash in Rust: nothing else is required.
-        &[]
-    } else {
-        &["ssh", "ssh-keygen", "xorriso", "openssl"]
-    }
+    &["ssh", "ssh-keygen"]
 }
 
-/// Build a CIDATA ISO from the staged files. macOS uses `hdiutil`, Linux
-/// `xorriso`; Windows writes the image in-process (`crate::iso`).
+/// Build the CIDATA seed ISO in process from the staged files.
 pub fn build_seed_iso(stage: &Path, output: &Path, files: &[&str]) -> Result<()> {
-    if cfg!(windows) {
-        let staged: Vec<(&str, Vec<u8>)> = files
-            .iter()
-            .map(|name| {
-                let data = std::fs::read(stage.join(name))?;
-                Ok((*name, data))
-            })
-            .collect::<std::io::Result<_>>()?;
-        let staged: Vec<(&str, &[u8])> =
-            staged.iter().map(|(name, data)| (*name, data.as_slice())).collect();
-        return crate::iso::build_iso(output, &staged);
-    }
-    let argv = seed_iso_argv(stage, output, files);
-    let built = capture(&argv, Duration::from_secs(120), None);
-    if built.code != 0 {
-        return message(format!(
-            "could not build the seed ISO: {}",
-            built.output.trim()
-        ));
-    }
-    Ok(())
-}
-
-/// Build a CIDATA ISO from the files in `stage` (macOS: hdiutil, Linux: xorriso).
-pub fn seed_iso_argv(stage: &Path, output: &Path, files: &[&str]) -> Vec<String> {
-    if cfg!(target_os = "macos") {
-        vec![
-            "hdiutil".into(),
-            "makehybrid".into(),
-            "-o".into(),
-            output.display().to_string(),
-            "-iso".into(),
-            "-joliet".into(),
-            "-default-volume-name".into(),
-            "CIDATA".into(),
-            stage.display().to_string(),
-        ]
-    } else {
-        let mut argv: Vec<String> = [
-            "xorriso", "-as", "mkisofs", "-quiet", "-volid", "CIDATA", "-joliet", "-rock",
-            "-output",
-        ]
+    let staged: Vec<(&str, Vec<u8>)> = files
         .iter()
-        .map(|s| s.to_string())
-        .collect();
-        argv.push(output.display().to_string());
-        for file in files {
-            argv.push(stage.join(file).display().to_string());
-        }
-        argv
+        .map(|name| Ok((*name, std::fs::read(stage.join(name))?)))
+        .collect::<std::io::Result<_>>()?;
+    let staged: Vec<(&str, &[u8])> =
+        staged.iter().map(|(name, data)| (*name, data.as_slice())).collect();
+    crate::iso::build_iso(output, &staged)
+}
+
+// ---- where the operating systems genuinely differ -------------------------
+
+/// Whether the directory is private to this user. Windows access lists
+/// already scope a profile directory to its user.
+pub fn owner_only(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // SAFETY: geteuid has no preconditions.
+        metadata.permissions().mode() & 0o777 == 0o700
+            && metadata.uid() == unsafe { libc::geteuid() }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        true
     }
 }
 
-/// Linux: check the ISO's volume label and extract it (no mount needed).
-pub fn linux_extract_iso(iso: &Path, into: &Path) -> Result<String> {
-    if which("xorriso").is_none() {
-        return message("xorriso is required to verify the seed ISO");
+/// Whether this process runs as root (never true on Windows).
+pub fn is_root() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions.
+        unsafe { libc::geteuid() == 0 }
     }
-    let info = capture(
-        &[
-            "xorriso".into(),
-            "-indev".into(),
-            iso.display().to_string(),
-            "-pvd_info".into(),
-        ],
-        Duration::from_secs(30),
-        None,
-    );
-    let label = info
-        .output
-        .lines()
-        .find_map(|line| line.strip_prefix("Volume Id    :"))
-        .map(|value| value.trim().to_string())
-        .unwrap_or_default();
-    let extract = capture(
-        &[
-            "xorriso".into(),
-            "-osirrox".into(),
-            "on".into(),
-            "-indev".into(),
-            iso.display().to_string(),
-            "-extract".into(),
-            "/".into(),
-            into.display().to_string(),
-        ],
-        Duration::from_secs(60),
-        None,
-    );
-    if extract.code != 0 {
-        return message(format!(
-            "cannot read generated seed ISO: {}",
-            extract.output.trim()
-        ));
+    #[cfg(not(unix))]
+    {
+        false
     }
-    Ok(label)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn seed_iso_round_trip_on_linux() {
-        if cfg!(target_os = "macos") || which("xorriso").is_none() {
-            return;
+/// Start a spawned tool in its own session so a terminal hang-up cannot reach
+/// it (Windows children are already independent).
+pub fn detach_session(command: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setsid is async-signal-safe and touches no shared state.
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
         }
-        let dir = std::env::temp_dir().join(format!("seed-iso-test-{}", std::process::id()));
-        let stage = dir.join("stage");
-        std::fs::create_dir_all(&stage).unwrap();
-        for name in ["user-data", "meta-data", "network-config"] {
-            std::fs::write(stage.join(name), format!("{name}\n")).unwrap();
-        }
-        let iso = dir.join("seed.iso");
-        let argv = seed_iso_argv(&stage, &iso, &["user-data", "meta-data", "network-config"]);
-        let built = capture(&argv, Duration::from_secs(30), None);
-        assert_eq!(built.code, 0, "{}", built.output);
-        let label = linux_extract_iso(&iso, &dir.join("out")).unwrap();
-        assert_eq!(label.to_lowercase(), "cidata");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("out/user-data")).unwrap(),
-            "user-data\n"
-        );
-        let _ = std::fs::remove_dir_all(dir);
     }
-
-    #[cfg(windows)]
-    #[test]
-    fn seed_iso_builds_in_process_on_windows() {
-        let dir = std::env::temp_dir().join(format!(
-            "seed-iso-win-{}-{}",
-            std::process::id(),
-            crate::util::now_millis()
-        ));
-        let stage = dir.join("stage");
-        std::fs::create_dir_all(&stage).unwrap();
-        for name in ["user-data", "meta-data", "network-config"] {
-            std::fs::write(stage.join(name), format!("{name}\n")).unwrap();
-        }
-        let iso = dir.join("seed.iso");
-        build_seed_iso(&stage, &iso, &["user-data", "meta-data", "network-config"]).unwrap();
-        assert!(iso.is_file());
-        let bytes = std::fs::read(&iso).unwrap();
-        // Volume label from the primary volume descriptor.
-        let pvd = &bytes[16 * 2048..16 * 2048 + 72];
-        assert_eq!(&pvd[1..6], b"CD001");
-        assert_eq!(String::from_utf8_lossy(&pvd[40..46]), "CIDATA");
-        let _ = std::fs::remove_dir_all(dir);
-    }
+    #[cfg(not(unix))]
+    let _ = command;
 }

@@ -74,8 +74,8 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   rollback point tied to the gateway session and path revision. `poll_interface_paths`
   invalidates stale adapter bindings and triggers recovery while the SSH relay remains
   available.
-- `vm/src/network_interfaces.rs` uses `getifaddrs` for link and address state and macOS
-  hardware labels for display. Compare interface index and usable IPv4 addresses
+- `vm/src/network_interfaces.rs` uses `netdev` on every host for index, link state, IPv4
+  addresses, and display labels. Compare interface index and usable IPv4 addresses
   independently of default-path events. Keep the probe and packet allowlist aligned through
   `vm/src/network_probe_targets.rs`.
 - Observe the exit through the gateway listener. `ip-detection` follows
@@ -237,11 +237,14 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   platform. `vm/src/accel.rs` owns acceleration status and the WHPX probe and TCG fallback.
   Do not branch on `aarch64` or `x86_64` elsewhere.
 - macOS (Apple Silicon) is the product target with HVF, the pinned macanine QEMU engine,
-  Unix sockets, `hdiutil`, and the AppKit window chrome. Linux development uses distro QEMU
-  (KVM or TCG), `xorriso`, and PATH tools. Windows x64 uses an amd64 guest and QEMU from
-  PATH or Program Files. `vm/src/compat.rs` maps process control, socket pairs,
-  readiness polling, entropy, volumes, adapters (`GetAdaptersAddresses`), and time to the
-  native APIs; `vm/src/sockets.rs` replaces Unix control sockets with loopback TCP ports
+  Unix sockets, and the AppKit window chrome. Linux development uses distro QEMU
+  (KVM or TCG) and PATH tools. Windows x64 uses an amd64 guest and QEMU from
+  PATH or Program Files. One code path serves every host: `chrono` for time, `getrandom`,
+  `fs4` for volumes, `sysinfo` for process checks, termination, and memory, `which` for
+  tools, `netdev` for adapters, `sha-crypt` for the guest password hash, and std file
+  locks. The few real differences (Unix mode bits, `setsid`, the effective-owner check)
+  live in `util::chmod` and `platform.rs`. `vm/src/compat.rs` keeps only the socket pairs
+  and readiness polling; `vm/src/sockets.rs` replaces Unix control sockets with loopback TCP ports
   persisted per instance in `sockets.json`; `vm/src/iso.rs` writes the seed ISO in process;
   and the gateway packet path runs over a loopback UDP pair through the same shoes stack
   (see `third_party/shoes/VENDORED.txt`). The guest side of `core` stays Unix-only: the

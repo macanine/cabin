@@ -2,8 +2,6 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -40,20 +38,10 @@ impl Journal {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        #[cfg(unix)]
-        unsafe {
-            libc::flock(file.as_raw_fd(), libc::LOCK_EX);
-        }
-        #[cfg(windows)]
         let _ = file.lock();
         file.write_all(line.as_bytes())?;
         file.flush()?;
         file.sync_all()?;
-        #[cfg(unix)]
-        unsafe {
-            libc::flock(file.as_raw_fd(), libc::LOCK_UN);
-        }
-        #[cfg(windows)]
         let _ = file.unlock();
         Ok(record)
     }

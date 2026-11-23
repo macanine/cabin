@@ -14,9 +14,6 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
 use crate::py_json;
 use crate::{Error, Result};
 
@@ -27,21 +24,6 @@ pub fn message<T>(text: impl Into<String>) -> Result<T> {
 }
 
 // ---- time ---------------------------------------------------------------
-
-fn format_time(format: &str, utc: bool) -> String {
-    match format {
-        "%Y-%m-%dT%H:%M:%S+00:00" if utc => crate::compat::utc_stamp_string(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
-        ),
-        "%Y%m%d-%H%M%S" if !utc => {
-            crate::compat::local_stamp_string(std::time::SystemTime::now())
-        }
-        _ => String::new(),
-    }
-}
 
 /// The standard persisted timestamp: Unix milliseconds.
 pub fn now_millis() -> i64 {
@@ -65,48 +47,41 @@ pub fn timestamp_millis(value: &serde_json::Value) -> Option<i64> {
 
 /// Python `utcnow()`: `datetime.now(timezone.utc).isoformat(timespec="seconds")`.
 pub fn utcnow() -> String {
-    format_time("%Y-%m-%dT%H:%M:%S+00:00", true)
+    utcstamp_from_millis(now_millis())
 }
 
 /// `utcnow()` format for an arbitrary instant (for comparing journal times).
 pub fn utcstamp_of(at: std::time::SystemTime) -> String {
-    let secs = at
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default();
-    crate::compat::utc_stamp_string(secs)
+    chrono::DateTime::<chrono::Utc>::from(at).format(UTC_STAMP).to_string()
 }
 
 /// `utcnow()` display text for a stored millisecond timestamp.
 pub fn utcstamp_from_millis(ms: i64) -> String {
-    crate::compat::utc_stamp_string(ms.div_euclid(1000))
+    chrono::DateTime::from_timestamp_millis(ms)
+        .unwrap_or_default()
+        .format(UTC_STAMP)
+        .to_string()
 }
+
+const UTC_STAMP: &str = "%Y-%m-%dT%H:%M:%S+00:00";
 
 /// Parse a `utcnow()` stamp (`2026-11-15T13:26:45+00:00`).
 pub fn parse_utc_stamp(text: &str) -> Option<std::time::SystemTime> {
-    let text = text.trim().trim_end_matches("+00:00");
-    let (date, time) = text.split_once('T')?;
-    let mut d = date.split('-').map(|p| p.parse::<i64>().ok());
-    let (year, month, day) = (d.next()??, d.next()??, d.next()??);
-    let mut t = time.split(':').map(|p| p.parse::<i64>().ok());
-    let (hour, minute, second) = (t.next()??, t.next()??, t.next()??);
-    // Days from the civil date (Howard Hinnant's algorithm).
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    let secs = days * 86400 + hour * 3600 + minute * 60 + second;
-    u64::try_from(secs)
+    let text = text.trim();
+    let stamp = chrono::DateTime::parse_from_rfc3339(text)
+        .map(|time| time.to_utc())
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S").map(|time| time.and_utc())
+        })
+        .ok()?;
+    u64::try_from(stamp.timestamp())
         .ok()
-        .map(|secs| std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+        .map(|secs| std::time::UNIX_EPOCH + Duration::from_secs(secs))
 }
 
 /// Python `localstamp()`: local time `%Y%m%d-%H%M%S`.
 pub fn localstamp() -> String {
-    format_time("%Y%m%d-%H%M%S", false)
+    chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
 }
 
 // ---- filesystem ---------------------------------------------------------
@@ -179,14 +154,11 @@ pub fn atomic_write_bytes(path: &Path, data: &[u8], mode: u32) -> Result<()> {
     let result = (|| -> Result<()> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(mode);
         let mut file = options.open(&temp)?;
+        chmod(&temp, mode)?;
         file.write_all(data)?;
         file.flush()?;
         file.sync_all()?;
-        #[cfg(unix)]
-        fs::set_permissions(&temp, fs::Permissions::from_mode(mode))?;
         fs::rename(&temp, path)?;
         if let Ok(directory) = File::open(parent) {
             let _ = directory.sync_all();
@@ -245,15 +217,16 @@ pub fn copy_dir(source: &Path, destination: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Set Unix permission bits. Windows stores none, and the profile directory
+/// already belongs to the current user, so this is a no-op there.
 pub fn chmod(path: &Path, mode: u32) -> std::io::Result<()> {
     #[cfg(unix)]
     {
+        use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(mode))
     }
     #[cfg(not(unix))]
     {
-        // Windows stores no mode bits; the profile directory already belongs
-        // to the current user.
         let _ = (path, mode);
         Ok(())
     }
@@ -333,55 +306,82 @@ pub fn shell_quote(value: &str) -> String {
 }
 
 pub fn which(name: &str) -> Option<PathBuf> {
-    #[cfg(unix)]
-    if name.contains('/') {
-        let path = PathBuf::from(name);
-        return if executable(&path) { Some(path) } else { None };
-    }
-    #[cfg(windows)]
-    if name.contains(['/', '\\']) {
-        let path = PathBuf::from(name);
-        return if path.is_file() { Some(path) } else { None };
-    }
-    let path = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&path) {
-        #[cfg(unix)]
-        let candidate = directory.join(name);
-        // Windows requires the .exe suffix and no executable bit check.
-        #[cfg(windows)]
-        let candidate = directory.join(format!("{name}.exe"));
-        if executable(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
+    which::which(name).ok()
 }
 
-fn executable(path: &Path) -> bool {
-    match fs::metadata(path) {
-        #[cfg(unix)]
-        Ok(metadata) => metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
-        #[cfg(windows)]
-        Ok(metadata) => metadata.is_file(),
-        Err(_) => false,
+/// A running process looked up by pid: `None` when it does not exist.
+fn process_info<T>(
+    pid: u32,
+    kind: sysinfo::ProcessRefreshKind,
+    read: impl FnOnce(&sysinfo::Process) -> T,
+) -> Option<T> {
+    if pid <= 1 {
+        return None;
     }
+    let pid = sysinfo::Pid::from_u32(pid);
+    let mut system = sysinfo::System::new();
+    system.refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(&[pid]), true, kind);
+    system.process(pid).map(read)
 }
 
 pub fn pid_alive(pid: u32) -> bool {
-    crate::compat::pid_alive(pid)
+    process_info(pid, sysinfo::ProcessRefreshKind::nothing(), |_| ()).is_some()
 }
 
-pub fn send_signal(pid: u32, signal: i32) {
-    crate::compat::send_signal(pid, signal)
+/// The executable and arguments a live process was started with.
+pub fn process_command(pid: u32) -> Option<Vec<String>> {
+    use sysinfo::UpdateKind::Always;
+    let kind = sysinfo::ProcessRefreshKind::nothing().with_cmd(Always).with_exe(Always);
+    process_info(pid, kind, |process| {
+        let mut argv: Vec<String> =
+            process.cmd().iter().map(|part| part.to_string_lossy().into_owned()).collect();
+        if let Some(exe) = process.exe() {
+            match argv.first_mut() {
+                Some(first) => *first = exe.display().to_string(),
+                None => argv.push(exe.display().to_string()),
+            }
+        }
+        argv
+    })
+}
+
+/// Ask a process to exit (SIGTERM where the OS has it) or, when `graceful` is
+/// false or the OS has no such request, end it outright.
+pub fn terminate_process(pid: u32, graceful: bool) {
+    process_info(pid, sysinfo::ProcessRefreshKind::nothing(), |process| {
+        let asked = graceful && process.kill_with(sysinfo::Signal::Term).is_some();
+        asked || process.kill()
+    });
+}
+
+/// Stop spawned console tools (ssh, QEMU, tar, ...) from flashing windows.
+pub fn no_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
+/// The pinned system `curl`, or the one Windows ships on `PATH`.
+pub fn curl_binary() -> &'static str {
+    if cfg!(windows) { "curl" } else { "/usr/bin/curl" }
 }
 
 pub fn random_password(length: usize) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut random = [0u8; 64];
-    crate::compat::random_bytes(&mut random);
+    random_bytes(&mut random);
     (0..length)
         .map(|index| ALPHABET[random[index % random.len()] as usize % ALPHABET.len()] as char)
         .collect()
+}
+
+/// Operating-system entropy. A host without one cannot make safe secrets.
+pub fn random_bytes(buffer: &mut [u8]) {
+    getrandom::fill(buffer).expect("the operating system provides no entropy");
 }
 
 pub fn port_free(port: u16, host: &str) -> bool {
@@ -394,8 +394,9 @@ pub fn port_free(port: u16, host: &str) -> bool {
     }
 }
 
+/// Free bytes available to this user on `path`'s volume (unbounded when unknown).
 pub fn disk_free_bytes(path: &Path) -> u64 {
-    crate::compat::disk_free_bytes(path)
+    fs4::available_space(path).unwrap_or(u64::MAX)
 }
 
 pub fn tail_file(path: &Path, lines: usize) -> String {
@@ -454,7 +455,7 @@ fn capture_with_stdin(
         None if input.is_some() => Stdio::piped(),
         None => Stdio::null(),
     });
-    crate::compat::no_window(&mut command);
+    crate::util::no_window(&mut command);
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
@@ -570,7 +571,7 @@ pub fn run(argv: &[String], log: &Arc<Mutex<File>>, options: RunOptions<'_>) -> 
     } else {
         command.stdin(Stdio::null());
     }
-    crate::compat::no_window(&mut command);
+    crate::util::no_window(&mut command);
     if let Some(cwd) = options.cwd {
         command.current_dir(cwd);
     }
@@ -673,56 +674,7 @@ pub fn log_line(log: &Arc<Mutex<File>>, text: &str) {
 }
 
 pub fn host_ip(interface: &str) -> Option<String> {
-    #[cfg(windows)]
-    {
-        return crate::compat::adapter_ip(interface);
-    }
-    #[cfg(not(windows))]
-    {
-        let result = capture(
-            &[
-                "ipconfig".to_string(),
-                "getifaddr".to_string(),
-                interface.to_string(),
-            ],
-            Duration::from_secs(3),
-            None,
-        );
-        if result.code == 0 && !result.output.trim().is_empty() {
-            return Some(result.output.trim().to_string());
-        }
-        let route = capture(
-            &[
-                "route".to_string(),
-                "-n".to_string(),
-                "get".to_string(),
-                "default".to_string(),
-            ],
-            Duration::from_secs(3),
-            None,
-        );
-        if route.code == 0 {
-            for line in route.output.lines() {
-                let line = line.trim();
-                if let Some(rest) = line.strip_prefix("interface:") {
-                    let iface = rest.trim();
-                    let ip = capture(
-                        &[
-                            "ipconfig".to_string(),
-                            "getifaddr".to_string(),
-                            iface.to_string(),
-                        ],
-                        Duration::from_secs(3),
-                        None,
-                    );
-                    if ip.code == 0 && !ip.output.trim().is_empty() {
-                        return Some(ip.output.trim().to_string());
-                    }
-                }
-            }
-        }
-        None
-    }
+    crate::network_interfaces::host_ip(interface).map(|ip| ip.to_string())
 }
 
 /// Locks that survive a panic elsewhere. A thread that panicked while
@@ -764,6 +716,74 @@ mod stamp_tests {
         let parsed = parse_utc_stamp(&utcstamp_of(now)).unwrap();
         let diff = now.duration_since(parsed).unwrap_or_default().as_secs();
         assert!(diff <= 1, "{diff}");
+    }
+
+    #[test]
+    fn utc_stamps_match_the_persisted_format() {
+        assert_eq!(utcstamp_from_millis(1_794_800_805_999), "2026-11-16T03:46:45+00:00");
+        assert_eq!(utcstamp_from_millis(0), "1970-01-01T00:00:00+00:00");
+        // Leap day and month boundaries.
+        assert_eq!(utcstamp_from_millis(951_782_400_000), "2000-02-29T00:00:00+00:00");
+        assert_eq!(utcstamp_from_millis(951_868_800_000), "2000-03-01T00:00:00+00:00");
+        // Python's isoformat output, with and without the offset.
+        let at = |text| parse_utc_stamp(text).and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
+        assert_eq!(at("2026-11-16T03:46:45+00:00"), Some(Duration::from_secs(1_794_800_805)));
+        assert_eq!(at("2026-11-16T03:46:45"), Some(Duration::from_secs(1_794_800_805)));
+        assert_eq!(at("garbage"), None);
+        assert_eq!(localstamp().len(), "20261116-034645".len());
+    }
+
+    #[test]
+    fn processes_are_found_inspected_and_ended() {
+        assert!(pid_alive(std::process::id()));
+        assert!(!pid_alive(0) && !pid_alive(1));
+        let own = process_command(std::process::id()).unwrap();
+        assert!(own[0].contains("vm_core") || Path::new(&own[0]).is_absolute(), "{own:?}");
+    }
+
+    #[test]
+    fn terminating_a_process_ends_it() {
+        // A child blocked on its stdin pipe stays alive until it is ended.
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "util::stamp_tests::blocks_on_stdin", "--nocapture"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        assert!(pid_alive(pid));
+        terminate_process(pid, true);
+        assert!(child.wait().is_ok());
+        assert!(!pid_alive(pid));
+    }
+
+    /// Run as a child by `terminating_a_process_ends_it`.
+    #[test]
+    #[ignore = "helper process"]
+    fn blocks_on_stdin() {
+        let mut sink = Vec::new();
+        let _ = std::io::stdin().read_to_end(&mut sink);
+    }
+
+    #[test]
+    fn random_bytes_and_passwords_vary() {
+        let mut a = [0u8; 32];
+        let mut b = [0u8; 32];
+        random_bytes(&mut a);
+        random_bytes(&mut b);
+        assert_ne!(a, b);
+        let password = random_password(20);
+        assert_eq!(password.len(), 20);
+        assert!(password.chars().all(|ch| ch.is_ascii_alphanumeric()));
+        assert_ne!(password, random_password(20));
+    }
+
+    #[test]
+    fn free_space_and_tool_lookup_work() {
+        assert!(disk_free_bytes(&std::env::temp_dir()) < u64::MAX);
+        assert!(which("cabin-no-such-tool").is_none());
+        assert!(which(&std::env::current_exe().unwrap().display().to_string()).is_some());
     }
 }
 

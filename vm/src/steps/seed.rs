@@ -10,7 +10,7 @@ use crate::device::render as device_render;
 use crate::journal::load_state;
 use crate::steps::base::{CheckResult, Step, StepContext, delete_artifacts};
 use crate::util::{
-    atomic_write_json, atomic_write_text, capture, ensure_dir, message, now_millis, read_json,
+    atomic_write_json, atomic_write_text, ensure_dir, message, now_millis, read_json,
     read_text, remove_path, sha256_file,
 };
 
@@ -38,21 +38,11 @@ pub fn generate_password() -> String {
 }
 
 pub fn hash_password(password: &str) -> Result<String> {
-    let result = capture(
-        &[
-            "openssl".to_string(),
-            "passwd".to_string(),
-            "-6".to_string(),
-            "-stdin".to_string(),
-        ],
-        std::time::Duration::from_secs(15),
-        Some(&format!("{password}\n")),
-    );
-    let hash = result.output.trim();
-    if result.code != 0 || !hash.starts_with("$6$") {
-        return message(format!("openssl passwd -6 failed: {hash}"));
-    }
-    Ok(hash.to_string())
+    use sha_crypt::{PasswordHasher, ShaCrypt};
+    ShaCrypt::SHA512
+        .hash_password(password.as_bytes())
+        .map(|hash| hash.to_string())
+        .map_err(|error| crate::Error::Message(format!("cannot hash the password: {error}")))
 }
 
 fn proxy_no_proxy(cfg: &crate::config::Config) -> String {
@@ -424,106 +414,21 @@ fn apt_settings(proxy: Option<&str>, mirror: Option<&str>) -> Value {
     apt
 }
 
+/// Read the written image back and compare its label and payload.
 fn verify_seed_iso(iso: &Path, expected: &[(&str, &Path)]) -> Result<()> {
-    if cfg!(windows) && crate::util::which("xorriso").is_none() {
-        // Windows hosts have no in-box ISO tool; the image was written in
-        // process and its structure is covered by the iso unit tests.
-        return Ok(());
+    let (label, files) = crate::iso::read_iso(iso)?;
+    if !label.eq_ignore_ascii_case("cidata") {
+        return message(format!("seed ISO volume label is {label:?}, expected CIDATA"));
     }
-    if !cfg!(target_os = "macos") {
-        let out = iso.parent().unwrap_or(Path::new(".")).join(".seed-check");
-        let _ = std::fs::remove_dir_all(&out);
-        let result = (|| -> Result<()> {
-            let label = crate::platform::linux_extract_iso(iso, &out)?;
-            if label.to_lowercase() != "cidata" {
-                return message(format!(
-                    "seed ISO volume label is {label:?}, expected CIDATA"
-                ));
-            }
-            for (name, source) in expected {
-                let target = out.join(name);
-                if !target.exists() {
-                    return message(format!("seed ISO is missing {name}"));
-                }
-                if sha256_file(&target)? != sha256_file(source)? {
-                    return message(format!("seed ISO file hash mismatch: {name}"));
-                }
-            }
-            Ok(())
-        })();
-        let _ = std::fs::remove_dir_all(&out);
-        return result;
+    for (name, source) in expected {
+        let Some((_, data)) = files.iter().find(|(found, _)| found == name) else {
+            return message(format!("seed ISO is missing {name}"));
+        };
+        if crate::util::sha256_bytes(data) != sha256_file(source)? {
+            return message(format!("seed ISO file hash mismatch: {name}"));
+        }
     }
-    let mount = iso.parent().unwrap_or(Path::new(".")).join(".seed-mnt");
-    let _ = std::fs::remove_dir_all(&mount);
-    ensure_dir(&mount)?;
-    let mut attached = false;
-    let result = (|| -> Result<()> {
-        let attach = capture(
-            &[
-                "hdiutil".to_string(),
-                "attach".to_string(),
-                "-readonly".to_string(),
-                "-nobrowse".to_string(),
-                "-mountpoint".to_string(),
-                mount.display().to_string(),
-                iso.display().to_string(),
-            ],
-            std::time::Duration::from_secs(60),
-            None,
-        );
-        if attach.code != 0 {
-            return message(format!(
-                "cannot mount generated seed ISO: {}",
-                attach.output.trim()
-            ));
-        }
-        attached = true;
-        let info = capture(
-            &[
-                "diskutil".to_string(),
-                "info".to_string(),
-                mount.display().to_string(),
-            ],
-            std::time::Duration::from_secs(20),
-            None,
-        );
-        let mut volume = String::new();
-        for line in info.output.lines() {
-            if let Some(rest) = line.trim().strip_prefix("Volume Name:") {
-                volume = rest.trim().to_string();
-            }
-        }
-        if volume.to_lowercase() != "cidata" {
-            return message(format!(
-                "seed ISO volume label is {volume:?}, expected CIDATA"
-            ));
-        }
-        for (name, source) in expected {
-            let target = mount.join(name);
-            if !target.exists() {
-                return message(format!("seed ISO is missing {name}"));
-            }
-            if sha256_file(&target)? != sha256_file(source)? {
-                return message(format!("seed ISO file hash mismatch: {name}"));
-            }
-        }
-        Ok(())
-    })();
-    if attached {
-        let _ = capture(
-            &[
-                "hdiutil".to_string(),
-                "detach".to_string(),
-                mount.display().to_string(),
-                "-force".to_string(),
-            ],
-            std::time::Duration::from_secs(60),
-            None,
-        );
-    }
-    let _ = std::fs::remove_dir_all(&mount);
-    result
+    Ok(())
 }
 
 pub struct SeedStep;
@@ -739,7 +644,7 @@ impl Step for SeedStep {
                 &stage.join("seed.iso"),
                 &["user-data", "meta-data", "network-config"],
             )?;
-            ctx.log("verifying seed ISO label and payload by read-only mount");
+            ctx.log("verifying seed ISO label and payload");
             verify_seed_iso(
                 &stage.join("seed.iso"),
                 &[
@@ -853,9 +758,22 @@ impl Step for SeedStep {
 #[cfg(test)]
 mod apt_tests {
     use super::*;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    use std::process::Command;
+
+    #[test]
+    fn password_hashes_are_salted_sha512_crypt_that_verify() {
+        use sha_crypt::{PasswordVerifier, ShaCrypt};
+        let first = hash_password("correct horse").unwrap();
+        assert!(first.starts_with("$6$"), "{first}");
+        assert_ne!(first, hash_password("correct horse").unwrap());
+        let hash = sha_crypt::PasswordHashRef::new(&first).unwrap();
+        ShaCrypt::SHA512.verify_password(b"correct horse", hash).unwrap();
+        assert!(ShaCrypt::SHA512.verify_password(b"wrong", hash).is_err());
+        // `openssl passwd -6 -salt abcdefgh hunter2`: the format the guest checks.
+        let known = "$6$abcdefgh$M/eYsB4rVXAm3ZNc88J.UD9rCKAT6FB1rahiwJCHtEndQNORCub5qhjxn50qbqVVthkM.9HpEwtf0t.iV9uH0/";
+        ShaCrypt::SHA512
+            .verify_password(b"hunter2", sha_crypt::PasswordHashRef::new(known).unwrap())
+            .unwrap();
+    }
 
     #[test]
     fn gateway_cloud_init_is_explicitly_ipv4_only() {
@@ -955,9 +873,16 @@ mod apt_tests {
         }
     }
 
-    fn switch_script() -> String {
+    pub(super) fn switch_script() -> String {
         crate::os::find("ubuntu-24.04").unwrap().kernel().script()
     }
+}
+
+#[cfg(all(test, unix))]
+mod kernel_switch_tests {
+    use super::apt_tests::switch_script;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
 
     fn exercise_kernel_switch(generic: &str, fail_mark: bool, fail_purge: &str) -> (bool, String) {
         let dir = std::env::temp_dir().join(format!(
@@ -1000,7 +925,6 @@ printf 'purge %s\n' "$2" >> "$KERNEL_TEST_LOG"
         for (name, script) in programs {
             let path = dir.join(name);
             std::fs::write(&path, script).unwrap();
-            #[cfg(unix)]
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let log = dir.join("calls");
@@ -1021,7 +945,6 @@ printf 'purge %s\n' "$2" >> "$KERNEL_TEST_LOG"
         (result.status.success(), calls)
     }
 
-    #[cfg(unix)]
     #[test]
     fn kernel_switch_keeps_virtual_until_generic_is_installed_and_manual() {
         for (generic, fail_mark) in [("missing", false), ("installed", true)] {

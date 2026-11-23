@@ -153,7 +153,7 @@ fn resolve(host: &str, upstream: SocketAddr) -> io::Result<Ipv4Addr> {
                 return Err(io::Error::other("local destination"));
             }
             let query = dns_query(&domain)?;
-            let mut child = Command::new(crate::compat::curl_binary())
+            let mut child = Command::new(crate::util::curl_binary())
                 .args([
                     "-q",
                     "--fail",

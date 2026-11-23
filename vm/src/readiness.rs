@@ -153,7 +153,7 @@ fn disk_check(home: &Path, disk_gb: u32) -> Readiness {
     let needed = (u64::from(disk_gb) + IMAGE_HEADROOM_GB) * GIB;
     let mut probe = home.to_path_buf();
     while !probe.exists() && probe.pop() {}
-    let free = crate::compat::disk_free_bytes(&probe);
+    let free = crate::util::disk_free_bytes(&probe);
     let ok = free >= needed;
     item(
         "disk",
@@ -227,42 +227,14 @@ pub fn host_facts() -> HostFacts {
         cpus: std::thread::available_parallelism().map_or(2, |n| n.get() as u32),
         username: std::env::var("USER").or_else(|_| std::env::var("USERNAME")).ok().filter(|u| !u.is_empty()),
         device_profile_supported: GuestArch::current().device_profile_supported(),
-        platform: if cfg!(target_os = "macos") {
-            "macos"
-        } else if cfg!(windows) {
-            "windows"
-        } else {
-            "linux"
-        }
-        .into(),
+        platform: std::env::consts::OS.into(),
     }
 }
 
-#[cfg(target_os = "macos")]
 fn physical_memory_mb() -> Option<u64> {
-    let mut bytes: u64 = 0;
-    let mut size = std::mem::size_of::<u64>();
-    // SAFETY: sysctlbyname writes at most `size` bytes into `bytes`.
-    let status = unsafe {
-        libc::sysctlbyname(c"hw.memsize".as_ptr(), (&mut bytes as *mut u64).cast(), &mut size, std::ptr::null_mut(), 0)
-    };
-    (status == 0).then_some(bytes / (1024 * 1024))
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn physical_memory_mb() -> Option<u64> {
-    // SAFETY: sysconf has no preconditions.
-    let (pages, size) = unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
-    (pages > 0 && size > 0).then(|| pages as u64 * size as u64 / (1024 * 1024))
-}
-
-#[cfg(windows)]
-fn physical_memory_mb() -> Option<u64> {
-    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    // SAFETY: the struct is zeroed with its length set, as the API requires.
-    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
-    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
-    (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then(|| status.ullTotalPhys / (1024 * 1024))
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    Some(system.total_memory() / (1024 * 1024)).filter(|&mb| mb > 0)
 }
 
 /// The argv that enables the Windows Hypervisor Platform from an elevated

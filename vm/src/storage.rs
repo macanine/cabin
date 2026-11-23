@@ -3,8 +3,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, Metadata};
 use std::io;
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -206,53 +204,53 @@ impl Inventory {
     }
 }
 
-/// Device identity for the same-volume checks (always equal on Windows).
-fn device_id(meta: &Metadata) -> u64 {
-    #[cfg(unix)]
-    {
+/// File identity and allocation: Unix inodes and blocks, and the coarser
+/// facts Windows metadata offers.
+#[cfg(unix)]
+mod native {
+    use std::fs::Metadata;
+    use std::os::unix::fs::MetadataExt;
+
+    pub fn device_id(meta: &Metadata) -> u64 {
         meta.dev()
     }
-    #[cfg(windows)]
-    {
-        let _ = meta;
-        0
-    }
-}
-
-fn link_count(meta: &Metadata) -> u64 {
-    #[cfg(unix)]
-    {
+    pub fn link_count(meta: &Metadata) -> u64 {
         meta.nlink()
     }
-    #[cfg(windows)]
-    {
-        let _ = meta;
-        1
-    }
-}
-
-fn file_id(meta: &Metadata) -> Option<(u64, u64)> {
-    #[cfg(unix)]
-    {
+    pub fn file_id(meta: &Metadata) -> Option<(u64, u64)> {
         Some((meta.dev(), meta.ino()))
     }
-    #[cfg(windows)]
-    {
-        let _ = meta;
-        None
+    pub fn changed_time(meta: &Metadata) -> Option<(i64, i64)> {
+        Some((meta.ctime(), meta.ctime_nsec()))
+    }
+    pub fn allocated_bytes(meta: &Metadata) -> u64 {
+        meta.blocks().saturating_mul(512)
     }
 }
 
-pub fn allocated_bytes(meta: &Metadata) -> u64 {
-    #[cfg(unix)]
-    {
-        meta.blocks().saturating_mul(512)
+#[cfg(not(unix))]
+mod native {
+    use std::fs::Metadata;
+
+    pub fn device_id(_: &Metadata) -> u64 {
+        0
     }
-    #[cfg(windows)]
-    {
+    pub fn link_count(_: &Metadata) -> u64 {
+        1
+    }
+    pub fn file_id(_: &Metadata) -> Option<(u64, u64)> {
+        None
+    }
+    pub fn changed_time(_: &Metadata) -> Option<(i64, i64)> {
+        None
+    }
+    pub fn allocated_bytes(meta: &Metadata) -> u64 {
         meta.len()
     }
 }
+
+pub use native::allocated_bytes;
+pub(crate) use native::{changed_time, device_id, file_id, link_count};
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "bindings", derive(ts_rs::TS))]
@@ -265,9 +263,9 @@ pub struct StorageVolume {
 }
 
 pub fn volume(path: &Path) -> Option<StorageVolume> {
-    crate::compat::disk_volume(path).map(|(total, available)| StorageVolume {
-        total_bytes: total,
-        available_bytes: available,
+    Some(StorageVolume {
+        total_bytes: fs4::total_space(path).ok()?,
+        available_bytes: fs4::available_space(path).ok()?,
     })
 }
 
@@ -439,11 +437,10 @@ pub(crate) fn clean(home: &Path, target: CleanupTarget) -> crate::Result<Cleanup
     Ok(result)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::Write;
-    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     struct Scratch(PathBuf);
@@ -464,7 +461,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn inventory_counts_sparse_blocks_and_links_without_following_symlinks() {
         let scratch = Scratch::new("allocation");
@@ -506,7 +502,6 @@ mod tests {
         assert_eq!(total, allocated);
     }
 
-    #[cfg(unix)]
     #[test]
     fn cleanup_preserves_live_machine_data_and_rechecks_known_candidates() {
         let scratch = Scratch::new("cleanup");
@@ -602,7 +597,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn cleanup_refuses_redirected_cache_and_log_directories() {
         let scratch = Scratch::new("symlinks");

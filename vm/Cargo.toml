@@ -18,22 +18,28 @@ bindings = ["dep:ts-rs"]
 
 [dependencies]
 base64 = "0.21"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+fs4 = { version = "1", default-features = false, features = ["sync"] }
+getrandom = "0.4"
 libc = "0.2"
+netdev = { version = "0.48", default-features = false, features = ["gateway"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
+sha-crypt = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
 sha1 = "0.10"
 shoes = { path = "../third_party/shoes" }
 smoltcp = { version = "0.14.0", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "socket-tcp"] }
 socket2 = "0.6"
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 thiserror = "2"
 ts-rs = { version = "12", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 ureq = { version = "2.12", default-features = false, features = ["tls", "socks-proxy", "native-certs", "proxy-from-env"] }
 url = "2"
+which = "8"
 
 [target.'cfg(windows)'.dependencies]
-sha-crypt = "0.6"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_Security_Cryptography", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis"] }
+windows-sys = { version = "0.59", features = ["Win32_Networking_WinSock"] }

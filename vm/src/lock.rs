@@ -2,8 +2,6 @@
 
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
-#[cfg(unix)]
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::Result;
@@ -17,15 +15,15 @@ pub struct FileLock {
 
 impl FileLock {
     pub fn acquire(path: &Path) -> Result<Self> {
-        Self::acquire_mode(path, false, false)
+        Self::acquire_mode(path, false)
     }
 
     /// Allow concurrent readers while excluding mutating operations.
     pub fn acquire_shared(path: &Path) -> Result<Self> {
-        Self::acquire_mode(path, true, false)
+        Self::acquire_mode(path, true)
     }
 
-    fn acquire_mode(path: &Path, shared: bool, wait: bool) -> Result<Self> {
+    fn acquire_mode(path: &Path, shared: bool) -> Result<Self> {
         if let Some(parent) = path.parent() {
             ensure_dir(parent)?;
         }
@@ -35,25 +33,7 @@ impl FileLock {
             .create(true)
             .truncate(false)
             .open(path)?;
-        #[cfg(unix)]
-        let locked = {
-            let mode = if shared { libc::LOCK_SH } else { libc::LOCK_EX };
-            let operation = if wait { mode } else { mode | libc::LOCK_NB };
-            let rc = unsafe { libc::flock(file.as_raw_fd(), operation) };
-            rc == 0
-        };
-        #[cfg(windows)]
-        let locked = if wait {
-            if shared {
-                file.lock_shared().is_ok()
-            } else {
-                file.lock().is_ok()
-            }
-        } else if shared {
-            file.try_lock_shared().is_ok()
-        } else {
-            file.try_lock().is_ok()
-        };
+        let locked = if shared { file.try_lock_shared() } else { file.try_lock() }.is_ok();
         if !locked {
             let mut owner = String::new();
             let _ = file.seek(SeekFrom::Start(0));
@@ -92,15 +72,7 @@ impl FileLock {
 impl Drop for FileLock {
     fn drop(&mut self) {
         if let Some(file) = self.file.take() {
-            #[cfg(unix)]
-            unsafe {
-                libc::flock(file.as_raw_fd(), libc::LOCK_UN);
-            }
-            #[cfg(windows)]
-            {
-                let _ = file.unlock();
-            }
-            drop(file);
+            let _ = file.unlock();
         }
     }
 }

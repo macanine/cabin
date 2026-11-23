@@ -1,8 +1,8 @@
 //! Minimal ISO 9660 writer for the cloud-init CIDATA seed.
 //!
-//! macOS and Linux build the seed ISO with `hdiutil`/`xorriso`. Windows hosts
-//! do not ship an ISO tool, so this writer produces the image directly: an
-//! ISO 9660 volume labelled `CIDATA` with a supplementary Joliet volume for
+//! Every host builds the seed in process, so no ISO tool (`hdiutil`,
+//! `xorriso`, `oscdimg`) is a requirement. The writer produces the image
+//! directly: an ISO 9660 volume labelled `CIDATA` with a supplementary Joliet volume for
 //! long names, holding a flat directory of small files (`user-data`,
 //! `meta-data`, `network-config`). The layout is intentionally conservative —
 //! classic (little, big) byte pairs, plain contiguous extents, one directory
@@ -339,118 +339,72 @@ fn put_terminator(image: &mut Vec<u8>) {
     out[6] = 1;
 }
 
+/// Volume dates: 16 ASCII digits (`YYYYMMDDHHMMSScc`) and a GMT offset byte.
 fn volume_stamp() -> [u8; 17] {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    let days = seconds.div_euclid(86_400);
-    let rest = seconds.rem_euclid(86_400);
-    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let year = if month <= 2 { y + 1 } else { y };
-    let mut stamp = [0u8; 17];
-    let text = format!("{year:04}{month:02}{day:02}");
-    for (index, byte) in text.bytes().enumerate() {
-        stamp[index] = byte - b'0';
-    }
-    stamp[12] = (rest / 3600) as u8;
-    stamp[13] = ((rest % 3600) / 60) as u8;
-    stamp[14] = (rest % 60) as u8;
-    stamp[16] = 0; // GMT offset unknown
+    let text = chrono::Utc::now().format("%Y%m%d%H%M%S00").to_string();
+    let mut stamp = [0u8; 17]; // offset 0: GMT
+    stamp[..16].copy_from_slice(text.as_bytes());
     stamp
+}
+
+fn le32(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+}
+
+type Volume = (String, Vec<(String, Vec<u8>)>);
+
+/// Read a volume's label and root-directory files, ignoring "." and "..".
+/// `joliet` selects the supplementary (UCS-2) tree over the primary one.
+fn read_volume(image: &[u8], descriptor: u32, joliet: bool) -> Option<Volume> {
+    let blocks = |extent: u32, length: usize| {
+        let start = extent as usize * BLOCK;
+        image.get(start..start.checked_add(length)?)
+    };
+    let volume = blocks(descriptor, BLOCK)?;
+    if &volume[1..6] != b"CD001" || volume[0] != if joliet { 2 } else { 1 } {
+        return None;
+    }
+    let text = |raw: &[u8]| -> String {
+        if joliet {
+            let units: Vec<u16> =
+                raw.chunks(2).map(|pair| u16::from_be_bytes([pair[0], pair[1]])).collect();
+            String::from_utf16_lossy(&units)
+        } else {
+            String::from_utf8_lossy(raw).into_owned()
+        }
+    };
+    let label = text(&volume[40..72]).trim_end_matches(['\0', ' ']).to_string();
+    let directory = blocks(le32(volume, 158)?, le32(volume, 166)? as usize)?;
+    let mut files = Vec::new();
+    let mut at = 0;
+    while at < directory.len() && directory[at] > 0 {
+        let record = directory.get(at..at + directory[at] as usize)?;
+        let raw = record.get(33..33 + *record.get(32)? as usize)?;
+        if !matches!(raw, [0] | [1]) && record.get(25)? & 0b10 == 0 {
+            let data = blocks(le32(record, 2)?, le32(record, 10)? as usize)?;
+            files.push((text(raw).trim_end_matches(";1").to_string(), data.to_vec()));
+        }
+        at += record.len();
+    }
+    Some((label, files))
+}
+
+/// Read back an image written by [`build_iso`]: its label and files. The
+/// primary and Joliet trees must agree.
+pub fn read_iso(path: &Path) -> Result<Volume> {
+    let image = std::fs::read(path)?;
+    match (read_volume(&image, PVD_EXTENT, false), read_volume(&image, SVD_EXTENT, true)) {
+        (Some(primary), Some(joliet)) if primary == joliet => Ok(primary),
+        _ => message("the seed ISO is unreadable or its volumes disagree"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
-    /// An independent ISO 9660 reader used to verify the written structure.
-    struct Iso {
-        blocks: Vec<Vec<u8>>,
-    }
-
-    impl Iso {
-        fn parse(bytes: &[u8]) -> Self {
-            Self {
-                blocks: bytes.chunks(BLOCK).map(<[u8]>::to_vec).collect(),
-            }
-        }
-
-        fn le32(bytes: &[u8], at: usize) -> u32 {
-            u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
-        }
-
-        fn volume_id(&self, descriptor: usize) -> String {
-            let block = &self.blocks[descriptor];
-            if block[40] == 0 {
-                // Joliet: UCS-2BE, NUL-padded to 32 bytes.
-                let decoded: String = block[40..72]
-                    .chunks(2)
-                    .map(|pair| {
-                        char::from_u32(u16::from_be_bytes([pair[0], pair[1]]).into())
-                            .unwrap_or('?')
-                    })
-                    .collect();
-                decoded.trim_end_matches('\0').to_string()
-            } else {
-                String::from_utf8_lossy(&block[40..72]).trim_end().to_string()
-            }
-        }
-
-        fn root_extent(&self, descriptor: usize) -> u32 {
-            Self::le32(&self.blocks[descriptor], 156 + 2)
-        }
-
-        /// Directory records of an extent: (name, extent, size).
-        fn directory(&self, extent: u32) -> Vec<(String, u32, u32)> {
-            let block = &self.blocks[extent as usize];
-            let mut result = Vec::new();
-            let mut at = 0;
-            while at < BLOCK && block[at] > 0 {
-                let length = block[at] as usize;
-                let name_len = block[at + 32] as usize;
-                let raw = &block[at + 33..at + 33 + name_len];
-                let name = if name_len == 1 && raw[0] == 0 {
-                    ".".to_string()
-                } else if name_len == 1 && raw[0] == 1 {
-                    "..".to_string()
-                } else if raw.len() % 2 == 0 && raw.first() == Some(&0) {
-                    // Joliet UCS-2BE names start with a zero byte.
-                    raw.chunks(2)
-                        .map(|pair| char::from_u32(u16::from_be_bytes([pair[0], pair[1]]).into()).unwrap_or('?'))
-                        .collect()
-                } else {
-                    String::from_utf8_lossy(raw)
-                        .trim_end_matches(";1")
-                        .to_string()
-                };
-                result.push((
-                    name,
-                    Self::le32(block, at + 2),
-                    Self::le32(block, at + 10),
-                ));
-                at += length;
-            }
-            result
-        }
-
-        fn file_data(&self, extent: u32, size: u32) -> Vec<u8> {
-            let start = extent as usize;
-            let spanned = size.div_ceil(BLOCK as u32) as usize;
-            self.blocks[start..start + spanned].concat()[..size as usize].to_vec()
-        }
-    }
-
-    fn sample_files() -> Vec<(&'static str, Vec<u8>)> {
+    fn sample() -> Vec<(&'static str, Vec<u8>)> {
         vec![
             ("user-data", b"#cloud-config\nusers: []\n".to_vec()),
             ("meta-data", b"instance-id: cabin\n".to_vec()),
@@ -458,70 +412,88 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn writes_cidata_structure_with_names_and_content() {
-        let dir = std::env::temp_dir().join(format!(
-            "cabin-iso-{}-{}",
-            std::process::id(),
-            crate::util::now_millis()
-        ));
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cabin-iso-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn build(path: &Path) {
+        let files = sample();
+        let staged: Vec<(&str, &[u8])> =
+            files.iter().map(|(name, data)| (*name, data.as_slice())).collect();
+        build_iso(path, &staged).unwrap();
+    }
+
+    #[test]
+    fn round_trips_the_label_names_and_content() {
+        let dir = scratch("round-trip");
         let output = dir.join("seed.iso");
-        let files = sample_files();
-        let staged: Vec<(&str, &[u8])> = files
-            .iter()
-            .map(|(name, data)| (*name, data.as_slice()))
-            .collect();
-        build_iso(&output, &staged).unwrap();
-
-        let bytes = std::fs::read(&output).unwrap();
-        assert_eq!(bytes.len() % BLOCK, 0);
-        let iso = Iso::parse(&bytes);
-        assert_eq!(iso.volume_id(16), "CIDATA");
-        assert_eq!(iso.volume_id(17), "CIDATA");
-
-        let root = iso.directory(iso.root_extent(16));
-        for (name, expected) in [
-            ("user-data", files[0].1.as_slice()),
-            ("meta-data", files[1].1.as_slice()),
-            ("network-config", files[2].1.as_slice()),
-        ] {
-            let record = root
-                .iter()
-                .find(|(found, _, _)| found == name)
-                .unwrap_or_else(|| panic!("missing {name} in {:?}", root));
-            assert_eq!(record.2 as usize, expected.len(), "{name} size");
-            assert_eq!(iso.file_data(record.1, record.2), expected, "{name} data");
-        }
-
-        let joliet = iso.directory(iso.root_extent(17));
-        assert!(joliet.iter().any(|(name, _, _)| name == "network-config"));
-        // The "." record must cover the whole directory extent.
-        assert_eq!(root[0].2 as usize, 2048);
-
-        // File extents must not overlap.
-        let extents: Vec<(u32, u32)> = root
-            .iter()
-            .filter(|(name, _, _)| !matches!(name.as_str(), "." | ".."))
-            .map(|(_, extent, size)| (*extent, size.div_ceil(BLOCK as u32)))
-            .collect();
-        for pair in extents.windows(2) {
-            assert!(pair[0].0 + pair[0].1 <= pair[1].0, "overlapping extents");
-        }
+        build(&output);
+        assert_eq!(std::fs::metadata(&output).unwrap().len() % BLOCK as u64, 0);
+        let (label, mut files) = read_iso(&output).unwrap();
+        assert_eq!(label, "CIDATA");
+        files.sort();
+        let mut expected: Vec<_> =
+            sample().into_iter().map(|(name, data)| (name.to_string(), data)).collect();
+        expected.sort();
+        assert_eq!(files, expected);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
+    fn dates_are_ascii_digits() {
+        let stamp = volume_stamp();
+        assert!(stamp[..16].iter().all(u8::is_ascii_digit), "{stamp:?}");
+        assert_eq!(stamp[16], 0);
+    }
+
+    #[test]
     fn rejects_bad_names_and_empty_sets() {
-        let dir = std::env::temp_dir().join(format!(
-            "cabin-iso-bad-{}-{}",
-            std::process::id(),
-            crate::util::now_millis()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("bad");
         let output = dir.join("seed.iso");
         assert!(build_iso(&output, &[]).is_err());
         assert!(build_iso(&output, &[("with/slash", b"x")]).is_err());
+        std::fs::write(&output, b"not an iso").unwrap();
+        assert!(read_iso(&output).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A tool that did not write the image agrees with it. Runs where one is
+    /// installed: `xorriso` (Linux, Windows with MSYS) or `hdiutil` (macOS).
+    #[test]
+    fn an_independent_tool_reads_the_image() {
+        let dir = scratch("independent");
+        let output = dir.join("seed.iso");
+        build(&output);
+        if let Some(xorriso) = crate::util::which("xorriso") {
+            let extracted = dir.join("out");
+            let info = Command::new(&xorriso).arg("-indev").arg(&output).arg("-pvd_info").output().unwrap();
+            assert!(String::from_utf8_lossy(&info.stdout).to_lowercase().contains("volume id    : cidata"));
+            let status = Command::new(&xorriso)
+                .args(["-osirrox", "on", "-indev"])
+                .arg(&output)
+                .args(["-extract", "/"])
+                .arg(&extracted)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            assert_eq!(std::fs::read(extracted.join("network-config")).unwrap(), vec![0x61; 5000]);
+        } else if cfg!(target_os = "macos") {
+            let mount = dir.join("mnt");
+            std::fs::create_dir_all(&mount).unwrap();
+            let attach = Command::new("hdiutil")
+                .args(["attach", "-readonly", "-nobrowse", "-mountpoint"])
+                .arg(&mount)
+                .arg(&output)
+                .output()
+                .unwrap();
+            assert!(attach.status.success(), "{}", String::from_utf8_lossy(&attach.stderr));
+            let read = std::fs::read(mount.join("network-config"));
+            let _ = Command::new("hdiutil").arg("detach").arg(&mount).arg("-force").status();
+            assert_eq!(read.unwrap(), vec![0x61; 5000]);
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 }
