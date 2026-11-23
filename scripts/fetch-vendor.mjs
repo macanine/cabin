@@ -39,7 +39,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = path.join(root, "build", "vendor-cache");
 const outRoot = path.join(root, "build", "vendor");
-const STAMP_VERSION = 1;
+const STAMP_VERSION = 2;
 
 const WINDOWS_QEMU_KEEP_FILES = [
   "qemu-system-x86_64.exe",
@@ -345,11 +345,23 @@ async function main() {
   fs.writeFileSync(path.join(staging, "SOURCES.txt"), sourcesText(platform, spec));
   fs.writeFileSync(path.join(staging, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   fs.writeFileSync(path.join(staging, ".stamp.json"), `${JSON.stringify(stamp)}\n`);
+  // Archives ship read-only files (the mac dylibs). Tauri copies resources
+  // into target/ on every build and cannot overwrite a read-only copy.
+  makeWritable(staging);
 
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.renameSync(staging, outDir);
   fs.rmSync(work, { recursive: true, force: true });
   console.log(`vendor: ${platform} ready in ${path.relative(root, outDir)}`);
+}
+
+function makeWritable(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const file = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    fs.chmodSync(file, fs.statSync(file).mode | 0o200);
+    if (entry.isDirectory()) makeWritable(file);
+  }
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
