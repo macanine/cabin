@@ -95,29 +95,9 @@ fn data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("CABIN_HOME") {
         return PathBuf::from(dir);
     }
-    #[cfg(windows)]
-    {
-        let base = std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let mut home = PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default());
-                home.push("AppData");
-                home.push("Roaming");
-                home
-            });
-        return base.join("cabin");
-    }
-    #[cfg(not(windows))]
-    {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| "/tmp".into());
-        if cfg!(target_os = "macos") {
-            home.join("Library/Application Support/cabin")
-        } else {
-            home.join(".local/share/cabin-host")
-        }
-    }
+    // Application Support on macOS, %APPDATA% on Windows, ~/.local/share on Linux.
+    let base = dirs::data_dir().unwrap_or_else(std::env::temp_dir);
+    base.join(if cfg!(target_os = "linux") { "cabin-host" } else { "cabin" })
 }
 
 /// The bundled QEMU and OpenSSH: the app's `vendor/` resource folder, or

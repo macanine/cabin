@@ -26,6 +26,7 @@ cabin-core = { path = "../core" }
 cabin-vm = { path = "../vm" }
 cabin-ip-detection = { path = "../ip-detection" }
 ureq = "2"
+dirs = "7"
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]

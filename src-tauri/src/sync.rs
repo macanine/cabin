@@ -73,6 +73,10 @@ fn shell_quote(text: &str) -> String {
 /// own long-lived connection. A local shell used by tests is left untouched.
 fn reuse_ssh(mut ssh: Vec<String>, dir: &Path) -> Vec<String> {
     use std::hash::{Hash, Hasher};
+    // Windows OpenSSH has no ControlMaster: plain connections are used.
+    if cfg!(windows) {
+        return ssh;
+    }
     let is_ssh = ssh
         .first()
         .and_then(|program| Path::new(program).file_name())
@@ -86,20 +90,16 @@ fn reuse_ssh(mut ssh: Vec<String>, dir: &Path) -> Vec<String> {
     // A recreated machine may use another port or key; do not reuse a master
     // that still points at the previous one.
     ssh.hash(&mut hasher);
-    #[cfg(unix)]
-    {
-        let control = format!("/tmp/cabin-sync-{:016x}.sock", hasher.finish());
-        let options = [
-            "-o".to_string(),
-            "ControlMaster=auto".to_string(),
-            "-o".to_string(),
-            format!("ControlPath={control}"),
-            "-o".to_string(),
-            "ControlPersist=30".to_string(),
-        ];
-        ssh.splice(1..1, options);
-    }
-    // Windows OpenSSH has no ControlMaster: plain connections are used.
+    let control = format!("/tmp/cabin-sync-{:016x}.sock", hasher.finish());
+    let options = [
+        "-o".to_string(),
+        "ControlMaster=auto".to_string(),
+        "-o".to_string(),
+        format!("ControlPath={control}"),
+        "-o".to_string(),
+        "ControlPersist=30".to_string(),
+    ];
+    ssh.splice(1..1, options);
     ssh
 }
 
@@ -246,18 +246,9 @@ impl SyncManager {
         let host = host.to_string_lossy().into_owned();
         let project = {
             let mut projects = self.projects.locked();
-            // Windows host paths use backslash separators; compare them with
-            // one separator (guest paths are always POSIX).
-            #[cfg(windows)]
-            let nested = |a: &str, b: &str| {
-                let a = a.replace('\\', "/");
-                let b = b.replace('\\', "/");
-                a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
-            };
-            #[cfg(not(windows))]
-            let nested = |a: &str, b: &str| {
-                a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
-            };
+            // Compared by path component, so Windows backslashes and guest
+            // slashes both work.
+            let nested = |a: &str, b: &str| Path::new(a).starts_with(b) || Path::new(b).starts_with(a);
             if let Some(other) = projects.iter().find(|p| nested(&p.host_path, &host)) {
                 return Err(format!("{host} overlaps the synced folder of “{}”", other.name));
             }
@@ -1021,6 +1012,7 @@ mod tests {
 
     /// The real cycle against the real `cabind sync`, with the SSH hop
     /// replaced by a local shell whose HOME holds the binary.
+    #[cfg(unix)]
     fn local_guest() -> Option<(tempfile::TempDir, Vec<String>)> {
         let binary = std::env::var_os("CABIND_TEST_BIN")
             .map(PathBuf::from)
@@ -1035,12 +1027,16 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let bin = home.path().join(vm_core::agentd::REMOTE_BIN);
         std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
-        #[cfg(unix)]
         std::os::unix::fs::symlink(binary.canonicalize().unwrap(), &bin).unwrap();
-        #[cfg(not(unix))]
-        std::os::windows::fs::symlink_file(binary.canonicalize().unwrap(), &bin).unwrap();
         let ssh = vec!["env".into(), format!("HOME={}", home.path().display()), "sh".into(), "-c".into()];
         Some((home, ssh))
+    }
+
+    /// `cabind` runs in the Linux guest; its end-to-end tests need a Unix shell.
+    #[cfg(not(unix))]
+    fn local_guest() -> Option<(tempfile::TempDir, Vec<String>)> {
+        eprintln!("skipping: the end-to-end sync tests need a Unix shell");
+        None
     }
 
     fn write(root: &Path, rel: &str, body: &str, secs: u64) {
@@ -1056,7 +1052,6 @@ mod tests {
         std::fs::read_to_string(root.join(rel)).ok()
     }
 
-    #[cfg(unix)]
     fn setup(mode: SyncMode) -> Option<(tempfile::TempDir, tempfile::TempDir, Arc<SyncManager>, SyncProject, PathBuf, PathBuf)> {
         let (guest_home, ssh) = local_guest()?;
         let state = tempfile::tempdir().unwrap();
@@ -1081,7 +1076,6 @@ mod tests {
         Some((guest_home, state, manager, view.project, mac, vm))
     }
 
-    #[cfg(unix)]
     #[test]
     fn safe_mode_end_to_end() {
         let Some((_g, _s, manager, project, mac, vm)) = setup(SyncMode::Safe) else { return };
@@ -1115,7 +1109,6 @@ mod tests {
         assert!(manager.status(&project.id).conflicts.is_empty(), "a resolved conflict stays resolved");
     }
 
-    #[cfg(unix)]
     #[test]
     fn mirror_mode_end_to_end() {
         let Some((_g, _s, manager, project, mac, vm)) = setup(SyncMode::Mirror) else { return };
@@ -1130,7 +1123,6 @@ mod tests {
         assert_eq!(read(&vm, "src/lib.rs").as_deref(), Some("lib"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn two_way_mode_end_to_end() {
         let Some((_g, _s, manager, project, mac, vm)) = setup(SyncMode::TwoWay) else { return };
@@ -1156,7 +1148,6 @@ mod tests {
         assert_eq!(read(&mac, ".git/HEAD").as_deref(), Some("ref: refs/heads/main"));
     }
 
-    #[cfg(unix)]
     fn bench_throughput(mode: SyncMode, label: &str) {
         let Some((_g, _s, manager, project, mac, _vm)) = setup(mode) else { return };
         for dir in 0..200 {
@@ -1181,14 +1172,12 @@ mod tests {
     }
 
     /// Timings on a real tree (run with --ignored --nocapture).
-    #[cfg(unix)]
     #[test]
     #[ignore = "benchmark"]
     fn throughput() {
         bench_throughput(SyncMode::TwoWay, "two-way");
     }
 
-    #[cfg(unix)]
     #[test]
     #[ignore = "benchmark"]
     fn throughput_safe() {

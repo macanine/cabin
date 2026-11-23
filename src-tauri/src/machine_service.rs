@@ -224,8 +224,6 @@ pub(crate) async fn write_codex_export(
     contents: String,
 ) -> Result<String, AppError> {
     use std::io::Write;
-    #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt;
 
     if contents.len() > 2 * 1024 * 1024 {
         return Err(AppError {
@@ -243,13 +241,11 @@ pub(crate) async fn write_codex_export(
         let path = std::path::Path::new(&directory).join(name);
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
         match options.open(&path)
         {
             Ok(mut file) => {
-                if let Err(error) = file
-                    .write_all(contents.as_bytes())
+                if let Err(error) = vm_core::util::chmod(&path, 0o600)
+                    .and_then(|()| file.write_all(contents.as_bytes()))
                     .and_then(|()| file.sync_all())
                 {
                     drop(file);
@@ -282,10 +278,7 @@ pub(crate) async fn write_codex_export(
 #[cfg(test)]
 mod export_tests {
     use super::write_codex_export;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
 
-    #[cfg(unix)]
     #[test]
     fn exports_are_private_and_never_overwrite() {
         let dir = tempfile::tempdir().unwrap();
@@ -298,14 +291,13 @@ mod export_tests {
         assert_ne!(first, second);
         assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
         assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
-        assert_eq!(
-            std::fs::metadata(first).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::metadata(second).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        // Windows has no mode bits to check.
+        if cfg!(unix) {
+            for path in [first, second] {
+                let meta = std::fs::metadata(path).unwrap();
+                assert_eq!(agent_core::fsx::mode_of(&meta), 0o600);
+            }
+        }
     }
 }
 
