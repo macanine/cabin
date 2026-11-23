@@ -73,7 +73,7 @@ async function install(channel: { id: number }) {
     if (s.id === "image") {
       const total = 612e6;
       for (let done = 0; done <= total; done += total / 6) {
-        s.download = { doneBytes: Math.min(done, total), totalBytes: total, bytesPerSec: 24e6, verifying: false } as any; show(); await sleep(250);
+        s.download = { doneBytes: Math.min(done, total), totalBytes: total, bytesPerSec: 24e6, verifying: false } as any; show(); await sleep(400);
         if (fail === "image" && done > total / 2) {
           s.state = "failed"; s.detail = "could not download https://cloud-images.ubuntu.com/minimal/releases/noble/release-20261101/ubuntu-24.04-minimal-cloudimg-amd64.img: connection reset by peer";
           s.logTail = ["GET … 206", "connection reset by peer"]; show();
@@ -103,6 +103,11 @@ const handlers: Record<string, (a: any) => unknown> = {
   app_subscribe: ({ channel }) => { events = channel; return { machine, guest: null, start: null }; },
   machine_checks: () => readiness(),
   network_state: () => ({ ...initialState().network, available: true, running: false }),
+  proxy_catalog: () => initialState().proxy,
+  usage_dashboard: () => {
+    const zero = { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unpricedRequests: 0 };
+    return { summary: zero, daily: [], total: 0, models: [], providers: [], agents: [], logs: [], prices: [], priceSources: [] };
+  },
   host_fix: async ({ fix }) => {
     await sleep(600);
     if (fix.kind === "enableWhpx") return { restartRequired: true };
@@ -135,9 +140,9 @@ const handlers: Record<string, (a: any) => unknown> = {
   transformCallback: (fn: (raw: unknown) => void) => { const id = nextCallback++; callbacks.set(id, fn); return id; },
   unregisterCallback: (id: number) => callbacks.delete(id),
   invoke: async (cmd: string, a: any) => {
+    if (cmd === "guest_invoke") { const g = handlers[a.method]; return g ? g(a.params) : null; }
     const h = handlers[cmd];
     if (h) return h(a);
-    if (cmd === "guest_invoke") return null;
     if (/(_list|syncs|_interfaces|_permissions)$/.test(cmd)) return [];
     return null;
   },

@@ -53,20 +53,42 @@ async function click(text, sel = "button") {
 const buttons = () => evalJs(`[...document.querySelectorAll("button")].filter(b=>b.offsetParent).map(b=>(b.disabled?"[disabled] ":"")+b.textContent.trim()).filter(Boolean)`);
 const text = () => evalJs("document.body.innerText");
 
+const failures = [];
+const expect = (ok, what) => { if (!ok) failures.push(what); console.log(ok ? "ok  " : "FAIL", what); };
+const has = async (needle) => (await text())?.includes(needle) ?? false;
+
 await snap("setup");
-console.log("TEXT setup:\n" + (await text()));
-console.log("BUTTONS:", await buttons());
-if (await click("Advanced")) { await snap("advanced"); console.log("TEXT advanced:\n" + (await text())); await click("Advanced"); }
+const setupButtons = await buttons();
+expect(setupButtons.some((b) => /Install$/.test(b)), "setup offers Install");
+expect(!(await has("Machine settings")), "first run has no Machine settings detour");
+if (await click("Advanced")) { await snap("advanced"); await click("Advanced"); }
+if (scenario === "win-noqemu") {
+  expect((await buttons()).includes("[disabled] Install"), "a missing bundled QEMU blocks Install");
+  expect((await buttons()).includes("Download Cabin"), "a missing bundled QEMU offers Download Cabin");
+}
 if (scenario === "win-nowhpx") {
-  if (await click("Turn on")) { await sleep(1000); await snap("after-fix"); console.log("TEXT after fix:\n" + (await text())); console.log("BUTTONS:", await buttons()); }
+  expect(await has("Windows Hypervisor Platform is turned off"), "WHPX off is explained");
+  if (await click("Turn on")) {
+    await sleep(1000); await snap("after-fix");
+    expect(!(await buttons()).includes("Turn on"), "Turn on is replaced after it succeeds");
+    expect((await buttons()).includes("Restart Windows"), "restart is offered after turning WHPX on");
+  }
 }
 const probe = () => evalJs(`import("/src/state/store.ts").then(m=>{let v;m.patchState(s=>{v=s;return s});return JSON.stringify({busy:v.machine?.busy,steps:v.install.map(s=>s.id+":"+s.state)})})`);
-if (await click("Install")) {
-  if (process.env.PROBE) for (let i = 0; i < 12; i++) { console.log("PROBE", await probe(), "| DOM:", await evalJs(`[...document.querySelectorAll("h1,h2")].map(e=>e.textContent+" / "+(e.nextElementSibling?.textContent??"")).join(" | ")`)); await sleep(500); }
-  await sleep(1200); await snap("installing-early"); console.log("TEXT installing:\n" + (await text()));
+if (scenario !== "win-noqemu" && await click("Install")) {
+  if (process.env.PROBE) for (let i = 0; i < 12; i++) { console.log("PROBE", await probe()); await sleep(500); }
+  await sleep(1200); await snap("installing-early");
+  expect(await has("Installing Ubuntu"), "the install shows progress");
   await sleep(2500); await snap("installing-mid");
-  await sleep(5000); await snap("end"); console.log("TEXT end:\n" + (await text())); console.log("BUTTONS:", await buttons());
+  const subtitle = await evalJs(`document.querySelector("h1")?.nextElementSibling?.textContent ?? ""`);
+  expect(!/Check the virtual machine engine/.test(subtitle) || scenario.startsWith("fail"), "progress moves past the first stage");
+  await sleep(5000); await snap("end");
+  if (scenario.startsWith("fail-image")) expect(await has("could not be downloaded"), "a download failure gets download advice");
+  else if (scenario.startsWith("fail-provision")) expect(await has("took too long"), "a provisioning timeout is explained");
+  else expect(await has("Your machine is ready"), "the install ends ready");
+  if (scenario.startsWith("fail")) expect((await buttons()).includes("Retry"), "a failure offers Retry");
 }
-console.log("ERRORS:", errors);
+expect(errors.length === 0, `no page errors (${errors.length})`);
+if (errors.length) console.log(errors.join("\n---\n").slice(0, 4000));
 ws.close(); chrome.kill(); vite.kill();
-process.exit(0);
+process.exit(failures.length ? 1 : 0);

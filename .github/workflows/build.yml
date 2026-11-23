@@ -93,6 +93,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: UI tests (real Chrome, mocked IPC)
+        if: matrix.name == 'macos-arm64'
+        env:
+          CHROME: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+        run: |
+          npm run test:ui
+          for scenario in mac win-nowhpx win-noqemu fail-image fail-provision; do
+            node tests/ui/journey.mjs "$scenario" "build/journey/$scenario"
+          done
 
       - name: Restore vendored binaries
         id: vendor-cache
@@ -112,11 +121,10 @@ jobs:
         run: chmod +x core/target/${{ matrix.guest_triple }}/release/cabind
 
       # Host-side crates, after the bundle resources exist (the src-tauri
-      # build script checks them). core is covered by the guest job. On Windows some
-      # Unix-only tests may not apply, so that run reports without failing.
+      # build script checks them). core is covered by the guest job. Both
+      # platforms run the same tests and both must pass.
       - name: cargo test (vm, src-tauri)
         shell: bash
-        continue-on-error: ${{ matrix.name == 'windows-x64' }}
         run: |
           cargo test --manifest-path vm/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml
