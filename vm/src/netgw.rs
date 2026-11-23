@@ -1303,13 +1303,7 @@ impl Gateway {
         ssh: std::net::SocketAddr,
         egress: EgressMode,
     ) -> Result<Self> {
-        if socket.exists() && UnixStream::connect(socket).is_ok() {
-            return Err(Error::Message(format!(
-                "A network gateway is already listening at {}",
-                socket.display()
-            )));
-        }
-        let _ = std::fs::remove_file(socket);
+        crate::sockets::prepare_listener(socket)?;
         if let Some(parent) = socket.parent() {
             crate::util::ensure_dir(parent)?;
         }
