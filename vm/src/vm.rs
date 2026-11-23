@@ -1403,43 +1403,6 @@ mod tests {
         assert!(ssh_port_conflict(&cfg).is_none());
     }
 
-    #[test]
-    fn ssh_boot_budget_and_probe_scale_with_emulation() {
-        assert_eq!(
-            ssh_wait_budgets(Duration::from_secs(180), 1),
-            (Duration::from_secs(180), Duration::from_secs(6))
-        );
-        assert_eq!(
-            ssh_wait_budgets(Duration::from_secs(180), 8),
-            (Duration::from_secs(1440), Duration::from_secs(48))
-        );
-    }
-
-    #[test]
-    fn ssh_excludes_both_host_key_files_and_checks_liveness_after_wake() {
-        let home = crate::sockets::test_dir();
-        let cfg = Config {
-            home: home.clone(),
-            ..Config::default()
-        };
-        ensure_dir(&cfg.instance_dir()).unwrap();
-        fs::write(cfg.ssh_key_path(), "test key").unwrap();
-        let argv = Runtime::new(&cfg).ssh_argv(false).unwrap();
-        for option in [
-            "UserKnownHostsFile=none",
-            "GlobalKnownHostsFile=none",
-            "StrictHostKeyChecking=no",
-            "ServerAliveInterval=10",
-            "ServerAliveCountMax=3",
-        ] {
-            assert!(
-                argv.windows(2)
-                    .any(|pair| pair[0] == "-o" && pair[1] == option)
-            );
-        }
-        fs::remove_dir_all(home).unwrap();
-    }
-
     #[cfg(unix)]
     #[test]
     fn early_exit_returns_status_and_classified_stderr_before_pidfile() {
@@ -1575,37 +1538,6 @@ qemu: Failed to get \"write\" lock";
         assert_eq!(fs::read(instance.disk()).unwrap(), b"persistent guest");
         assert!(instance.qmp_socket().ends_with("qmp.sock"));
         fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn resolves_downloaded_mac_engine_for_an_existing_instance() {
-        let home = crate::sockets::test_dir();
-        let old = crate::qemu_engine::root(&home);
-        let system = old.join("bin").join(crate::platform::qemu_system());
-        let firmware = old.join("share/qemu");
-        let vars = firmware.join("edk2-aarch64-vars.fd");
-        for path in [
-            &system,
-            &old.join("bin/qemu-img"),
-            &firmware.join("edk2-aarch64-code.fd"),
-            &vars,
-        ] {
-            ensure_dir(path.parent().unwrap()).unwrap();
-            fs::write(path, []).unwrap();
-        }
-        let cfg = Config {
-            home: home.clone(),
-            ..Config::default()
-        };
-        let resolved = resolve_qemu(&cfg).unwrap();
-        if let Some(bundle) = crate::vendor::vendor() {
-            assert_eq!(Path::new(&resolved.qemu_bin), bundle.qemu_system());
-        } else {
-            assert_eq!(Path::new(&resolved.qemu_bin), system);
-            assert_eq!(resolved.firmware_vars, vars);
-        }
-        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

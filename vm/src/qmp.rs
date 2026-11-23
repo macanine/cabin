@@ -194,15 +194,15 @@ mod tests {
             stream
                 .write_all(b"{\"QMP\":{}}\n{\"return\":{},\"id\":1}\n")
                 .unwrap();
-            let until = Instant::now() + Duration::from_secs(2);
+            let until = Instant::now() + Duration::from_secs(1);
             while Instant::now() < until && stream.write_all(b"{\"event\":\"STOP\"}\n").is_ok() {
                 std::thread::sleep(Duration::from_millis(5));
             }
         });
-        let mut client = QmpClient::connect(&path, Duration::from_millis(200)).unwrap();
+        let mut client = QmpClient::connect(&path, Duration::from_millis(100)).unwrap();
         let start = Instant::now();
         assert!(client.execute("query-status", None).is_err());
-        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(start.elapsed() < Duration::from_millis(600));
         drop(client);
         server.join().unwrap();
         std::fs::remove_dir_all(dir).unwrap();
@@ -215,15 +215,15 @@ mod tests {
         let listener = UnixListener::bind(&path).unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let until = Instant::now() + Duration::from_secs(2);
+            let until = Instant::now() + Duration::from_secs(1);
             while Instant::now() < until && stream.write_all(b" ").is_ok() {
                 std::thread::sleep(Duration::from_millis(5));
             }
         });
-        let mut client = QgaClient::connect(&path, Duration::from_millis(200)).unwrap();
+        let mut client = QgaClient::connect(&path, Duration::from_millis(100)).unwrap();
         let start = Instant::now();
         assert!(client.execute("guest-ping", None).is_err());
-        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(start.elapsed() < Duration::from_millis(600));
         drop(client);
         server.join().unwrap();
         std::fs::remove_dir_all(dir).unwrap();

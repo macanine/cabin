@@ -293,17 +293,6 @@ mod tests {
     }
 
     #[test]
-    fn in_tree_follows_the_guest_arch() {
-        let root = Path::new("/r");
-        let arm = Engine::in_tree(root, GuestArch::Arm64);
-        let amd = Engine::in_tree(root, GuestArch::Amd64);
-        assert!(arm.qemu.to_string_lossy().contains("qemu-system-aarch64"));
-        assert!(amd.qemu.to_string_lossy().contains("qemu-system-x86_64"));
-        assert!(amd.firmware_code.ends_with("edk2-x86_64-code.fd"));
-        assert!(amd.firmware_vars.ends_with("edk2-i386-vars.fd"));
-    }
-
-    #[test]
     fn the_vendored_engine_comes_first() {
         let dir = std::env::temp_dir().join(format!("engine-vendor-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

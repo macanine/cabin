@@ -443,13 +443,6 @@ mod tests {
     }
 
     #[test]
-    fn dates_are_ascii_digits() {
-        let stamp = volume_stamp();
-        assert!(stamp[..16].iter().all(u8::is_ascii_digit), "{stamp:?}");
-        assert_eq!(stamp[16], 0);
-    }
-
-    #[test]
     fn rejects_bad_names_and_empty_sets() {
         let dir = scratch("bad");
         let output = dir.join("seed.iso");

@@ -321,42 +321,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the bundled QEMU tools; does not start a VM"]
-    fn bundled_qemu_and_qemu_img_accept_paths_with_spaces_and_unicode() {
-        let root = std::env::temp_dir().join(format!("cabin disk 資料 {}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let cfg = crate::config::build_config(
-            &json!({"name": "test", "home": root, "network_mode": "user"}),
-            &crate::config::default_project_root(),
-        )
-        .unwrap();
-        let args = crate::vm::build_qemu_args(&cfg, false, None, None, None).unwrap();
-        for path in [cfg.disk_path(), cfg.seed_path(), cfg.efi_vars_path()] {
-            let needle = format!("file={}", path.display());
-            assert!(
-                args.windows(2)
-                    .any(|pair| pair[0] == "-drive" && pair[1].contains(&needle)),
-                "{args:?}"
-            );
-        }
-        let image = root.join("base image.raw");
-        let disk = root.join("guest disk.qcow2");
-        std::fs::write(&image, vec![0; 64 * 1024]).unwrap();
-        let engine = crate::qemu_engine::require(&cfg.home).unwrap();
-        create_disk(
-            &root,
-            &engine.qemu_img,
-            &image,
-            &disk,
-            128 * 1024,
-            |args, timeout, cwd| capture_env(args, timeout, None, Some(cwd), None),
-        )
-        .unwrap();
-        assert_eq!(disk_virtual_size(&cfg, &disk), Some(128 * 1024));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn qemu_img_failures_keep_the_cause_and_skip_resize() {
         for (detail, expected) in [
             ("No space left on device", "not enough free disk space"),

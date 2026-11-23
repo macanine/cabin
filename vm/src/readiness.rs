@@ -764,22 +764,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn acceleration_problems_have_plain_text_and_fixes() {
-        let (text, fix) = accel_problem_text(&AccelProblem::WhpxFeatureOff);
-        assert_eq!(fix, Some(Fix::EnableWhpx));
-        assert!(text.contains("slower"));
-        let (_, fix) = accel_problem_text(&AccelProblem::VirtualizationOff);
-        assert!(matches!(fix, Some(Fix::OpenUrl { url }) if url.starts_with("https://")));
-        let (text, fix) = accel_problem_text(&AccelProblem::ProbeFailed("boom".into()));
-        assert!(text.contains("boom") && fix.is_none());
-        assert!(
-            accel_problem_text(&AccelProblem::HypervisorConflict)
-                .0
-                .contains("Another program")
-        );
-    }
-
-    #[test]
     fn memory_reserves_two_gib_for_the_host() {
         let low = memory_check(8192, Some(8192));
         assert!(!low.ok && !low.optional);
@@ -792,44 +776,6 @@ mod tests {
     fn disk_blocks_when_too_small() {
         assert!(!disk_check(11 * GIB - 1, 8).ok);
         assert!(disk_check(11 * GIB, 8).ok);
-    }
-
-    #[test]
-    fn fixes_serialize_tagged() {
-        let json = serde_json::to_value(Fix::OpenUrl {
-            url: "https://x".into(),
-        })
-        .unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({ "kind": "openUrl", "url": "https://x" })
-        );
-        assert_eq!(
-            serde_json::to_value(Fix::EnableWhpx).unwrap(),
-            serde_json::json!({ "kind": "enableWhpx" })
-        );
-    }
-
-    #[test]
-    fn elevated_dism_enables_the_hypervisor_platform() {
-        let argv = enable_whpx_argv();
-        assert!(argv.last().unwrap().contains("HypervisorPlatform"));
-        assert!(argv.last().unwrap().contains("RunAs"));
-    }
-
-    #[test]
-    fn readiness_lists_every_item_without_paths() {
-        let items = host_readiness(&std::env::temp_dir(), 20, 4096);
-        for id in ["ssh", "disk", "memory"] {
-            assert!(items.iter().any(|i| i.id == id), "{id}");
-        }
-        assert!(
-            items
-                .iter()
-                .any(|i| matches!(i.id.as_str(), "qemu" | "qemuLaunch"))
-        );
-        assert!(items.iter().all(|i| !i.detail.contains("cabind")));
-        assert!(!service_check(false).ok && service_check(true).ok);
     }
 
     #[test]

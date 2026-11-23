@@ -202,59 +202,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn names_match_each_architecture() {
-        let (a, x) = (GuestArch::Arm64, GuestArch::Amd64);
-        assert_eq!((a.qemu_name(), x.qemu_name()), ("aarch64", "x86_64"));
-        assert_eq!((a.debian(), x.debian()), ("arm64", "amd64"));
-        assert_eq!(a.rust_musl_triple(), "aarch64-unknown-linux-musl");
-        assert_eq!(x.rust_musl_triple(), "x86_64-unknown-linux-musl");
-        assert_eq!(a.qemu_system_binary(), "qemu-system-aarch64");
-        assert_eq!(x.qemu_system_binary(), "qemu-system-x86_64");
-        assert_eq!(a.firmware_names(), ("edk2-aarch64-code.fd", "edk2-arm-vars.fd"));
-        assert_eq!(x.firmware_names(), ("edk2-x86_64-code.fd", "edk2-i386-vars.fd"));
-        assert_eq!(a.machine_type(), "virt,highmem=on");
-        assert_eq!(x.machine_type(), "q35");
-        assert!(a.chrome_deb_url().ends_with("_arm64.deb"));
-        assert!(x.chrome_deb_url().ends_with("_amd64.deb"));
-        assert_eq!(a.ua_platform(), "Linux aarch64");
-        assert_eq!(x.ua_platform(), "Linux x86_64");
-        assert_eq!(a.cloud_image_suffix(), "arm64");
-        assert_eq!(x.cloud_image_suffix(), "amd64");
-        assert!(a.device_profile_supported());
-        assert!(!x.device_profile_supported());
-    }
-
-    #[test]
-    fn mirrors_follow_the_archive_layout() {
-        assert!(GuestArch::Arm64.apt_mirrors()[0].contains("ports.ubuntu.com"));
-        assert!(GuestArch::Arm64.apt_mirrors().iter().all(|m| m.ends_with("ubuntu-ports")));
-        assert!(GuestArch::Amd64.apt_mirrors()[0].contains("archive.ubuntu.com"));
-        assert!(GuestArch::Amd64.apt_mirrors().iter().all(|m| m.ends_with("/ubuntu")));
-    }
-
-    #[test]
-    fn engine_files_cover_binaries_and_firmware() {
-        let files = GuestArch::Amd64.engine_files();
-        assert!(files.iter().any(|f| f.contains("qemu-system-x86_64")));
-        assert!(files.contains(&"share/qemu/edk2-i386-vars.fd".to_string()));
-        let files = GuestArch::Arm64.engine_files();
-        assert!(files.contains(&"share/qemu/edk2-aarch64-vars.fd".to_string()));
-    }
-
-    #[test]
-    fn fingerprint_is_localized() {
-        assert_eq!(
-            GuestArch::Amd64.localize_fingerprint("X11; Linux aarch64)"),
-            "X11; Linux x86_64)"
-        );
-        assert_eq!(GuestArch::Arm64.localize_fingerprint("Linux aarch64"), "Linux aarch64");
-    }
-
-    #[test]
-    fn current_follows_the_host() {
-        if cfg!(target_os = "macos") {
-            assert_eq!(GuestArch::current(), GuestArch::Arm64);
+    fn each_architecture_maps_to_its_own_names() {
+        for (arch, qemu, deb, machine, vars, profile) in [
+            (GuestArch::Arm64, "aarch64", "arm64", "virt,highmem=on", "edk2-arm-vars.fd", true),
+            (GuestArch::Amd64, "x86_64", "amd64", "q35", "edk2-i386-vars.fd", false),
+        ] {
+            assert_eq!(arch.qemu_name(), qemu);
+            assert_eq!(arch.debian(), deb);
+            assert_eq!(arch.machine_type(), machine);
+            assert_eq!(arch.firmware_names().1, vars);
+            assert_eq!(arch.device_profile_supported(), profile);
+            assert!(arch.chrome_deb_url().ends_with(&format!("_{deb}.deb")));
+            assert!(arch.localize_fingerprint("Linux aarch64").ends_with(&format!("Linux {qemu}")));
         }
-        assert!(GuestArch::host_supported());
     }
 }

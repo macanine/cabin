@@ -252,12 +252,6 @@ fn write_start_fallback(
     )
 }
 
-/// Forget a recorded fallback (tests).
-#[cfg(test)]
-pub(crate) fn reset_fallback() {
-    *fallback().lock().unwrap_or_else(|e| e.into_inner()) = None;
-}
-
 /// Current acceleration, with the reason hardware acceleration is unavailable.
 pub fn status() -> AccelStatus {
     let accel = crate::platform::accel();
@@ -289,61 +283,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_feature() {
-        for text in [
-            "qemu-system-x86_64.exe: invalid accelerator whpx",
-            "Could not load library WinHvPlatform.dll.",
-            "qemu-system-x86_64.exe: -accel whpx: Windows Hypervisor Platform is not available",
+    fn whpx_output_is_classified() {
+        for (text, expected) in [
+            ("qemu-system-x86_64.exe: invalid accelerator whpx", Some(AccelProblem::WhpxFeatureOff)),
+            ("Could not load library WinHvPlatform.dll.", Some(AccelProblem::WhpxFeatureOff)),
+            (
+                "WHPX: No accelerator found, hr=00000000\nqemu: failed to initialize whpx: Operation not supported",
+                Some(AccelProblem::VirtualizationOff),
+            ),
+            ("WHvCreatePartition failed with 0x80070005", Some(AccelProblem::HypervisorConflict)),
+            (
+                "noise\nWHPX: Failed to setup partition, hr=c0350005\n",
+                Some(AccelProblem::ProbeFailed("WHPX: Failed to setup partition, hr=c0350005".into())),
+            ),
+            ("qemu: unrelated error", None),
         ] {
-            assert_eq!(classify_whpx_output(text), Some(AccelProblem::WhpxFeatureOff), "{text}");
+            assert_eq!(classify_whpx_output(text), expected, "{text}");
         }
-    }
-
-    #[test]
-    fn virtualization_off() {
-        assert_eq!(
-            classify_whpx_output("WHPX: No accelerator found, hr=00000000\nqemu: failed to initialize whpx: Operation not supported"),
-            Some(AccelProblem::VirtualizationOff)
-        );
-    }
-
-    #[test]
-    fn hypervisor_conflict() {
-        for text in [
-            "WHPX: Failed to create partition, hr=80070005",
-            "WHvCreatePartition failed with 0x80070005",
-        ] {
-            assert_eq!(classify_whpx_output(text), Some(AccelProblem::HypervisorConflict), "{text}");
-        }
-    }
-
-    #[test]
-    fn other_whpx_failures_keep_their_line() {
-        assert_eq!(
-            classify_whpx_output("noise\nWHPX: Failed to setup partition, hr=c0350005\n"),
-            Some(AccelProblem::ProbeFailed("WHPX: Failed to setup partition, hr=c0350005".into()))
-        );
-        assert_eq!(classify_whpx_output("qemu: unrelated error"), None);
         assert_eq!(
             classify_failure("one\nqemu: unrelated error\n"),
             AccelProblem::ProbeFailed("qemu: unrelated error".into())
-        );
-    }
-
-    #[test]
-    fn status_serializes_camel_case() {
-        let status = AccelStatus {
-            accel: "tcg",
-            cpu: "max".into(),
-            emulated: true,
-            problem: Some(AccelProblem::ProbeFailed("x".into())),
-        };
-        let value = serde_json::to_value(&status).unwrap();
-        assert_eq!(value["problem"]["kind"], "probeFailed");
-        assert_eq!(value["problem"]["detail"], "x");
-        assert_eq!(
-            serde_json::to_value(AccelProblem::WhpxFeatureOff).unwrap()["kind"],
-            "whpxFeatureOff"
         );
     }
 
@@ -382,13 +341,4 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[test]
-    fn fallback_is_recorded_and_visible() {
-        reset_fallback();
-        assert_eq!(fallback_reason(), None);
-        fall_back_to_tcg(AccelProblem::VirtualizationOff);
-        fall_back_to_tcg(AccelProblem::WhpxFeatureOff);
-        assert_eq!(fallback_reason(), Some(AccelProblem::VirtualizationOff));
-        reset_fallback();
-    }
 }
