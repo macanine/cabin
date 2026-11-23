@@ -152,6 +152,16 @@ SQLite metadata when available.
 - **Agent configuration.** The shared MCP and Skills pages manage user-level settings.
   Project MCP and OAuth sign-in are provider-managed. OpenCode JSONC is available for
   inspection. The app uses the provider's own CLI config when opening a session.
+- **Claude Code process isolation.** Run Cabin-managed Claude Code with an OS-enforced
+  boundary that covers the CLI and its descendants. Expose the selected workspace or
+  worktree, required tools, and the session's own Claude configuration and authentication.
+  Pass an explicit environment allowlist. Keep `cabind` and unrelated guest processes, their
+  launch metadata and environments, Cabin's private state and service sockets, other agents'
+  credentials, and unselected project directories outside that boundary. Apply the policy to
+  ACP chats and Cabin's Claude terminal entry point. Preserve provider permission prompts
+  and supported authentication. Verify with stub CLIs that project access works and that
+  both the CLI and its subprocesses are denied access to protected data. Use an owner-run
+  smoke check for sign-in, chat resume, and terminal use.
 - **Desktop rendering.** Sway uses software rendering. GPU-accelerated workloads and a
   separate frame path need performance measurements before a design decision.
 - **ACP follow-ups.** Session fork and list, checkpoints, ACP authentication, MCP servers
