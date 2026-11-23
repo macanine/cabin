@@ -24,6 +24,8 @@ export const storageIpc = {
 
 export const machineIpc = {
   checks: (diskGb: number, memoryMb: number) => invokeIpc<ReadinessReport>("machine_checks", { diskGb, memoryMb }),
+  diagnostics: (diskGb: number, memoryMb: number, steps: InstallStep[], installError: string | null, installUser: string | null) =>
+    invokeIpc<string>("machine_diagnostics", { diskGb, memoryMb, steps, installError, installUser }),
   fix: (fix: Fix) => invokeIpc<FixOutcome>("host_fix", { fix }),
   details: () => invokeIpc<MachineDetails | null>("machine_details"),
   observation: () => invokeGuest<GuestMachineObservation>("machine_observation"),

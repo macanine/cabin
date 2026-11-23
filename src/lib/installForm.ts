@@ -15,14 +15,29 @@ export function readinessView(items: Readiness[]) {
 /**
  * The size preset for a host: light under 8 GB of memory, balanced under 16,
  * roomy otherwise (8 and 16 GB machines report a little less, hence the
- * margin). Never gives the VM more than half the memory or more CPUs than
- * the host has. Unknown memory (0) gets balanced.
+ * margin). Leave memory for the host and room for the image on disk.
+ * If even Light is too large, start with the closest supported custom size.
  */
-export function pickPreset(hostMemoryMb: number, hostCpus: number): ResourcePreset {
-  const mb = hostMemoryMb > 0 ? hostMemoryMb : 8192;
-  let index = mb < 7.5 * 1024 ? 0 : mb < 15 * 1024 ? 1 : 2;
-  while (index > 0 && (RESOURCE_PRESETS[index].memoryMb > (mb / 2) * 1.05 || (hostCpus > 0 && RESOURCE_PRESETS[index].cpus > hostCpus))) index--;
-  return RESOURCE_PRESETS[index];
+export function pickPreset(hostMemoryMb: number, hostCpus: number, maxDiskGb = Infinity): ResourcePreset {
+  const mb = hostMemoryMb || 8192;
+  const cpuLimit = hostCpus || Infinity;
+  const memoryLimit = Math.floor(Math.min(mb / 2 * 1.05, mb - 2048) / 512) * 512;
+  const fitting = [...RESOURCE_PRESETS].reverse().find((preset) =>
+    preset.cpus <= cpuLimit && preset.memoryMb <= Math.min(mb / 2 * 1.05, mb - 2048) && preset.diskGb <= maxDiskGb);
+  if (fitting) return fitting;
+  const light = RESOURCE_PRESETS[0];
+  return {
+    ...light, key: "custom", label: "Custom",
+    cpus: Math.min(light.cpus, cpuLimit),
+    memoryMb: Math.max(1024, Math.min(light.memoryMb, memoryLimit)),
+    diskGb: Math.max(8, Math.min(light.diskGb, maxDiskGb)),
+  };
+}
+
+export function presetFitsHost(preset: ResourcePreset, host: HostFacts | null): boolean {
+  return host != null && (!host.cpus || preset.cpus <= host.cpus)
+    && (!host.memoryMb || preset.memoryMb + 2048 <= host.memoryMb)
+    && preset.diskGb <= host.maxDiskGb;
 }
 
 /** A host account name as a valid Linux username, or null when nothing usable remains. */
@@ -38,7 +53,7 @@ export function sanitizeUsername(raw: string | null | undefined): string | null 
 /** The first-run options for this host. */
 export function optionsForHost(host: HostFacts | null): MachineInstallOptions {
   if (!host) return defaultOptions();
-  const preset = pickPreset(host.memoryMb, host.cpus);
+  const preset = pickPreset(host.memoryMb, host.cpus, host.maxDiskGb);
   return { ...defaultOptions(preset), username: sanitizeUsername(host.username) };
 }
 

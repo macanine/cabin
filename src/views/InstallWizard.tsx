@@ -3,8 +3,9 @@ import type { HostFacts, Readiness } from "../services/ipc/generated/common";
 import type { InstallPlan, MachineInstallOptions, OsChoice } from "../services/ipc/generated/core";
 import { machineIpc } from "../services/ipc/app";
 import { toIpcError } from "../services/ipc/common";
-import { useApp } from "../state/store";
+import { patchState, useApp } from "../state/store";
 import { chosenOs, defaultOptions, diskGb, formProblem, optionsForHost } from "../lib/installForm";
+import { useAutoRefresh } from "../lib/useAutoRefresh";
 import { InstallSetup } from "./install/InstallSetup";
 import { InstallProgress } from "./install/InstallProgress";
 import { BootPage } from "../components/Boot";
@@ -37,7 +38,7 @@ export function InstallWizard() {
 
   const installing = machine?.busy != null && /install/i.test(machine.busy);
   const installed = machine != null && machine.state !== "notInstalled";
-  const showProgress = installing || installed || (!editing && (steps.length > 0 || error != null || cancelled != null));
+  const showProgress = installing || installed || (!editing && (startedAt != null || steps.length > 0 || error != null || cancelled != null));
 
   useEffect(() => { draft = options; }, [options]);
 
@@ -46,6 +47,10 @@ export function InstallWizard() {
   const disk = diskGb(options.diskSize) ?? 20;
   const memory = options.memoryMb ?? 4096;
   const [recheck, setRecheck] = useState(0);
+  const checkKey = `${disk}:${memory}:${recheck}`;
+  const [checked, setChecked] = useState<string | null>(null);
+  const onRecheck = useCallback(() => setRecheck((n) => n + 1), []);
+  useAutoRefresh(onRecheck, { enabled: !showProgress, initial: false, minGap: 5_000 });
   useEffect(() => {
     if (showProgress) return;
     let alive = true;
@@ -54,17 +59,21 @@ export function InstallWizard() {
         if (!alive) return;
         setReadiness(report.items);
         setHost(report.host);
+        setChecked(checkKey);
         if (!hostApplied) {
           hostApplied = true;
           if (draft == null || JSON.stringify(draft) === JSON.stringify(defaultOptions())) {
             setOptions((value) => ({ ...value, ...optionsForHost(report.host), os: value.os, aptMirror: value.aptMirror }));
           }
         }
-      }).catch(() => { if (alive) setReadiness([]); });
+      }).catch((err: unknown) => {
+        if (!alive) return;
+        setChecked(checkKey);
+        setReadiness([{ id: "readiness", label: "Cabin could not check this computer", ok: false, optional: false, detail: toIpcError(err).message, fix: null }]);
+      });
     }, 250);
     return () => { alive = false; clearTimeout(timer); };
-  }, [disk, memory, recheck, showProgress]);
-  const onRecheck = useCallback(() => setRecheck((n) => n + 1), []);
+  }, [disk, memory, checkKey, showProgress]);
 
   // The plan (defaults, paths, acceleration) follows the options.
   useEffect(() => {
@@ -83,6 +92,7 @@ export function InstallWizard() {
     setError(null);
     setCancelled(null);
     setStartedAt(Date.now());
+    patchState((state) => ({ ...state, install: [] }));
     try {
       await machineIpc.install(options);
       draft = null;
@@ -103,6 +113,7 @@ export function InstallWizard() {
           steps={steps}
           startedAt={startedAt}
           error={error}
+          installOptions={{ diskSize: options.diskSize, memoryMb: options.memoryMb, username: options.username ?? plan?.username ?? null }}
           cancelled={cancelled}
           osName={chosenOs(options, choices)?.name ?? plan?.osName ?? "Ubuntu"}
           onRetry={install}
@@ -115,6 +126,7 @@ export function InstallWizard() {
           plan={plan}
           choices={choices}
           readiness={readiness}
+          checking={checked !== checkKey}
           host={host}
           onRecheck={onRecheck}
           planError={planError}

@@ -90,168 +90,136 @@ export interface FailureHelp {
   advice: string;
 }
 
-/** Plain-language explanation of common install failures. */
-export function explainFailure(text: string): FailureHelp {
+// Match specific causes before their enclosing step or a generic I/O error.
+const FAILURE_RULES: readonly (readonly [RegExp, string, string])[] = [
+  [/not enough free (disk )?space|not enough free disk|no space left|not enough space on the disk|storage is full|disk quota exceeded/,
+    "Not enough free disk space", "Free up space on the volume that holds Cabin’s data or choose a smaller VM disk, then retry."],
+  [/could not allocate memory|cannot allocate memory|out of memory|not enough memory/,
+    "The VM could not get enough memory", "Close apps that use a lot of memory or choose a smaller VM memory size, then retry."],
+  [/another vmctl operation is in progress|already in progress|finish the current operation|wait for the machine startup attempt/,
+    "Another machine operation is already running", "Wait for the current operation to finish, then retry."],
+  [/download cancelled|install cancelled|cabin is quitting/,
+    "The download was cancelled", "Open Cabin again and retry the install. Cabin can reuse a verified image or a saved partial download."],
+  [/tls verification or handshake failed|invalid peer certificate|unknownissuer|certificate verify failed|certificate has expired/,
+    "Could not establish a secure download connection", "Check this computer’s date and time. If your network uses an inspecting proxy, check that its certificate is trusted on this computer."],
+  [/captive portal|received an html page/,
+    "The network sent a sign-in page instead of the download", "Open a browser and sign in to the network if prompted, then retry."],
+  [/download dns lookup failed|failed to look up address information/,
+    "Could not find the download server", "Check this computer’s internet connection, DNS, or proxy, then retry."],
+  [/download stalled|connection dropped while downloading.*timed out/,
+    "The download stopped receiving data", "Check this computer’s connection or proxy, then retry. Cabin can continue from the saved partial download."],
+  [/http 407|proxy authentication|invalid proxy url|could not connect to (?:the )?proxy/,
+    "The download proxy could not connect", "Check the proxy address and credentials on this computer, then retry."],
+  [/--user must|--hostname must|(?:username|hostname) “/,
+    "Check the VM username and hostname", "Use a lowercase Linux username and a hostname with lowercase letters, digits, or hyphens."],
+  [/invalid ssh public key|generated ssh public key|ssh-keygen produced an unexpected public key/,
+    "The guest’s SSH public key could not be prepared", "Retry to generate a fresh key for the VM. If it fails again, open the seed step log."],
+  [/--disk-size|invalid size:|could not check free disk space/,
+    "The VM disk size could not be checked", "Check the available space on the volume that holds Cabin’s data and retry with a valid disk size."],
+  [/qemu-img[^\n]*(?:permission denied|access is denied|being used by another process|sharing violation)/,
+    "The VM disk file could not be opened for writing", "Check that Cabin can write to its data folder and that no other program is holding the file, then retry."],
+  [/qemu-img[^\n]*(?:failed \(exit|timed out while preparing)|could not read base image|new qcow2 metadata|wrong virtual size/,
+    "The VM disk could not be prepared", "Check the disk step log for the tool’s error, then retry."],
+  [/sha256sums|no valid image checksum/,
+    "Ubuntu’s image checksum list could not be verified", "Retry when the mirror finishes syncing. If the problem continues, copy diagnostics to share with Cabin support."],
+  [/could not find a[^\n]* image|builds are listed|lists an (?:arm64 )?image|no image build is pinned|base image missing/,
+    "The system image could not be found", "Ubuntu’s image index could not be read. Check this computer’s internet connection or proxy, then retry."],
+  [/embedded image checksum mismatch|copy embedded image failed/,
+    "The included Ubuntu image could not be prepared", "Reinstall Cabin if the included image is damaged. Check the image step log for any storage errors before retrying."],
+  [/checksum mismatch|sha256 mismatch|wrong checksum|failed to verify (?:the )?(?:download|image)/,
+    "The downloaded image did not match its checksum", "Retry the download. If it keeps failing, copy diagnostics so Cabin support can check the pinned image."],
+  [/qemu (?:archive|.*firmware)|macanine\/qemu/,
+    "The virtual machine engine could not be prepared", "Cabin’s QEMU or its firmware could not be checked or unpacked. Retry, then reinstall Cabin if it keeps failing."],
+  [/qemu[^\n]*(?:does not run|could not launch|os error (?:225|226|577|1260))|could not launch qemu|blocked by group policy/,
+    "Cabin’s bundled QEMU could not run", "Check your computer’s security or antivirus history for a block on the official Cabin build, then recheck setup or reinstall Cabin."],
+  [/(?:qemu(?:-system[-\w]*|-img)?\s+(?:is\s+)?(?:not installed|not found|missing|not available)|bundled qemu is missing)/,
+    "Cabin’s bundled QEMU is missing", "Check the security history for a quarantined Cabin file, then reinstall Cabin and open it again."],
+  [/required tool missing: ssh|command not found:[^\n]*ssh(?:-keygen)?\b/,
+    "The SSH tools could not be found", "Reinstall Cabin on Windows. On other systems, restore the SSH tools included with the operating system, then retry."],
+  [/download failed after|could not (?:download|reach https?:|connect:)|download (?:content-length|server rejected|exceeded its declared length)|invalid download content-length|no download source|connection (?:reset|dropped|closed early)|http [45]\d\d/,
+    "A file could not be downloaded", "Check this computer’s internet connection or proxy, then retry. Cabin can resume a partial image download and try other mirrors."],
+  [/temporary failure resolving|could not resolve|network is unreachable|apt does not report the configured proxy|proxy egress lock failed|ipv4-only guest networking|nic .* has no ipv4 address/,
+    "The VM could not reach the internet", "Check this computer’s internet connection and the proxy or network settings in Cabin, then retry."],
+  [/debian is no longer supported/,
+    "This machine needs Ubuntu", "Back up what you need from the old machine before replacing it with a new Ubuntu installation in Machine settings."],
+  [/unknown operating system|--cpus must|--memory must|--apt-mirror must|--ssh-port must/,
+    "Check the machine settings", "Open Advanced and choose a supported Ubuntu release, size, and package mirror, then retry."],
+  [/device profile is currently built for arm/,
+    "The device profile is unavailable on this computer", "Turn off Device profile under Advanced, then retry."],
+  [/already installed or has files to recover|already provisioned with a different configuration|existing disk .* needs recovery|disk was kept|files were kept|cleaning up the partial install also failed|seed is immutable/,
+    "The existing machine needs recovery", "Open Machine settings and use Verify or repair installation. Keep a backup before choosing to erase anything."],
+  [/stop the machine before repairing|previous qemu process has not exited|cannot identify the recorded qemu process|machine could not be stopped/,
+    "A previous machine process is still running", "Stop the machine in Cabin. If it cannot stop, restart this computer before trying again."],
+  [/earlier version of cabin is still running with tcp control sockets/,
+    "The previous version still has the machine running", "Stop the machine in that version of Cabin or restart this computer, then try again."],
+  [/vm socket path (?:is too long|must be valid utf-8)|filename or extension is too long|file name too long/,
+    "The machine’s data path cannot be used", "Use a shorter local profile path with ordinary characters, or ask your administrator to change the location of Cabin’s data."],
+  [/unexpected file at vm socket path|could not determine whether the vm socket|process is already listening at/,
+    "A machine control socket is in use", "Close other copies of Cabin and restart this computer. If the error names an unexpected file, move that file out of the way before retrying."],
+  [/qemu could not bind the ssh forwarding port|host forwarding rule/,
+    "The VM’s SSH port could not be opened", "Close the program using that port, then retry."],
+  [/another process has the vm disk open|failed to get "write" lock|another process using the image/,
+    "Another process has the VM disk open", "Stop the other VM or close the program holding the disk, then retry."],
+  [/ineligible for hvf|could not use hardware virtualization \(hvf\)|failed to initialize hvf|hvf error|hypervisor entitlement/,
+    "QEMU could not use Apple’s virtualization hardware", "Install a fresh copy of Cabin in Applications, then retry."],
+  [/whvcreatepartition failed|whpx.*(?:failed|not available)|invalid accelerator whpx/,
+    "Windows hardware acceleration could not start", "Check that virtualization is enabled in firmware and Windows Hypervisor Platform is turned on. Restart Windows and retry."],
+  [/qmp|qemu control request timed out|monitor did not report a running machine|guest-agent .*failed|guest-agent connection closed/,
+    "The machine’s control connection did not respond", "Stop the machine if it is running, then retry. If the problem repeats, copy diagnostics to share with Cabin support."],
+  [/qemu exited|qemu.*failed to start/,
+    "The VM engine stopped during startup", "Check the startup and guest console logs for the cause, then retry."],
+  [/remote host identification has changed|host key verification failed/,
+    "The VM’s SSH host key changed", "Stop the machine and use Verify or repair installation in Machine settings. Make sure the SSH port belongs to Cabin before retrying."],
+  [/ssh did not become ready|waiting for ssh|ssh connection timed out/,
+    "The VM did not become ready for SSH", "Check the guest console for boot errors, then retry. Allow extra time when the machine is running with software emulation."],
+  [/could not deploy cabind|timed out deploying|guest helper sha-256|unsafe helper directory|could not load the initial guest snapshot|running build.*does not match|hello.*(?:mismatch|failed)/,
+    "Cabin’s service could not start in the VM", "Retry the startup. If it still fails, check the start log and verify the installation in Machine settings."],
+  [/cabind (?:binary not found|for the vm was not found)|vm service is missing/,
+    "Cabin’s VM service is missing", "Install a fresh copy of Cabin, then retry."],
+  [/ssh authentication failed|permission denied \(publickey\)|missing ssh key|ssh connection refused|ssh: connect to host/,
+    "Could not log in to the VM over SSH", "Open the guest console and check that the VM booted. If retrying fails, verify the installation in Machine settings."],
+  [/access is denied|permission denied|read-only file system|cannot write vmctl_home|qemu was denied access|sharing violation/,
+    "Cabin could not access a required file", "Check access to the folder where Cabin stores its data and close other apps using the file, then retry."],
+  [/timed out|timeout/,
+    "The VM took too long to respond", "Close apps that use a lot of CPU or memory and check the guest console before retrying."],
+  [/cloud-init did not finish|cloud-init status is not done|acceptance script failed|passwordless sudo for the provisioned user|kernel metapackage|qemu-guest-agent package is not installed/,
+    "Ubuntu could not finish its initial setup", "Check the first-boot log for a package or network error. Retry, or choose another package mirror under Advanced."],
+  [/json error|saved machine configuration|unable to read.*config|config (?:defaults|overrides) must be/,
+    "Cabin could not read the machine’s configuration", "Open Machine settings to verify the installation, or copy diagnostics if the configuration still cannot be read."],
+  [/preflight failed|unsupported host architecture/,
+    "This computer did not pass the setup checks", "Return to setup and check the readiness messages before retrying."],
+];
+
+const STEP_FAILURES: Record<string, FailureHelp> = {
+  qemu: { title: "The virtual machine engine could not be prepared", advice: "Check the engine step log, then retry or reinstall Cabin." },
+  image: { title: "The system image could not be prepared", advice: "Open the image step log for details, then retry." },
+  disk: { title: "The VM disk could not be prepared", advice: "Check the disk step log and that Cabin can write to its data folder, then retry." },
+  seed: { title: "The VM’s initial configuration could not be prepared", advice: "Open the seed step log for details, then retry." },
+  provision: { title: "Ubuntu could not finish its initial setup", advice: "Check the first-boot log for a package or network error, then retry." },
+  desktop: { title: "The Ubuntu desktop could not be set up", advice: "Check the desktop step log for a package or network error, then retry." },
+  browser: { title: "The guest browser could not be set up", advice: "Check the browser step log, then retry." },
+  "device-network": { title: "The device network could not be configured", advice: "Check Cabin’s network settings and the device network log, then retry." },
+  agentd: { title: "Cabin’s service could not start in the VM", advice: "Check the start log, then verify the installation in Machine settings." },
+};
+
+/** Explain a host or guest error in the context of the failed install step. */
+export function explainFailure(text: string, step?: string, log: readonly string[] = []): FailureHelp {
   const t = text.toLowerCase();
-  if (/not enough free (?:disk|space)|no space left on device|not enough space on the disk/.test(t)) {
-    return {
-      title: "Not enough free disk space",
-      advice: "Free up space on the volume that holds Cabin’s data or choose a smaller VM disk, then retry.",
-    };
-  }
-  if (t.includes("another vmctl operation is in progress")) {
-    return {
-      title: "Another machine operation is already running",
-      advice: "Wait for the current operation to finish, then retry.",
-    };
-  }
-  if (t.includes("tls verification or handshake failed")) {
-    return {
-      title: "Could not establish a secure download connection",
-      advice: "Check this computer’s date and time. If your network uses an inspecting proxy, check that its certificate is trusted on this computer.",
-    };
-  }
-  if (t.includes("captive portal") || t.includes("received an html page")) {
-    return {
-      title: "The network sent a sign-in page instead of the download",
-      advice: "Open a browser and sign in to the network if prompted, then retry.",
-    };
-  }
-  if (t.includes("download dns lookup failed")) {
-    return {
-      title: "Could not find the download server",
-      advice: "Check this computer’s internet connection, DNS, or proxy, then retry.",
-    };
-  }
-  if (t.includes("download stalled")) {
-    return {
-      title: "The download stopped receiving data",
-      advice: "Check this computer’s connection or proxy, then retry. Cabin can continue from the saved partial download.",
-    };
-  }
-  if (t.includes("--user must") || t.includes("--hostname must") || /(?:username|hostname) “/.test(t)) {
-    return {
-      title: "Check the VM username and hostname",
-      advice: "Use a lowercase Linux username and a hostname with lowercase letters, digits, or hyphens.",
-    };
-  }
-  if (t.includes("invalid ssh public key") || t.includes("generated ssh public key") || t.includes("ssh-keygen produced an unexpected public key")) {
-    return {
-      title: "The guest’s SSH public key could not be prepared",
-      advice: "Retry to generate a fresh key for the VM. If it fails again, open the seed step log.",
-    };
-  }
-  if (t.includes("--disk-size") || t.includes("could not check free disk space")) {
-    return {
-      title: "The VM disk size could not be checked",
-      advice: "Check the available space on the volume that holds Cabin’s data and retry with a valid disk size.",
-    };
-  }
-  if (t.includes("qemu-img") && /permission denied|access is denied|being used by another process|sharing violation/.test(t)) {
-    return {
-      title: "The VM disk file could not be opened for writing",
-      advice: "Check that Cabin can write to its data folder and that no other program is holding the file, then retry.",
-    };
-  }
-  if (t.includes("qemu-img") && (t.includes("failed (exit") || t.includes("timed out while preparing"))) {
-    return {
-      title: "The VM disk could not be prepared",
-      advice: "Check the disk step log for the tool’s error, then retry.",
-    };
-  }
-  if (t.includes("could not find a") || t.includes("builds are listed") || t.includes("lists an arm64 image") || t.includes("lists an image for this architecture") || t.includes("no valid image checksum") || t.includes("no image build is pinned")) {
-    return {
-      title: "The system image could not be found",
-      advice:
-        "Ubuntu's image index could not be read. Check this computer's internet connection or proxy, then retry.",
-    };
-  }
-  if (t.includes("qemu archive") || t.includes("macanine/qemu") || t.includes("bundled qemu")) {
-    return {
-      title: "The virtual machine engine could not be prepared",
-      advice: "Cabin's bundled QEMU could not be checked or unpacked. Retry; if it keeps failing, reinstall Cabin.",
-    };
-  }
-  if (t.includes("download cancelled")) {
-    return { title: "The download was cancelled", advice: "Install again to continue; the part already downloaded is kept and resumed." };
-  }
-  if (t.includes("download failed after") || t.includes("could not download") || t.includes("download content-length") || t.includes("invalid download content-length") || t.includes("download server rejected") || t.includes("download exceeded its declared length") || t.includes("no download source") || t.includes("connection reset") || /http [45]\d\d/.test(t)) {
-    return {
-      title: "A file could not be downloaded",
-      advice:
-        "The Ubuntu image could not be downloaded. Check this computer's internet connection or proxy, then retry: the download resumes where it stopped and tries the other mirrors.",
-    };
-  }
-  if (t.includes('step "device-network" failed')) {
-    return {
-      title: "The device network could not be configured",
-      advice: "Check the network configuration and the log below, then retry the installation.",
-    };
-  }
-  const portConflict = t.match(/tcp port (\d+).*already in use/);
-  if (portConflict) {
-    return {
-      title: `Port ${portConflict[1]} is already in use`,
-      advice: "Another application is using the VM's SSH port. Close it or change the VM's SSH port, then retry.",
-    };
-  }
-  if (t.includes("temporary failure resolving") || t.includes("could not resolve") || t.includes("network is unreachable")) {
-    return {
-      title: "The VM could not reach the internet",
-      advice: "Downloads from the package mirrors failed. Check this computer's internet connection or proxy (Environment), then retry. Already downloaded files are reused.",
-    };
-  }
-  if (t.includes("checksum") || t.includes("sha256")) {
-    return {
-      title: "The downloaded image did not match its checksum",
-      advice: "The download was corrupted or the image changed upstream. Retry; if it keeps failing, the pinned image needs updating.",
-    };
-  }
-  if (t.includes("qemu") && (t.includes("not installed") || t.includes("not found") || t.includes("missing"))) {
-    return {
-      title: "Cabin's bundled QEMU is missing",
-      advice: "Cabin's files are damaged or incomplete. Reinstall Cabin, then open it again.",
-    };
-  }
-  if (t.includes('step "disk" failed') || t.includes("could not read base image")) {
-    return {
-      title: "The VM disk could not be prepared",
-      advice: "Check the disk step log and that Cabin can write to its data folder, then retry.",
-    };
-  }
-  if (t.includes('step "seed" failed')) {
-    return {
-      title: "The VM’s initial configuration could not be prepared",
-      advice: "Open the seed step log for details, then retry.",
-    };
-  }
-  if (t.includes('step "qemu" failed')) {
-    return {
-      title: "The virtual machine engine could not be prepared",
-      advice: "Open the engine step log for details, then retry.",
-    };
-  }
-  if (t.includes('step "image" failed') || t.includes("copy embedded image failed")) {
-    return {
-      title: "The system image could not be prepared",
-      advice: "Open the image step log for details, then retry.",
-    };
-  }
-  if (t.includes("timed out") || t.includes("timeout")) {
-    return {
-      title: "The VM took too long to respond",
-      advice: "It may be short on CPU or memory. Close other heavy apps or give the VM more resources, then retry.",
-    };
-  }
-  if (t.includes("ssh")) {
-    return {
-      title: "Could not log in to the VM over SSH",
-      advice: "The VM booted but did not accept the generated key in time. Retry; if it persists, open the log below.",
-    };
+  const port = t.match(/(?:tcp|ssh) port (\d+)[^\n]*already in use/);
+  if (port) return { title: `Port ${port[1]} is already in use`, advice: "Close the application using the VM’s SSH port, then retry." };
+  // A launcher can return only a command and exit code. Its stderr is in the step log.
+  const output = /command failed \(exit/.test(t) ? `${t}\n${log.join("\n").toLowerCase()}` : t;
+  const rule = FAILURE_RULES.find(([pattern]) => pattern.test(output));
+  if (rule) return { title: rule[1], advice: rule[2] };
+
+  const id = step ?? t.match(/step "([^"]+)" failed/)?.[1];
+  if (id && Object.prototype.hasOwnProperty.call(STEP_FAILURES, id)) return STEP_FAILURES[id];
+  if (id?.startsWith("device-")) {
+    return { title: "The device profile could not be applied", advice: "Check the failed step log, or turn off Device profile under Advanced and retry." };
   }
   return {
     title: "A step failed",
-    advice: "The partial machine was removed and nothing else was changed. Check the log below, then retry.",
+    advice: "Open Details to check the failed step, then retry. Copy diagnostics if you need to share the error.",
   };
 }
 

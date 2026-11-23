@@ -2,7 +2,7 @@ import { useAutoRefresh } from "../../lib/useAutoRefresh";
 import { Button, Checkbox, Progress } from "@mantine/core";
 import { IconArrowLeft, IconPlayerPlay, IconRotateClockwise } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
-import type { DownloadProgress, InstallStep, MachineStatus } from "../../services/ipc/generated/core";
+import type { DownloadProgress, InstallStep, MachineInstallOptions, MachineStatus } from "../../services/ipc/generated/core";
 import { machineIpc } from "../../services/ipc/app";
 import { toIpcError } from "../../services/ipc/common";
 import { confirmAction } from "../../services/ipc/dialogs";
@@ -11,6 +11,7 @@ import { uiActions } from "../../state/ui";
 import { MirrorPicker } from "../../components/MirrorPicker";
 import { type StateTone } from "../../components/common";
 import { StepProgress } from "../../components/StepProgress";
+import { CopyDiagnosticsButton } from "../../components/Recovery";
 import { BootDetails, BootHero, BootStep, BootSteps, Elapsed, Note, Ticker } from "../../components/Boot";
 import { useAutoOpen } from "../../components/motion";
 import { downloadSummary, formatDuration } from "../../lib/format";
@@ -68,12 +69,13 @@ function DownloadBar({ download }: { download: DownloadProgress }) {
  * automatically and can be resumed here.
  */
 export function InstallProgress({
-  machine, steps, startedAt, error, cancelled, osName, onRetry, onEdit,
+  machine, steps, startedAt, error, installOptions, cancelled, osName, onRetry, onEdit,
 }: {
   machine: MachineStatus;
   steps: InstallStep[];
   startedAt: number | null;
   error: string | null;
+  installOptions: Pick<MachineInstallOptions, "diskSize" | "memoryMb" | "username">;
   cancelled: string | null;
   osName: string;
   onRetry: () => void;
@@ -94,9 +96,10 @@ export function InstallProgress({
   const states = useMemo(() => WIZARD_STEPS.map((def) => wizardState(def, steps, machine)), [steps, machine]);
   const current = currentWizardStep(steps, machine);
   const failedStep = steps.find((step) => step.state === "failed");
-  const failed = cancelled == null && !installing && (error != null || failedStep != null || states.includes("failed"));
+  const failure = error ?? actionError ?? (startedAt != null && !connected ? machine.error : null);
+  const failed = cancelled == null && !installing && (failure != null || failedStep != null || states.includes("failed"));
   const [details, toggleDetails] = useAutoOpen(failed);
-  const help = failed ? explainFailure([error ?? "", failedStep?.detail ?? "", ...(failedStep?.logTail ?? [])].join("\n")) : null;
+  const help = failed ? explainFailure(failure ?? failedStep?.detail ?? "", failedStep?.id, failedStep?.logTail) : null;
   const fractions = WIZARD_STEPS.map((def) => {
     const d = steps.find((s) => def.pipeline.includes(s.id) && s.download)?.download;
     const percent = d ? downloadSummary(d).percent : null;
@@ -175,14 +178,17 @@ export function InstallProgress({
           <div className="grid gap-1.5 text-fg">
             <p className="m-0">{help.advice}</p>
             {!installed && <p className="m-0 text-faint">Retry reuses a verified image if it was already downloaded.</p>}
-            {error && <p className="m-0 font-mono text-xs text-faint">{error}</p>}
+            {failure && <p className="m-0 font-mono text-xs text-faint [overflow-wrap:anywhere]">{failure}</p>}
           </div>
         </Note>
       )}
-      {(help || cancelled) && !installed && (
-        <div className="flex justify-end gap-2">
-          <Button variant="default" leftSection={<IconArrowLeft size={14} />} onClick={onEdit}>Change settings</Button>
-          <Button leftSection={<IconRotateClockwise size={14} />} onClick={onRetry}>{cancelled ? "Install again" : "Retry"}</Button>
+      {(help || (cancelled && !installed)) && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {help && <CopyDiagnosticsButton installError={failure} installOptions={installed ? undefined : installOptions} />}
+          {!installed && <>
+            <Button variant="default" leftSection={<IconArrowLeft size={14} />} onClick={onEdit}>Change settings</Button>
+            <Button leftSection={<IconRotateClockwise size={14} />} onClick={onRetry}>{cancelled ? "Install again" : "Retry"}</Button>
+          </>}
         </div>
       )}
 
@@ -226,7 +232,7 @@ export function InstallProgress({
           {changeMirror && !provisioned && <MirrorPicker os={machine.os} value={mirror} onChange={setMirror} />}
         </section>
       )}
-      {actionError && <Note tone="bad">{actionError}</Note>}
+      {actionError && !help && <Note tone="bad">{actionError}</Note>}
 
       {steps.length > 0 && (
         <BootDetails open={details} onToggle={toggleDetails}>

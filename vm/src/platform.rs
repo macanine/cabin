@@ -25,14 +25,55 @@ pub struct Accel {
 /// Whether the Windows Hypervisor Platform feature is enabled (WHPX needs it);
 /// false on every other OS, where `SystemRoot` is unset.
 fn whpx_enabled() -> bool {
-    std::env::var_os("SystemRoot")
-        .map(|root| {
-            Path::new(&root)
-                .join("System32")
-                .join("WindowsHypervisorPlatform.dll")
-                .is_file()
-        })
-        .unwrap_or(false)
+    cfg!(windows)
+        && std::env::var_os("SystemRoot").is_some_and(|root| whpx_library_present(Path::new(&root)))
+}
+
+fn whpx_library_present(system_root: &Path) -> bool {
+    system_root
+        .join("System32")
+        .join("WinHvPlatform.dll")
+        .is_file()
+}
+
+pub(crate) fn virtualization_disabled_in_firmware() -> bool {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn IsProcessorFeaturePresent(feature: u32) -> i32;
+        }
+        // SAFETY: PF_VIRT_FIRMWARE_ENABLED is a Win32 processor feature ID.
+        unsafe { IsProcessorFeaturePresent(21) == 0 }
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+/// Windows reports mapped network paths as drive letters.
+pub(crate) fn mapped_network_drive(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetDriveTypeW(root: *const u16) -> u32;
+        }
+        let Some(Component::Prefix(prefix)) = path.components().next() else {
+            return false;
+        };
+        let (Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)) = prefix.kind() else {
+            return false;
+        };
+        let root = [u16::from(letter), b':' as u16, b'\\' as u16, 0];
+        // SAFETY: root is a NUL-terminated drive root. DRIVE_REMOTE is 4.
+        unsafe { GetDriveTypeW(root.as_ptr()) == 4 }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 /// Whether WHPX can be tried: the feature's DLL is present, no WHPX start
@@ -152,11 +193,17 @@ pub fn distro_qemu() -> Option<crate::qemu_engine::Engine> {
 /// otherwise the first on PATH.
 pub fn ssh_tool(name: &str) -> Option<PathBuf> {
     if cfg!(windows)
-        && let Some(path) = crate::vendor::vendor().and_then(|vendor| vendor.ssh_tool(name))
+        && let Some(path) = bundled_ssh_tool(name)
     {
         return Some(path);
     }
     which(name)
+}
+
+pub(crate) fn bundled_ssh_tool(name: &str) -> Option<PathBuf> {
+    crate::vendor::bundled_manifest()
+        .and_then(|vendor| vendor.ssh_tool(name))
+        .filter(|path| path.is_file())
 }
 
 /// `argv` with a leading `ssh` or `ssh-keygen` replaced by its resolved path.
@@ -182,12 +229,60 @@ pub fn build_seed_iso(stage: &Path, output: &Path, files: &[&str]) -> Result<()>
         .iter()
         .map(|name| Ok((*name, std::fs::read(stage.join(name))?)))
         .collect::<std::io::Result<_>>()?;
-    let staged: Vec<(&str, &[u8])> =
-        staged.iter().map(|(name, data)| (*name, data.as_slice())).collect();
+    let staged: Vec<(&str, &[u8])> = staged
+        .iter()
+        .map(|(name, data)| (*name, data.as_slice()))
+        .collect();
     crate::iso::build_iso(output, &staged)
 }
 
 // ---- where the operating systems genuinely differ -------------------------
+
+/// Native machine architecture, including when Windows runs Cabin under emulation.
+pub fn native_arch() -> &'static str {
+    #[cfg(windows)]
+    if let Some(arch) = windows_native_arch() {
+        return arch;
+    }
+    std::env::consts::ARCH
+}
+
+#[cfg(windows)]
+fn windows_native_arch() -> Option<&'static str> {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+        fn GetCurrentProcess() -> *mut c_void;
+    }
+    type IsWow64Process2 = unsafe extern "system" fn(*mut c_void, *mut u16, *mut u16) -> i32;
+    let kernel32: Vec<u16> = "kernel32.dll\0".encode_utf16().collect();
+    // SAFETY: call the documented Win32 API with the current process handle
+    // and valid out pointers. Resolve it dynamically for older Windows builds.
+    unsafe {
+        let module = GetModuleHandleW(kernel32.as_ptr());
+        if module.is_null() {
+            return None;
+        }
+        let function = GetProcAddress(module, c"IsWow64Process2".as_ptr().cast());
+        if function.is_null() {
+            return None;
+        }
+        let query: IsWow64Process2 = std::mem::transmute(function);
+        let (mut process, mut native) = (0, 0);
+        if query(GetCurrentProcess(), &mut process, &mut native) == 0 {
+            return None;
+        }
+        match native {
+            0xaa64 | 0x01c4 => Some("aarch64"),
+            0x8664 => Some("x86_64"),
+            0x014c => Some("x86"),
+            _ => None,
+        }
+    }
+}
 
 /// Whether the directory is private to this user. Windows access lists
 /// already scope a profile directory to its user.
@@ -235,4 +330,21 @@ pub fn detach_session(command: &mut std::process::Command) {
     }
     #[cfg(not(unix))]
     let _ = command;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn whpx_uses_the_windows_hypervisor_platform_library() {
+        let dir = std::env::temp_dir().join(format!("whpx-library-{}", std::process::id()));
+        let system = dir.join("System32");
+        std::fs::create_dir_all(&system).unwrap();
+        std::fs::write(system.join("WindowsHypervisorPlatform.dll"), b"").unwrap();
+        assert!(!whpx_library_present(&dir));
+        std::fs::write(system.join("WinHvPlatform.dll"), b"").unwrap();
+        assert!(whpx_library_present(&dir));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

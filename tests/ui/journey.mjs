@@ -44,7 +44,12 @@ async function snap(name) {
   console.log("shot", file);
 }
 async function click(text, sel = "button") {
-  const p = await evalJs(`(()=>{const e=[...document.querySelectorAll(${JSON.stringify(sel)})].find(e=>e.textContent.trim().includes(${JSON.stringify(text)}) && !e.disabled);if(!e)return null;e.scrollIntoView({block:"center"});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+  let p;
+  const deadline = Date.now() + 8000;
+  do {
+    p = await evalJs(`(()=>{const e=[...document.querySelectorAll(${JSON.stringify(sel)})].find(e=>e.textContent.trim().includes(${JSON.stringify(text)}) && !e.disabled && e.offsetParent);if(!e)return null;e.scrollIntoView({block:"center"});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+    if (!p) await sleep(100);
+  } while (!p && Date.now() < deadline);
   if (!p) { console.log("MISSING button:", text); return false; }
   for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: p.x, y: p.y, button: "left", clickCount: 1 });
   await sleep(700);
@@ -56,6 +61,14 @@ const text = () => evalJs("document.body.innerText");
 const failures = [];
 const expect = (ok, what) => { if (!ok) failures.push(what); console.log(ok ? "ok  " : "FAIL", what); };
 const has = async (needle) => (await text())?.includes(needle) ?? false;
+
+async function verifyDiagnostics(from, checkReport) {
+  expect(await click("Copy diagnostics"), `${from} offers Copy diagnostics`);
+  const report = await evalJs("window.__journey.diagnostics()");
+  expect(report?.versions?.cabin === "0.2.0" && report.readiness?.length > 0 && report.logTails?.length > 0,
+    `${from} copies versions, readiness, and log tails`);
+  expect(checkReport(report), `${from} copies the recorded report`);
+}
 
 await snap("setup");
 const setupButtons = await buttons();
@@ -75,7 +88,8 @@ if (scenario === "win-nowhpx") {
   }
 }
 const probe = () => evalJs(`import("/src/state/store.ts").then(m=>{let v;m.patchState(s=>{v=s;return s});return JSON.stringify({busy:v.machine?.busy,steps:v.install.map(s=>s.id+":"+s.state)})})`);
-if (scenario !== "win-noqemu" && await click("Install")) {
+if (scenario !== "win-noqemu") {
+  expect(await click("Install"), "ready setup starts the installation");
   if (process.env.PROBE) for (let i = 0; i < 12; i++) { console.log("PROBE", await probe()); await sleep(500); }
   await sleep(1200); await snap("installing-early");
   expect(await has("Installing Ubuntu"), "the install shows progress");
@@ -86,7 +100,16 @@ if (scenario !== "win-noqemu" && await click("Install")) {
   if (scenario.startsWith("fail-image")) expect(await has("could not be downloaded"), "a download failure gets download advice");
   else if (scenario.startsWith("fail-provision")) expect(await has("took too long"), "a provisioning timeout is explained");
   else expect(await has("Your machine is ready"), "the install ends ready");
-  if (scenario.startsWith("fail")) expect((await buttons()).includes("Retry"), "a failure offers Retry");
+  if (scenario.startsWith("fail")) {
+    expect((await buttons()).includes("Retry"), "a failure offers Retry");
+    await verifyDiagnostics("the install failure", (report) =>
+      Boolean(report?.lastInstall.error && report.lastInstall.steps.some((step) => step.state === "failed")));
+  } else if (scenario === "mac") {
+    await evalJs('import("/src/state/ui.ts").then(({ uiActions }) => uiActions.navigate({ kind: "settings", tab: "machine" }))');
+    await sleep(500);
+    await verifyDiagnostics("Machine settings", (report) =>
+      report?.lastStart?.state === "succeeded" && report.lastInstall.steps.some((step) => step.state === "done"));
+  }
 }
 expect(errors.length === 0, `no page errors (${errors.length})`);
 if (errors.length) console.log(errors.join("\n---\n").slice(0, 4000));

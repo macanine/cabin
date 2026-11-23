@@ -38,7 +38,7 @@ function Row({ item, tone, busy, onFix, pendingRestart }: { item: Readiness; ton
  * What this computer needs before installing: blockers in red and warnings in
  * amber, each with its fix button; everything that passed folds into one line.
  */
-export function ReadinessPanel({ items, onChanged }: { items: Readiness[] | null; onChanged: () => void }) {
+export function ReadinessPanel({ items, checking, onChanged }: { items: Readiness[] | null; checking: boolean; onChanged: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [restart, setRestart] = useState<"needed" | "confirm" | null>(null);
@@ -81,6 +81,11 @@ export function ReadinessPanel({ items, onChanged }: { items: Readiness[] | null
         </Note>
       )}
       {error && <Note tone="bad" role="alert">{error}</Note>}
+      {problems.length > 0 && (
+        <div className="flex justify-end">
+          <Button size="xs" variant="subtle" loading={checking} disabled={busy != null} onClick={onChanged}>Check again</Button>
+        </div>
+      )}
       {passed.length > 0 && (
         <div>
           <button type="button" aria-expanded={showPassed} onClick={() => setShowPassed((v) => !v)}

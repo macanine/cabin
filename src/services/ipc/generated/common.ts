@@ -30,7 +30,7 @@ username: string | null, deviceProfileSupported: boolean,
 /**
  * macos | windows | linux
  */
-platform: string, };
+platform: string, maxDiskGb: number, };
 export type ReadinessReport = { items: Array<Readiness>, host: HostFacts, };
 export type FixOutcome = { restartRequired: boolean, };
 export type StorageKind = "application" | "virtualDisk" | "guestFiles" | "systemImages" | "engine" | "downloads" | "logs" | "settings" | "webkitCache" | "webkitData" | "otherData" | "developerCache";
@@ -48,6 +48,7 @@ export type IpcCommand =
   | "app_background"
   | "guest_invoke"
   | "machine_checks"
+  | "machine_diagnostics"
   | "host_fix"
   | "machine_details"
   | "storage_status"

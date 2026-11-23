@@ -52,15 +52,7 @@ pub struct Vendor {
 impl Vendor {
     /// Read and validate `<dir>/manifest.json`: every listed file must exist.
     pub fn load(dir: &Path) -> Result<Self, String> {
-        let path = dir.join("manifest.json");
-        let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        let manifest: Manifest = serde_json::from_str(&text)
-            .map_err(|error| format!("invalid {}: {error}", path.display()))?;
-        let vendor = Self {
-            dir: dir.to_path_buf(),
-            manifest,
-        };
+        let vendor = Self::read_manifest(dir)?;
         for file in vendor.files() {
             if !file.is_file() {
                 return Err(format!("vendored file missing: {}", file.display()));
@@ -73,6 +65,19 @@ impl Vendor {
             ));
         }
         Ok(vendor)
+    }
+
+    /// Read the manifest so each tool can be checked independently.
+    pub fn read_manifest(dir: &Path) -> Result<Self, String> {
+        let path = dir.join("manifest.json");
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let manifest: Manifest = serde_json::from_str(&text)
+            .map_err(|error| format!("invalid {}: {error}", path.display()))?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            manifest,
+        })
     }
 
     fn path(&self, relative: &str) -> PathBuf {
@@ -139,6 +144,10 @@ pub fn vendor() -> Option<Vendor> {
     Vendor::load(&vendor_dir()?).ok()
 }
 
+pub fn bundled_manifest() -> Option<Vendor> {
+    Vendor::read_manifest(&vendor_dir()?).ok()
+}
+
 /// Why the bundle is unusable (for messages), when a directory is configured.
 pub fn vendor_problem() -> Option<String> {
     match vendor_dir() {
@@ -185,7 +194,10 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         write_bundle(&dir, true);
         let vendor = Vendor::load(&dir).unwrap();
-        assert_eq!(vendor.qemu_system(), dir.join("qemu/bin/qemu-system-aarch64"));
+        assert_eq!(
+            vendor.qemu_system(),
+            dir.join("qemu/bin/qemu-system-aarch64")
+        );
         assert_eq!(
             vendor.ssh_tool("ssh-keygen"),
             Some(dir.join("openssh/ssh-keygen.exe"))
@@ -193,6 +205,13 @@ pub(crate) mod tests {
         assert_eq!(vendor.ssh_tool("scp"), None);
         std::fs::remove_file(dir.join("qemu/bin/qemu-img")).unwrap();
         assert!(Vendor::load(&dir).unwrap_err().contains("qemu-img"));
+        assert!(
+            Vendor::read_manifest(&dir)
+                .unwrap()
+                .ssh_tool("ssh")
+                .unwrap()
+                .is_file()
+        );
         write_bundle(&dir, false);
         assert_eq!(Vendor::load(&dir).unwrap().ssh_tool("ssh"), None);
         let _ = std::fs::remove_dir_all(dir);
