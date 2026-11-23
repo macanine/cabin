@@ -10,9 +10,10 @@ import { MirrorPicker } from "../../components/MirrorPicker";
 import { Note } from "../../components/Boot";
 import { DisclosureChevron, Reveal } from "../../components/motion";
 import { ReadinessPanel } from "./ReadinessPanel";
+import { explainFailure } from "../../lib/wizard";
 import {
   chosenOs, diskGb, formProblem, hostnameProblem, installSummary, matchingPreset, mirrorHost,
-  readinessView, RESOURCE_PRESETS, setupSummary, usernameProblem,
+  presetFitsHost, readinessView, RESOURCE_PRESETS, setupSummary, usernameProblem,
 } from "../../lib/installForm";
 
 const gb = (mb: number) => `${mb / 1024 % 1 === 0 ? mb / 1024 : (mb / 1024).toFixed(1)} GB`;
@@ -24,14 +25,15 @@ function fastest(results: MirrorResult[]): MirrorResult | null {
 }
 
 /** A radio card: the chosen one is ringed in the accent and shows a check. */
-function Choice({ selected, onSelect, children }: { selected: boolean; onSelect: () => void; children: ReactNode }) {
+function Choice({ selected, onSelect, children, disabled = false }: { selected: boolean; onSelect: () => void; children: ReactNode; disabled?: boolean }) {
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
+      disabled={disabled}
       onClick={onSelect}
-      className={`press relative grid min-w-0 cursor-pointer content-start gap-0.5 rounded-xl border p-3.5 text-left text-fg ${
+      className={`press relative grid min-w-0 cursor-pointer content-start gap-0.5 rounded-xl border p-3.5 text-left text-fg disabled:cursor-default disabled:opacity-60 ${
         selected ? "border-accent bg-accent-soft shadow-[0_0_0_3px_var(--accent-soft)]" : "glass hover:border-accent/50"
       }`}
     >
@@ -55,7 +57,7 @@ const Heading = ({ children, hint }: { children: ReactNode; hint?: ReactNode }) 
  * folded under Advanced. The fastest mirror is measured in the background
  * and used unless one is chosen.
  */
-export function InstallSetup({ options, set, plan, choices, readiness, host, planError, onInstall, onRecheck }: {
+export function InstallSetup({ options, set, plan, choices, readiness, host, planError, checking, onInstall, onRecheck }: {
   options: MachineInstallOptions;
   set: (patch: Partial<MachineInstallOptions>) => void;
   plan: InstallPlan | null;
@@ -63,6 +65,7 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
   readiness: Readiness[] | null;
   host: HostFacts | null;
   planError: string | null;
+  checking: boolean;
   onInstall: () => void;
   onRecheck: () => void;
 }) {
@@ -73,12 +76,16 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
   const [mirrorAuto, setMirrorAuto] = useState<MirrorResult | null>(null);
   const mirrorChosen = useRef(false);
   const problem = formProblem(options);
-  const blocked = readiness == null || readinessView(readiness).blocking.length > 0;
+  const planHelp = planError ? explainFailure(planError) : null;
+  const blocked = checking || readiness == null || readinessView(readiness).blocking.length > 0;
+  const unsupported = readiness?.some((item) => item.id === "supportedHost" || item.id === "appLocation");
+  const canMeasure = host != null && !unsupported;
   const user = options.username ?? "";
   const host_ = options.hostname ?? "";
 
   // Measure the mirrors for this system once; use the fastest unless one was picked.
   useEffect(() => {
+    if (!canMeasure) return;
     let alive = true;
     setMirrorAuto(null);
     void machineIpc.testMirrors(os?.id ?? null, []).then((results) => {
@@ -88,12 +95,20 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
       if (best && !mirrorChosen.current) set({ aptMirror: best.default ? null : best.uri });
     }).catch(() => undefined);
     return () => { alive = false; };
-  }, [os?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canMeasure, os?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const mirrorLine = options.aptMirror
     ? `${mirrorHost(options.aptMirror)}${mirrorAuto && mirrorAuto.uri === options.aptMirror ? " (fastest)" : ""}`
     : mirrorAuto?.default ? `${mirrorAuto.host} (fastest)` : "Ubuntu's own archive";
   const osChoices = choices.length ? choices : [{ id: "ubuntu-24.04", name: "Ubuntu 24.04 LTS", testing: false, mirrors: [] }];
+  const checks = <ReadinessPanel items={readiness} checking={checking} onChanged={onRecheck} />;
+
+  if (unsupported) return (
+    <div className="view-enter grid gap-4">
+      <h1 className="m-0 text-2xl font-semibold tracking-tight">Cabin setup</h1>
+      {checks}
+    </div>
+  );
 
   return (
     <div className="view-enter grid min-w-0 gap-6">
@@ -103,7 +118,7 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
         <p className="m-0 max-w-[560px] text-md text-balance text-muted">Claude Code, Codex, OpenCode, Pi and Antigravity run in one Ubuntu machine on this computer. Cabin sets it up for you.</p>
       </header>
 
-      <ReadinessPanel items={readiness} onChanged={onRecheck} />
+      {checks}
 
       <section className="glass grid gap-3 rounded-xl p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -112,7 +127,9 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
             Install
           </Button>
         </div>
-        {(problem || planError) && <Note tone="bad" role="alert">{problem ?? planError}</Note>}
+        {(problem || planHelp) && <Note tone="bad" role="alert">
+          {problem ?? <><strong>{planHelp?.title}</strong> · {planHelp?.advice}<br /><span className="text-faint">{planError}</span></>}
+        </Note>}
       </section>
 
       <div>
@@ -141,18 +158,18 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
               <Heading hint={installSummary(options, os)}>Size</Heading>
               <div role="radiogroup" aria-label="Machine size" className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-2.5">
                 {RESOURCE_PRESETS.map((p) => (
-                  <Choice key={p.key} selected={!custom && preset?.key === p.key} onSelect={() => { setCustom(false); set({ cpus: p.cpus, memoryMb: p.memoryMb, diskSize: `${p.diskGb}G` }); }}>
+                  <Choice key={p.key} disabled={!presetFitsHost(p, host)} selected={!custom && preset?.key === p.key} onSelect={() => { setCustom(false); set({ cpus: p.cpus, memoryMb: p.memoryMb, diskSize: `${p.diskGb}G` }); }}>
                     <strong className="flex flex-wrap items-center gap-x-1.5 pr-6 text-md">{p.label}</strong>
                     <span className="font-mono text-xs">{p.cpus} CPU · {gb(p.memoryMb)} · {p.diskGb} GB</span>
                     <Sub>{p.note}</Sub>
                   </Choice>
                 ))}
-                <Choice selected={custom} onSelect={() => setCustom(true)}>
+                <Choice selected={custom || preset == null} onSelect={() => setCustom(true)}>
                   <strong className="flex items-center gap-1.5 text-md"><IconCpu size={14} /> Custom</strong>
                   <Sub>Set each value</Sub>
                 </Choice>
               </div>
-              <Reveal open={custom}>
+              <Reveal open={custom || preset == null}>
                 <div className="glass mt-3 grid gap-4 rounded-xl p-4">
                   {([
                     ["CPUs", <Slider key="c" min={1} max={16} step={1} value={options.cpus ?? 2} onChange={(cpus) => set({ cpus })} marks={[{ value: 1 }, { value: 4 }, { value: 8 }, { value: 16 }]} />, String(options.cpus)],

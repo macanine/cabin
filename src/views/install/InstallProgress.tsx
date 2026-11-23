@@ -94,9 +94,10 @@ export function InstallProgress({
   const states = useMemo(() => WIZARD_STEPS.map((def) => wizardState(def, steps, machine)), [steps, machine]);
   const current = currentWizardStep(steps, machine);
   const failedStep = steps.find((step) => step.state === "failed");
-  const failed = cancelled == null && !installing && (error != null || failedStep != null || states.includes("failed"));
+  const failure = error ?? actionError ?? (startedAt != null && !connected ? machine.error : null);
+  const failed = cancelled == null && !installing && (failure != null || failedStep != null || states.includes("failed"));
   const [details, toggleDetails] = useAutoOpen(failed);
-  const help = failed ? explainFailure([error ?? "", failedStep?.detail ?? "", ...(failedStep?.logTail ?? [])].join("\n")) : null;
+  const help = failed ? explainFailure(failure ?? failedStep?.detail ?? "", failedStep?.id, failedStep?.logTail) : null;
   const fractions = WIZARD_STEPS.map((def) => {
     const d = steps.find((s) => def.pipeline.includes(s.id) && s.download)?.download;
     const percent = d ? downloadSummary(d).percent : null;
@@ -175,7 +176,7 @@ export function InstallProgress({
           <div className="grid gap-1.5 text-fg">
             <p className="m-0">{help.advice}</p>
             {!installed && <p className="m-0 text-faint">Retry reuses a verified image if it was already downloaded.</p>}
-            {error && <p className="m-0 font-mono text-xs text-faint">{error}</p>}
+            {failure && <p className="m-0 font-mono text-xs text-faint [overflow-wrap:anywhere]">{failure}</p>}
           </div>
         </Note>
       )}
@@ -226,7 +227,7 @@ export function InstallProgress({
           {changeMirror && !provisioned && <MirrorPicker os={machine.os} value={mirror} onChange={setMirror} />}
         </section>
       )}
-      {actionError && <Note tone="bad">{actionError}</Note>}
+      {actionError && !help && <Note tone="bad">{actionError}</Note>}
 
       {steps.length > 0 && (
         <BootDetails open={details} onToggle={toggleDetails}>

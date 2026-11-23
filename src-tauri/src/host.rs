@@ -880,11 +880,10 @@ impl Host {
     /// Host readiness for an install of the given size.
     pub fn checks(&self, disk_gb: u32, memory_mb: u32) -> vm_core::readiness::ReadinessReport {
         let mut items = vm_core::readiness::host_readiness(self.machine.home(), disk_gb, memory_mb);
-        items.insert(
-            items.iter().position(|item| item.id == "disk").unwrap_or(items.len()),
-            vm_core::readiness::service_check(self.agentd.is_file()),
-        );
-        vm_core::readiness::ReadinessReport { items, host: vm_core::readiness::host_facts() }
+        if let Some(position) = items.iter().position(|item| item.id == "disk") {
+            items.insert(position, vm_core::readiness::service_check(self.agentd.is_file()));
+        }
+        vm_core::readiness::ReadinessReport { items, host: vm_core::readiness::host_facts(self.machine.home()) }
     }
 
     /// Carry out a readiness fix.

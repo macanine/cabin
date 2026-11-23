@@ -55,7 +55,7 @@ function readiness() {
   items.push({ id: "agentd", label: "Cabin VM service", ok: true, optional: false, detail: "", fix: null });
   items.push({ id: "disk", label: "Free disk space", ok: true, optional: false, detail: "212 GB free", fix: null });
   items.push({ id: "memory", label: "Memory", ok: true, optional: true, detail: "16 GB", fix: null });
-  return { items, host: { memoryMb: 16384, cpus: 10, username: "Nic Chen", deviceProfileSupported: !windows, platform: windows ? "windows" : "macos" } };
+  return { items, host: { memoryMb: 16384, cpus: 10, maxDiskGb: 209, username: "Nic Chen", deviceProfileSupported: !windows, platform: windows ? "windows" : "macos" } };
 }
 
 const guest = () => ({

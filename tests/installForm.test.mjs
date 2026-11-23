@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   chosenOs, defaultOptions, diskGb, formProblem, hostnameProblem, installSummary, matchingPreset, mirrorHost, optionsForHost,
-  pickPreset, readinessView, sanitizeUsername, setupSummary, usernameProblem,
+  pickPreset, presetFitsHost, readinessView, sanitizeUsername, setupSummary, usernameProblem,
 } from "../src/lib/installForm.ts";
 
 test("username and hostname follow the VM's rules", () => {
@@ -69,7 +69,7 @@ test("host account names become valid Linux usernames", () => {
 });
 
 test("first-run options come from the host", () => {
-  const host = { memoryMb: 16384, cpus: 10, username: "Nic", deviceProfileSupported: true, platform: "macos" };
+  const host = { memoryMb: 16384, cpus: 10, maxDiskGb: 212, username: "Nic", deviceProfileSupported: true, platform: "macos" };
   const options = optionsForHost(host);
   assert.equal(matchingPreset(options)?.key, "roomy");
   assert.equal(options.username, "nic");
@@ -77,6 +77,21 @@ test("first-run options come from the host", () => {
   assert.equal(optionsForHost(null).username, null);
   assert.equal(setupSummary(options, { id: "u", name: "Ubuntu 24.04 LTS", testing: false, mirrors: [] }, "dev"), "Ubuntu 24.04 LTS · Roomy (8 CPUs, 8 GB, 40 GB) · user nic");
   assert.match(setupSummary({ ...options, cpus: 3, username: null }, null, "dev"), /Custom \(3 CPUs.*user dev$/);
+});
+
+test("presets respect available disk, CPU count and the host's memory reserve", () => {
+  assert.equal(pickPreset(16384, 10, 39).key, "balanced");
+  assert.equal(pickPreset(16384, 10, 19).key, "light");
+  const host = { memoryMb: 3584, cpus: 1, maxDiskGb: 10 };
+  const custom = pickPreset(host.memoryMb, host.cpus, host.maxDiskGb);
+  assert.equal(custom.key, "custom");
+  assert.deepEqual([custom.cpus, custom.memoryMb, custom.diskGb], [1, 1536, 10]);
+  assert.equal(presetFitsHost(custom, host), true);
+  assert.equal(presetFitsHost(pickPreset(8192, 4), host), false);
+  // Below the supported minimum, the form keeps valid input for the readiness blocker.
+  const tooSmall = pickPreset(2048, 1, 6);
+  assert.deepEqual([tooSmall.memoryMb, tooSmall.diskGb], [1024, 8]);
+  assert.equal(presetFitsHost(tooSmall, { memoryMb: 2048, cpus: 1, maxDiskGb: 6 }), false);
 });
 
 test("readiness splits into blockers, warnings and passes", () => {

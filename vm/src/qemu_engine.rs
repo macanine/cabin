@@ -102,6 +102,7 @@ impl Engine {
         ]
         .iter()
         .all(|path| path.is_file())
+            && self.firmware_dir.is_dir()
     }
 }
 
@@ -122,8 +123,11 @@ pub const BUNDLED_MISSING: &str = "Cabin's bundled QEMU is missing or damaged. R
 
 /// The engine this host runs, if it is installed.
 pub fn installed(home: &Path) -> Option<Engine> {
-    if let Some(vendor) = crate::vendor::vendor() {
-        return Some(vendor.into());
+    if let Some(vendor) = crate::vendor::bundled_manifest() {
+        let engine = Engine::from(vendor);
+        if engine.complete() {
+            return Some(engine);
+        }
     }
     if cfg!(target_os = "macos") {
         let engine = Engine::in_tree(&root(home), GuestArch::current());
@@ -143,6 +147,10 @@ fn expects_bundle() -> bool {
             && (!cfg!(debug_assertions) || crate::vendor::vendor_dir().is_some()))
 }
 
+pub(crate) fn can_download_on_first_run() -> bool {
+    cfg!(target_os = "macos") && !expects_bundle()
+}
+
 /// The engine, or an error that says how to get it.
 pub fn require(home: &Path) -> Result<Engine> {
     installed(home).ok_or_else(|| {
@@ -159,25 +167,31 @@ pub fn require(home: &Path) -> Result<Engine> {
 
 /// `QEMU emulator version …`, or why the binary does not run.
 pub fn version(engine: &Engine) -> Result<String> {
+    tool_version(&engine.qemu, Duration::from_secs(60))
+}
+
+pub(crate) fn tool_version(binary: &Path, timeout: Duration) -> Result<String> {
     let result = capture(
-        &[engine.qemu.display().to_string(), "--version".to_string()],
-        Duration::from_secs(60),
+        &[binary.display().to_string(), "--version".to_string()],
+        timeout,
         None,
     );
     if result.code != 0 {
         return message(format!(
-            "{} does not run: {}",
-            engine.qemu.display(),
+            "{} does not run (exit {}): {}",
+            binary.display(),
+            result.code,
             result.output.trim()
         ));
     }
-    Ok(result
-        .output
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string())
+    let version = result.output.lines().next().unwrap_or("").trim();
+    if version.is_empty() {
+        return message(format!(
+            "{} does not run: no version output",
+            binary.display()
+        ));
+    }
+    Ok(version.to_string())
 }
 
 /// Download (or reuse) the pinned archive and unpack it. Returns the engine
@@ -186,7 +200,7 @@ pub fn install(home: &Path, log: &Arc<Mutex<File>>) -> Result<(Engine, Vec<PathB
     if let Some(engine) = installed(home) {
         return Ok((engine, Vec::new()));
     }
-    if expects_bundle() || !cfg!(target_os = "macos") {
+    if !can_download_on_first_run() {
         return Ok((require(home)?, Vec::new()));
     }
     let target = root(home);
@@ -300,5 +314,16 @@ mod tests {
         assert_eq!(engine.firmware_dir, dir.join("qemu/share/qemu"));
         assert!(engine.complete());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_version_probe_rejects_an_existing_non_executable_tool() {
+        let dir = std::env::temp_dir().join(format!("engine-launch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let binary = dir.join(GuestArch::current().qemu_system_file());
+        std::fs::write(&binary, b"broken executable").unwrap();
+        let error = tool_version(&binary, Duration::from_secs(1)).unwrap_err();
+        assert!(error.to_string().contains("does not run"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
