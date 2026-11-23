@@ -1,9 +1,11 @@
 //! QEMU process orchestration, firmware discovery, and SSH helpers.
 
-use std::fs::{self, File, OpenOptions};
+use std::collections::HashMap;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,8 +19,8 @@ use crate::paths::InstancePaths;
 use crate::qmp::{QgaClient, QmpClient, qmp_query_status};
 use crate::startup::{Attempt, Phase};
 use crate::util::{
-    RunOptions, capture, disk_free_bytes, ensure_dir, format_bytes, log_line, message,
-    parse_size_bytes, pid_alive as process_alive, port_free, run, tail_file, which,
+    LockExt, capture, disk_free_bytes, ensure_dir, format_bytes, log_line, message,
+    parse_size_bytes, pid_alive as process_alive, port_free, which,
 };
 
 #[derive(Debug, Clone)]
@@ -116,11 +118,36 @@ fn prepare_spice_dir(cfg: &Config) -> Result<()> {
         Err(error) => return Err(error.into()),
     }
     check_spice_dir(cfg)?;
-    // Stale sockets are only removed after verifying their parent is private.
-    match fs::remove_file(cfg.spice_socket()) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
-        _ => Ok(()),
+    crate::sockets::prepare_listener(&cfg.spice_socket())
+}
+
+pub fn validate_socket_paths(cfg: &Config) -> Result<()> {
+    for path in [cfg.qmp_socket(), cfg.qga_socket(), cfg.console_socket()] {
+        crate::sockets::validate_path(&path)?;
     }
+    if cfg.isolated() {
+        crate::sockets::validate_path(&cfg.net_socket())?;
+    }
+    if cfg.desktop_spice {
+        crate::sockets::validate_path(&cfg.spice_socket())?;
+    }
+    Ok(())
+}
+
+fn prepare_qemu_sockets(cfg: &Config) -> Result<()> {
+    for path in [cfg.qmp_socket(), cfg.qga_socket(), cfg.console_socket()] {
+        crate::sockets::prepare_listener(&path)?;
+    }
+    if cfg.desktop_spice {
+        prepare_spice_dir(cfg)?;
+    }
+    Ok(())
+}
+
+fn ssh_port_conflict(cfg: &Config) -> Option<String> {
+    (!cfg.isolated() && !port_free(cfg.ssh_port, "127.0.0.1")).then(|| {
+        format!("SSH port {} on 127.0.0.1 is already in use. Free that port or choose a different SSH port.", cfg.ssh_port)
+    })
 }
 
 pub fn build_qemu_args(
@@ -130,6 +157,7 @@ pub fn build_qemu_args(
     phase: Option<&str>,
     display_mode: Option<&str>,
 ) -> Result<Vec<String>> {
+    validate_socket_paths(cfg)?;
     if crate::proxy::should_manage(cfg.proxy.as_deref()) && cfg.effective_network_mode() != "user" {
         return message("The embedded proxy requires user networking");
     }
@@ -378,21 +406,109 @@ pub fn pid_alive(pid: Option<u32>) -> bool {
     pid.map(process_alive).unwrap_or(false)
 }
 
-pub(crate) fn owns_qemu_process(pid: u32, pidfile: &Path, vm_name: &str) -> bool {
+#[derive(PartialEq, Eq)]
+enum ProcessOwner {
+    Instance,
+    Unrelated,
+    Unknown,
+}
+
+fn process_owner(pid: u32, pidfile: &Path, vm_name: &str) -> ProcessOwner {
     let Some(argv) = crate::util::process_command(pid) else {
-        return false;
+        return ProcessOwner::Unrelated;
+    };
+    let Some(executable) = argv.first().and_then(|exe| Path::new(exe).file_name()) else {
+        return ProcessOwner::Unknown;
     };
     let qemu = crate::arch::GuestArch::current().qemu_system_file();
-    let name = format!("vmctl-{vm_name}");
-    let pidfile = pidfile.display().to_string();
-    let option = |flag: &str, value: &str| {
-        argv.windows(2).any(|pair| pair[0] == flag && pair[1].trim_matches('"') == value)
+    if executable != qemu.as_str() {
+        return ProcessOwner::Unrelated;
+    }
+    let option = |flag| {
+        argv.windows(2)
+            .find(|pair| pair[0] == flag)
+            .map(|pair| pair[1].trim_matches('"'))
     };
-    argv.first()
-        .and_then(|executable| Path::new(executable).file_name())
-        .is_some_and(|file| file == qemu.as_str())
-        && option("-name", &name)
-        && option("-pidfile", &pidfile)
+    match (option("-name"), option("-pidfile")) {
+        (Some(name), Some(file))
+            if name == format!("vmctl-{vm_name}") && Path::new(file) == pidfile =>
+        {
+            ProcessOwner::Instance
+        }
+        // An inaccessible command line must not permit another launch or a signal.
+        _ if argv.len() == 1 => ProcessOwner::Unknown,
+        _ => ProcessOwner::Unrelated,
+    }
+}
+
+pub(crate) fn recorded_qemu_pid(instance: &InstancePaths, vm_name: &str) -> Result<Option<u32>> {
+    let pidfile = instance.pidfile();
+    let runtime_pid = || {
+        crate::util::read_json(&instance.runtime())
+            .and_then(|record| record["pid"].as_u64())
+            .and_then(|pid| u32::try_from(pid).ok())
+    };
+    for pid in read_pid(&pidfile)
+        .into_iter()
+        .chain(std::iter::once_with(runtime_pid).flatten())
+    {
+        match process_owner(pid, &pidfile, vm_name) {
+            ProcessOwner::Instance => return Ok(Some(pid)),
+            ProcessOwner::Unrelated => {}
+            ProcessOwner::Unknown => {
+                return message(format!(
+                    "Cannot identify the recorded QEMU process (PID {pid}). Stop it before starting or resetting the machine."
+                ));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// All runtime handles for one machine share the launch barrier. Shutdown sets
+/// its flag before waiting on the barrier, so a provisioning step cannot boot
+/// a new QEMU after shutdown has stopped the previous one.
+#[derive(Default)]
+pub(crate) struct Lifecycle {
+    gate: Mutex<()>,
+    quitting: AtomicBool,
+    cancelled: AtomicBool,
+}
+
+impl Lifecycle {
+    pub(crate) fn for_home(home: &Path) -> Arc<Self> {
+        static HOMES: OnceLock<Mutex<HashMap<PathBuf, Weak<Lifecycle>>>> = OnceLock::new();
+        let mut homes = HOMES.get_or_init(Default::default).locked();
+        homes.retain(|_, handle| handle.strong_count() != 0);
+        if let Some(handle) = homes.get(home).and_then(Weak::upgrade) {
+            return handle;
+        }
+        let handle = Arc::new(Self::default());
+        homes.insert(home.to_path_buf(), Arc::downgrade(&handle));
+        handle
+    }
+
+    pub(crate) fn check(&self) -> Result<()> {
+        if self.quitting.load(Ordering::Acquire) {
+            return message("Cabin is quitting");
+        }
+        if self.cancelled.load(Ordering::Acquire) {
+            return message("Install cancelled");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn begin_quit(&self) {
+        self.quitting.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn set_cancelled(&self, cancelled: bool) {
+        self.cancelled.store(cancelled, Ordering::Release);
+    }
+
+    pub(crate) fn lock(&self) -> MutexGuard<'_, ()> {
+        self.gate.locked()
+    }
 }
 
 /// Settings for starting QEMU and waiting for authenticated SSH.
@@ -417,6 +533,7 @@ impl Boot<'_> {
 pub struct Runtime {
     pub cfg: Config,
     foreground: Mutex<Option<Child>>,
+    lifecycle: Arc<Lifecycle>,
 }
 
 impl Runtime {
@@ -424,20 +541,16 @@ impl Runtime {
         Self {
             cfg: cfg.clone(),
             foreground: Mutex::new(None),
+            lifecycle: Lifecycle::for_home(&cfg.home),
         }
+    }
+
+    fn recorded_pid(&self) -> Result<Option<u32>> {
+        recorded_qemu_pid(&InstancePaths::new(self.cfg.instance_dir()), &self.cfg.name)
     }
 
     pub fn pid(&self) -> Option<u32> {
-        read_pid(&self.cfg.pidfile())
-    }
-
-    /// A fresh identity check before each signal, even when QMP is hung.
-    pub(crate) fn terminate_vm(&self, pid: u32, graceful: bool) -> bool {
-        if self.pid() != Some(pid) || !owns_qemu_process(pid, &self.cfg.pidfile(), &self.cfg.name) {
-            return false;
-        }
-        crate::util::terminate_process(pid, graceful);
-        true
+        self.recorded_pid().ok().flatten()
     }
 
     fn foreground_child(&self) -> MutexGuard<'_, Option<Child>> {
@@ -457,16 +570,9 @@ impl Runtime {
     }
 
     pub fn alive(&self) -> bool {
-        {
-            let mut guard = self.foreground_child();
-            if let Some(child) = guard.as_mut()
-                && child.try_wait().ok().flatten().is_some()
-            {
-                *guard = None;
-                return false;
-            }
-        }
-        pid_alive(self.pid())
+        self.reap();
+        // An uninspectable PID is conservatively treated as live.
+        !matches!(self.recorded_pid(), Ok(None))
     }
 
     pub fn qmp(&self, timeout: Duration) -> Option<QmpClient> {
@@ -488,7 +594,7 @@ impl Runtime {
 
     pub fn status(&self) -> Value {
         let pid = self.pid();
-        let alive = pid_alive(pid);
+        let alive = pid.is_some();
         let qmp = if alive {
             qmp_query_status(&self.cfg.qmp_socket(), Duration::from_secs(2))
         } else {
@@ -515,46 +621,64 @@ impl Runtime {
 
     pub fn cleanup_stale(&self) {
         self.reap();
-        if !self.alive() {
+        if matches!(self.recorded_pid(), Ok(None)) {
             let _ = crate::chrome_viewer::stop(&self.cfg);
             let _ = crate::preview_forward::stop(&self.cfg);
-            if check_spice_dir(&self.cfg).is_ok() {
-                let _ = fs::remove_file(self.cfg.spice_socket());
+            for path in [self.cfg.pidfile(), self.cfg.runtime_path()] {
+                let _ = fs::remove_file(path);
             }
             for path in [
-                self.cfg.pidfile(),
                 self.cfg.qmp_socket(),
                 self.cfg.qga_socket(),
                 self.cfg.console_socket(),
             ] {
-                let _ = fs::remove_file(path);
+                let _ = crate::sockets::prepare_listener(&path);
+            }
+            if check_spice_dir(&self.cfg).is_ok() {
+                let _ = crate::sockets::prepare_listener(&self.cfg.spice_socket());
             }
         }
     }
 
-    fn wait_qmp(&self, timeout: Duration) -> Result<()> {
+    fn wait_qmp(&self, child: &mut Child, stderr: &Path, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if !self.alive() {
-                let tail = tail_file(&self.cfg.serial_log_path(), 60);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                let diagnostic = classify_qemu_exit(&crate::startup::log_tail(stderr).join("\n"));
                 return message(format!(
-                    "QEMU exited during startup{}",
-                    if tail.is_empty() {
-                        String::new()
-                    } else {
-                        format!("\n--- serial log tail ---\n{tail}")
-                    }
+                    "QEMU exited during startup ({status}): {diagnostic}"
                 ));
             }
-            if qmp_query_status(&self.cfg.qmp_socket(), Duration::from_secs(1)).is_some() {
+            self.lifecycle.check()?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return message(format!(
+                    "QEMU QMP did not become ready within {:.0}s. See {}",
+                    timeout.as_secs_f64(),
+                    stderr.display()
+                ));
+            }
+            if self.pid().is_some()
+                && qmp_query_status(
+                    &self.cfg.qmp_socket(),
+                    remaining.min(Duration::from_secs(1)),
+                )
+                .is_some()
+            {
                 return Ok(());
             }
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(remaining.min(Duration::from_millis(100)));
         }
-        message(format!(
-            "QEMU QMP did not become ready within {:.0}s",
-            timeout.as_secs_f64()
-        ))
+    }
+
+    pub(crate) fn previous_vm_error<T>(&self) -> Result<T> {
+        self.recorded_pid()?;
+        if self.cfg.instance_file("sockets.json").exists() {
+            return message(
+                "A VM from an earlier version of Cabin is still running with TCP control sockets. Stop it in the earlier version of Cabin or restart this computer, then start it here.",
+            );
+        }
+        message("The QEMU process exists, but its monitor did not report a running machine")
     }
 
     pub fn start(&self, log: &Arc<Mutex<File>>, boot: Boot<'_>) -> Result<bool> {
@@ -573,82 +697,69 @@ impl Runtime {
         Ok(true)
     }
 
-    /// Launch QEMU (foreground or daemonized) and wait for its monitor.
+    /// Run QEMU as a child on every host so stderr and its exit status are
+    /// available even if it dies before opening QMP or writing its PID.
     fn launch_qemu(
         &self,
         log: &Arc<Mutex<File>>,
+        args: &[String],
         serial_log: &Path,
-        phase: Option<&str>,
-        display_mode: Option<&str>,
-        effective_display: &str,
-        foreground: bool,
     ) -> Result<()> {
-        if foreground {
-            let args = build_qemu_args(&self.cfg, false, Some(serial_log), phase, display_mode)?;
-            let client_log_path = InstancePaths::new(self.cfg.instance_dir()).file(
-                if self.cfg.effective_network_mode() == "socket-vmnet" {
-                    "socket-vmnet-client.log"
-                } else {
-                    "display.log"
-                },
-            );
-            log_line(
-                log,
-                &format!(
-                    "launching QEMU foreground ({})",
-                    if effective_display == "cocoa" {
-                        "cocoa"
-                    } else {
-                        "socket-vmnet"
-                    }
-                ),
-            );
-            let client_log = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&client_log_path)?;
-            let mut command = Command::new(&args[0]);
-            command.args(&args[1..]);
-            command
-                .stdin(Stdio::null())
-                .stdout(Stdio::from(client_log.try_clone()?))
-                .stderr(Stdio::from(client_log));
-            crate::util::no_window(&mut command);
-            crate::platform::detach_session(&mut command);
-            let child = command.spawn()?;
-            *self.foreground_child() = Some(child);
-            let deadline = Instant::now() + Duration::from_secs(15);
-            while Instant::now() < deadline && !self.cfg.pidfile().exists() {
-                {
-                    let mut guard = self.foreground_child();
-                    if let Some(child) = guard.as_mut()
-                        && child.try_wait()?.is_some()
-                    {
-                        return message(format!(
-                            "QEMU exited during foreground startup\n{}",
-                            tail_file(&client_log_path, 40)
-                        ));
-                    }
+        let stderr_path = self.cfg.instance_file("qemu-stderr.log");
+        let stderr = File::create(&stderr_path)?;
+        log_line(
+            log,
+            &format!("launching QEMU (stderr: {})", stderr_path.display()),
+        );
+        let mut command = Command::new(&args[0]);
+        command
+            .args(&args[1..])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(stderr));
+        crate::util::no_window(&mut command);
+        crate::platform::detach_session(&mut command);
+        self.lifecycle.check()?;
+        let mut child = command.spawn().map_err(|error| {
+            crate::Error::Message(format!("Could not launch QEMU using {}: {error}", args[0]))
+        })?;
+        let pid = child.id();
+        let result = self
+            .save_runtime(pid, serial_log)
+            .and_then(|()| self.wait_qmp(&mut child, &stderr_path, Duration::from_secs(45)))
+            .and_then(|()| {
+                let actual_pid = self.recorded_pid()?.ok_or_else(|| {
+                    crate::Error::Message("QEMU exited after opening its monitor".into())
+                })?;
+                if actual_pid != pid {
+                    self.save_runtime(actual_pid, serial_log)?;
                 }
-                thread::sleep(Duration::from_millis(200));
-            }
+                Ok(())
+            });
+        if result.is_err() && self.pid().is_none() {
+            // QEMU may have stalled before writing its PID. This handle still
+            // identifies the child we spawned, even without a pidfile.
+            let _ = child.kill();
+            let _ = child.wait();
+            self.cleanup_stale();
         } else {
-            let args = build_qemu_args(&self.cfg, true, Some(serial_log), phase, display_mode)?;
-            log_line(log, "launching QEMU (daemonized)");
-            run(
-                &args,
-                log,
-                RunOptions {
-                    timeout: Duration::from_secs(90),
-                    ..Default::default()
-                },
-            )?;
+            *self.foreground_child() = Some(child);
         }
-        if let Err(error) = self.wait_qmp(Duration::from_secs(45)) {
-            self.stop(log, Duration::from_secs(10));
-            return Err(error);
-        }
-        Ok(())
+        result
+    }
+
+    fn save_runtime(&self, pid: u32, serial_log: &Path) -> Result<()> {
+        let runtime = json!({
+            "name": self.cfg.name,
+            "pid": pid,
+            "started_at": crate::util::now_millis(),
+            "ssh_port": self.cfg.ssh_connect_port(),
+            "network_mode": self.cfg.network_mode,
+            "serial_log": serial_log.display().to_string(),
+            "qmp_socket": self.cfg.qmp_socket().display().to_string(),
+            "qga_socket": self.cfg.qga_socket().display().to_string(),
+        });
+        crate::util::atomic_write_json(&self.cfg.runtime_path(), &runtime, 0o600)
     }
 
     pub(crate) fn start_stopped(
@@ -663,46 +774,67 @@ impl Runtime {
             phase,
             display_mode,
         } = boot;
-        self.cleanup_stale();
-        ensure_dir(&self.cfg.instance_dir())?;
-        if self.cfg.desktop_spice {
-            prepare_spice_dir(&self.cfg)?;
-        }
         let serial_log = serial_log
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.cfg.serial_log_path());
-        let effective_display = display_mode.unwrap_or(&self.cfg.display_mode);
-        // Windows has no -daemonize: QEMU runs as a supervised child there.
-        let foreground = cfg!(not(unix))
-            || self.cfg.effective_network_mode() == "socket-vmnet"
-            || effective_display == "cocoa"
-            || self.cfg.audio_backend == "coreaudio";
-        let mut retried = false;
-        loop {
-            let launched = self.launch_qemu(
-                log,
-                &serial_log,
-                phase,
-                display_mode,
-                effective_display,
-                foreground,
-            );
-            match launched {
-                Ok(()) => break,
-                Err(error) if !retried && crate::platform::accel().accel == "whpx" => {
-                    // WHPX can pass the probe and still fail a real machine
-                    // (device or memory limits): retry once under TCG.
-                    let reason = crate::accel::classify_failure(&error.to_string());
-                    log_line(
-                        log,
-                        &format!("WHPX start failed ({reason:?}); retrying under TCG: {error}"),
-                    );
-                    crate::accel::fall_back_to_tcg(reason);
-                    retried = true;
-                    self.cleanup_stale();
-                }
-                Err(error) => return Err(error),
+        let launch = (|| -> Result<()> {
+            let _gate = self.lifecycle.lock();
+            self.lifecycle.check()?;
+            if self.recorded_pid()?.is_some() {
+                return self.previous_vm_error();
             }
+            validate_socket_paths(&self.cfg)?;
+            if let Some(error) = ssh_port_conflict(&self.cfg) {
+                return message(error);
+            }
+            ensure_dir(&self.cfg.instance_dir())?;
+            self.cleanup_stale();
+            migrate_legacy_sockets(&self.cfg.instance_dir())?;
+            let engine = resolve_qemu(&self.cfg)?.qemu_bin;
+            crate::accel::restore_start_fallback(&self.cfg.home, Path::new(&engine));
+            let launch = || {
+                let setup_error = |error| (error, None);
+                prepare_qemu_sockets(&self.cfg).map_err(setup_error)?;
+                let args =
+                    build_qemu_args(&self.cfg, false, Some(&serial_log), phase, display_mode)
+                        .map_err(setup_error)?;
+                let whpx = args
+                    .windows(2)
+                    .any(|pair| pair[0] == "-accel" && pair[1].starts_with("whpx,"));
+                self.launch_qemu(log, &args, &serial_log).map_err(|error| {
+                    let reason = if whpx && matches!(self.recorded_pid(), Ok(None)) {
+                        whpx_start_failure(&error.to_string())
+                    } else {
+                        None
+                    };
+                    (error, reason)
+                })
+            };
+            crate::accel::retry_start_with_tcg(launch, |error, reason| {
+                log_line(
+                    log,
+                    &format!("WHPX start failed ({reason:?}); retrying under TCG: {error}"),
+                );
+                crate::accel::remember_start_fallback(
+                    &self.cfg.home,
+                    Path::new(&engine),
+                    reason,
+                    log,
+                );
+                self.cleanup_stale();
+            })
+        })();
+        if let Err(error) = launch {
+            let spawned = self.foreground_child().is_some();
+            if spawned {
+                self.stop(log, Duration::from_secs(10));
+                if let Some(mut child) = self.foreground_child().take() {
+                    thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                }
+            }
+            return Err(error);
         }
         // A foreground client/QEMU must not become a zombie when the command
         // returns; hand the child to a detached reaper now that startup has
@@ -712,22 +844,6 @@ impl Runtime {
             thread::spawn(move || {
                 let _ = child.wait();
             });
-        }
-        let runtime = json!({
-            "name": self.cfg.name,
-            "pid": self.pid(),
-            "started_at": crate::util::now_millis(),
-            "ssh_port": self.cfg.ssh_port,
-            "network_mode": self.cfg.network_mode,
-            "serial_log": serial_log.display().to_string(),
-            "qmp_socket": self.cfg.qmp_socket().display().to_string(),
-            "qga_socket": self.cfg.qga_socket().display().to_string(),
-        });
-        if let Err(error) =
-            crate::util::atomic_write_json(&self.cfg.runtime_path(), &runtime, 0o600)
-        {
-            self.stop(log, Duration::from_secs(20));
-            return Err(error);
         }
         log_line(
             log,
@@ -741,6 +857,7 @@ impl Runtime {
             if let Some(pid) = self.pid() {
                 attempt.add_fact("QEMU pid", pid.to_string());
             }
+            attempt.accelerator_fact();
             attempt.complete(Phase::Qemu, "QEMU monitor is ready");
         }
         if let Some(attempt) = attempt {
@@ -750,6 +867,7 @@ impl Runtime {
             self.stop(log, Duration::from_secs(30));
             return Err(error);
         }
+        self.lifecycle.check()?;
         if self.cfg.device_enabled() {
             let (rc, out) = self.ssh_capture(
                 "sudo -n sh -c 'modprobe -r qemu_fw_cfg 2>/dev/null || true'",
@@ -767,6 +885,7 @@ impl Runtime {
     }
 
     pub fn stop(&self, log: &Arc<Mutex<File>>, timeout: Duration) -> bool {
+        let _gate = self.lifecycle.lock();
         let _ = crate::preview_forward::stop(&self.cfg);
         if let Err(error) = crate::chrome_viewer::stop(&self.cfg) {
             log_line(log, &format!("Stopping the desktop viewer failed: {error}"));
@@ -777,60 +896,25 @@ impl Runtime {
             log_line(log, "VM is not running");
             return false;
         }
-        let Some(pid) = pid.filter(|&pid| owns_qemu_process(pid, &self.cfg.pidfile(), &self.cfg.name)) else {
+        let Some(pid) = pid else {
             log_line(log, "Could not verify the recorded PID as this QEMU instance");
             return false;
         };
         log_line(log, &format!("stopping VM (pid {pid})"));
-        // 1. graceful guest shutdown via ssh
-        let (rc, out) = self.ssh_capture("sudo -n shutdown -P now", Duration::from_secs(20));
-        log_line(log, &format!("ssh shutdown rc={rc}"));
-        if !out.is_empty() {
-            log_line(log, &out);
-        }
-        let graceful_wait = Duration::from_secs((timeout.as_secs() / 3).max(20));
-        let deadline = Instant::now() + graceful_wait;
-        if rc == 0 {
-            while Instant::now() < deadline && self.alive() {
-                thread::sleep(Duration::from_secs(1));
-            }
-        }
-        // Only wait for a transition after QEMU accepted the request.
-        for (command, wait) in [("system_powerdown", graceful_wait), ("quit", Duration::from_secs(10))] {
-            if !self.alive() {
-                break;
-            }
-            if let Some(mut client) = self.qmp(Duration::from_secs(2))
-                && client.execute("query-name", None).is_ok_and(|reply| {
-                    reply["name"].as_str() == Some(&format!("vmctl-{}", self.cfg.name))
-                })
-                && client.execute(command, None).is_ok()
-            {
-                let deadline = Instant::now() + wait;
-                while Instant::now() < deadline && self.alive() {
-                    thread::sleep(Duration::from_millis(250));
-                }
-            }
-        }
-        // 4. signals
-        if self.alive() {
-            log_line(log, "guest did not shut down; asking QEMU to terminate");
-            if !self.terminate_vm(pid, true) {
-                return false;
-            }
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < deadline && self.alive() {
-                thread::sleep(Duration::from_millis(500));
-            }
-        }
-        if self.alive() {
-            log_line(log, "killing QEMU");
-            if !self.terminate_vm(pid, false) {
-                return false;
-            }
-            thread::sleep(Duration::from_secs(1));
-        }
-        if self.alive() {
+        let instance = InstancePaths::new(self.cfg.instance_dir());
+        let stopped = stop_process(
+            pid,
+            &instance,
+            &self.cfg.name,
+            timeout,
+            |wait| {
+                let (rc, out) = self.ssh_capture("sudo -n shutdown -P now", wait);
+                log_line(log, &format!("ssh shutdown rc={rc} {out}"));
+                rc == 0
+            },
+            || self.reap(),
+        );
+        if !stopped {
             log_line(log, "QEMU is still running");
             return false;
         }
@@ -870,13 +954,19 @@ impl Runtime {
             "-o".to_string(),
             "StrictHostKeyChecking=no".to_string(),
             "-o".to_string(),
-            "UserKnownHostsFile=/dev/null".to_string(),
+            "UserKnownHostsFile=none".to_string(),
+            "-o".to_string(),
+            "GlobalKnownHostsFile=none".to_string(),
+            "-o".to_string(),
+            "ServerAliveInterval=10".to_string(),
+            "-o".to_string(),
+            "ServerAliveCountMax=3".to_string(),
             "-o".to_string(),
             "IdentitiesOnly=yes".to_string(),
             "-o".to_string(),
             "LogLevel=ERROR".to_string(),
             "-o".to_string(),
-            "ConnectTimeout=4".to_string(),
+            format!("ConnectTimeout={}", 4 * crate::platform::slowdown()),
             format!("{}@{host}", self.cfg.current_username()),
         ];
         if tty {
@@ -922,16 +1012,18 @@ impl Runtime {
     }
 
     pub fn wait_for_ssh(&self, log: &Arc<Mutex<File>>, timeout: Duration) -> Result<()> {
+        let (timeout, probe_timeout) = ssh_wait_budgets(timeout, crate::platform::slowdown());
         let started = Instant::now();
         let mut last = String::new();
         let mut next_log = Duration::ZERO;
         let mut delay = Duration::from_millis(200);
         while started.elapsed() < timeout {
+            self.lifecycle.check()?;
             if !self.alive() {
                 return message("QEMU exited while waiting for SSH");
             }
             let remaining = timeout.saturating_sub(started.elapsed());
-            let (rc, out) = self.ssh_capture("true", remaining.min(Duration::from_secs(6)));
+            let (rc, out) = self.ssh_capture("true", remaining.min(probe_timeout));
             if rc == 0 {
                 log_line(
                     log,
@@ -984,6 +1076,153 @@ impl Runtime {
             Err(_) => false,
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ShutdownAction {
+    Guest,
+    Powerdown,
+    Quit,
+    Terminate,
+    Kill,
+}
+
+fn shutdown_in_order(
+    budget: Duration,
+    mut request: impl FnMut(ShutdownAction, Duration) -> bool,
+    mut exited: impl FnMut(Duration) -> bool,
+) -> bool {
+    use ShutdownAction::*;
+    // Allow time for forced exit even if SSH and the monitor consume their
+    // full budgets. Native session-end notifications supply a shorter budget.
+    let graceful = budget / 5;
+    let control = (graceful / 2).min(Duration::from_secs(2));
+    let forced = (graceful / 3).min(Duration::from_secs(2));
+    for (action, timeout, wait) in [
+        (Guest, graceful.min(Duration::from_secs(10)), graceful),
+        (Powerdown, control, graceful),
+        (Quit, control, forced),
+        (Terminate, Duration::ZERO, forced),
+        (Kill, Duration::ZERO, forced),
+    ] {
+        if exited(Duration::ZERO) || (request(action, timeout) && exited(wait)) {
+            return true;
+        }
+    }
+    exited(Duration::ZERO)
+}
+
+pub(crate) fn stop_process(
+    pid: u32,
+    instance: &InstancePaths,
+    name: &str,
+    timeout: Duration,
+    mut guest_shutdown: impl FnMut(Duration) -> bool,
+    mut reap: impl FnMut(),
+) -> bool {
+    let pidfile = instance.pidfile();
+    let owner = || process_owner(pid, &pidfile, name);
+    shutdown_in_order(
+        timeout,
+        |action, timeout| {
+            if owner() != ProcessOwner::Instance {
+                return false;
+            }
+            match action {
+                ShutdownAction::Guest => guest_shutdown(timeout),
+                ShutdownAction::Powerdown => {
+                    qmp_shutdown(&instance.qmp_socket(), name, "system_powerdown", timeout)
+                }
+                ShutdownAction::Quit => qmp_shutdown(&instance.qmp_socket(), name, "quit", timeout),
+                ShutdownAction::Terminate | ShutdownAction::Kill => {
+                    crate::util::terminate_process(pid, action == ShutdownAction::Terminate);
+                    true
+                }
+            }
+        },
+        |wait| {
+            let deadline = Instant::now() + wait;
+            loop {
+                reap();
+                if owner() == ProcessOwner::Unrelated {
+                    return true;
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return false;
+                }
+                thread::sleep(remaining.min(Duration::from_millis(100)));
+            }
+        },
+    )
+}
+
+fn qmp_shutdown(path: &Path, name: &str, command: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    QmpClient::connect(path, timeout).is_ok_and(|mut client| {
+        client
+            .execute_until("query-name", None, deadline)
+            .is_ok_and(|reply| reply["name"].as_str() == Some(&format!("vmctl-{name}")))
+            && client.execute_until(command, None, deadline).is_ok()
+    })
+}
+
+fn classify_qemu_exit(stderr: &str) -> String {
+    let output = stderr.to_ascii_lowercase();
+    let explanation = if output.contains("host forwarding rule")
+        || (output.contains("address already in use") && output.contains("hostfwd"))
+    {
+        "QEMU could not bind the SSH forwarding port. Free that port and retry."
+    } else if output.contains("failed to get \"write\" lock")
+        || output.contains("another process using the image")
+    {
+        "Another process has the VM disk open."
+    } else if output.contains("could not allocate memory")
+        || output.contains("cannot allocate memory")
+    {
+        "QEMU could not allocate memory for the VM. Close other apps or reduce the VM's memory."
+    } else if output.contains("no space left") {
+        "The VM's storage is full."
+    } else if output.contains("permission denied") || output.contains("access is denied") {
+        "QEMU was denied access to a VM file or socket."
+    } else if output.contains("failed to initialize hvf") || output.contains("hvf error") {
+        "QEMU could not use hardware virtualization (HVF)."
+    } else if stderr.is_empty() {
+        "QEMU produced no stderr."
+    } else {
+        return stderr.to_owned();
+    };
+    if stderr.is_empty() {
+        explanation.into()
+    } else {
+        format!("{explanation}\n{stderr}")
+    }
+}
+
+fn whpx_start_failure(error: &str) -> Option<crate::accel::AccelProblem> {
+    // Only an early QEMU exit is eligible. WHPX can print an informational
+    // banner before an unrelated fatal error from a disk or network device.
+    if !error.starts_with("QEMU exited during startup") {
+        return None;
+    }
+    let last = error.lines().rfind(|line| !line.trim().is_empty())?;
+    crate::accel::classify_whpx_output(last)
+}
+
+fn migrate_legacy_sockets(instance_dir: &Path) -> Result<()> {
+    // Old Windows builds stored loopback control ports here. The current
+    // endpoints are derived from the instance path; no disk changes are needed.
+    match fs::remove_file(instance_dir.join("sockets.json")) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+        _ => Ok(()),
+    }
+}
+
+fn ssh_wait_budgets(timeout: Duration, slowdown: u32) -> (Duration, Duration) {
+    (
+        timeout.saturating_mul(slowdown),
+        Duration::from_secs(6).saturating_mul(slowdown),
+    )
 }
 
 pub fn preflight(cfg: &Config) -> Vec<String> {
@@ -1053,11 +1292,13 @@ pub fn preflight(cfg: &Config) -> Vec<String> {
         ));
     }
     let runtime = Runtime::new(cfg);
-    if effective_mode == "user" && !runtime.running() && !port_free(cfg.ssh_port, "127.0.0.1") {
-        issues.push(format!(
-            "TCP port {} on 127.0.0.1 is already in use; pass --ssh-port with a free port",
-            cfg.ssh_port
-        ));
+    if !runtime.alive()
+        && let Some(error) = ssh_port_conflict(cfg)
+    {
+        issues.push(error);
+    }
+    if let Err(error) = validate_socket_paths(cfg) {
+        issues.push(error.to_string());
     }
     if cfg.device_enabled()
         && let Ok(resolved) = cfg.device_resolved()
@@ -1141,7 +1382,269 @@ pub fn preflight_warnings(cfg: &Config) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn occupied_port_has_a_clear_error_for_qemu_forwarding() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let cfg = Config {
+            network_mode: "user".into(),
+            ssh_port: listener.local_addr().unwrap().port(),
+            ..Config::default()
+        };
+        let problem = ssh_port_conflict(&cfg).unwrap();
+        assert!(problem.contains(&cfg.ssh_port.to_string()));
+        assert!(problem.contains("already in use"));
+        let cfg = Config {
+            network_mode: "gateway".into(),
+            ..cfg
+        };
+        assert!(ssh_port_conflict(&cfg).is_none());
+    }
+
+    #[test]
+    fn ssh_boot_budget_and_probe_scale_with_emulation() {
+        assert_eq!(
+            ssh_wait_budgets(Duration::from_secs(180), 1),
+            (Duration::from_secs(180), Duration::from_secs(6))
+        );
+        assert_eq!(
+            ssh_wait_budgets(Duration::from_secs(180), 8),
+            (Duration::from_secs(1440), Duration::from_secs(48))
+        );
+    }
+
+    #[test]
+    fn ssh_excludes_both_host_key_files_and_checks_liveness_after_wake() {
+        let home = crate::sockets::test_dir();
+        let cfg = Config {
+            home: home.clone(),
+            ..Config::default()
+        };
+        ensure_dir(&cfg.instance_dir()).unwrap();
+        fs::write(cfg.ssh_key_path(), "test key").unwrap();
+        let argv = Runtime::new(&cfg).ssh_argv(false).unwrap();
+        for option in [
+            "UserKnownHostsFile=none",
+            "GlobalKnownHostsFile=none",
+            "StrictHostKeyChecking=no",
+            "ServerAliveInterval=10",
+            "ServerAliveCountMax=3",
+        ] {
+            assert!(
+                argv.windows(2)
+                    .any(|pair| pair[0] == "-o" && pair[1] == option)
+            );
+        }
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn early_exit_returns_status_and_classified_stderr_before_pidfile() {
+        let home = crate::sockets::test_dir();
+        let cfg = Config {
+            home: home.clone(),
+            ..Config::default()
+        };
+        ensure_dir(&cfg.instance_dir()).unwrap();
+        let log = Arc::new(Mutex::new(File::create(home.join("start.log")).unwrap()));
+        let runtime = Runtime::new(&cfg);
+        let args = vec![
+            "sh".into(),
+            "-c".into(),
+            "echo 'qemu: Could not set up host forwarding rule' >&2; exit 42".into(),
+        ];
+        let error = runtime
+            .launch_qemu(&log, &args, &cfg.serial_log_path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("42"), "{error}");
+        assert!(
+            error.contains("could not bind the SSH forwarding port"),
+            "{error}"
+        );
+        assert!(
+            error.contains("qemu: Could not set up host forwarding rule"),
+            "{error}"
+        );
+        assert!(!cfg.pidfile().exists());
+        assert!(!runtime.alive());
+        drop(log);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quit_interrupts_a_child_stuck_before_qmp_and_reaps_it() {
+        let home = crate::sockets::test_dir();
+        let cfg = Config {
+            home: home.clone(),
+            ..Config::default()
+        };
+        ensure_dir(&cfg.instance_dir()).unwrap();
+        let runtime = Runtime::new(&cfg);
+        let log = Arc::new(Mutex::new(File::create(home.join("start.log")).unwrap()));
+        std::thread::scope(|scope| {
+            let child = scope.spawn(|| {
+                let _launch = runtime.lifecycle.lock();
+                let args = vec!["sh".into(), "-c".into(), "exec sleep 30".into()];
+                runtime.launch_qemu(&log, &args, &cfg.serial_log_path())
+            });
+            let deadline = Instant::now() + Duration::from_secs(4);
+            let pid = loop {
+                if let Some(pid) = crate::util::read_json(&cfg.runtime_path())
+                    .and_then(|state| state["pid"].as_u64())
+                {
+                    break pid as u32;
+                }
+                assert!(Instant::now() < deadline, "child never entered startup");
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            runtime.lifecycle.begin_quit();
+            let _gate = runtime.lifecycle.lock();
+            let error = child.join().unwrap().unwrap_err();
+            assert_eq!(error.to_string(), "Cabin is quitting");
+            assert!(!pid_alive(Some(pid)));
+        });
+        drop(log);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn whpx_diagnostic_excludes_unrelated_start_failures() {
+        let error = "QEMU exited during startup: WHPX enabled
+qemu: Failed to get \"write\" lock";
+        assert_eq!(whpx_start_failure(error), None);
+        let error = "QEMU exited during startup: WHPX: Failed to create partition, hr=80070005";
+        assert_eq!(
+            whpx_start_failure(error),
+            Some(crate::accel::AccelProblem::HypervisorConflict)
+        );
+    }
+
+    #[test]
+    fn shutdown_tries_graceful_paths_before_forcing_a_hung_vm() {
+        use ShutdownAction::*;
+        use std::cell::Cell;
+        let mut actions = Vec::new();
+        let gone = Cell::new(false);
+        let stopped = shutdown_in_order(
+            Duration::from_secs(4),
+            |action, _| {
+                if action == Kill {
+                    gone.set(true);
+                }
+                actions.push(action);
+                true
+            },
+            |_| gone.get(),
+        );
+        assert!(stopped);
+        assert_eq!(actions, [Guest, Powerdown, Quit, Terminate, Kill]);
+
+        gone.set(false);
+        actions.clear();
+        assert!(shutdown_in_order(
+            Duration::from_secs(4),
+            |action, _| {
+                actions.push(action);
+                gone.set(true);
+                true
+            },
+            |_| gone.get(),
+        ));
+        assert_eq!(actions, [Guest]);
+    }
+
+    #[test]
+    fn legacy_tcp_socket_file_is_discarded_without_touching_the_disk() {
+        let dir = crate::sockets::test_dir();
+        let instance = InstancePaths::new(&dir);
+        let old = dir.join("sockets.json");
+        fs::write(
+            &old,
+            br#"{"qmp":5555,"qga":5556,"console":5557,"net":5558}"#,
+        )
+        .unwrap();
+        fs::write(instance.disk(), b"persistent guest").unwrap();
+        migrate_legacy_sockets(&dir).unwrap();
+        migrate_legacy_sockets(&dir).unwrap();
+        assert!(!old.exists());
+        assert_eq!(fs::read(instance.disk()).unwrap(), b"persistent guest");
+        assert!(instance.qmp_socket().ends_with("qmp.sock"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resolves_downloaded_mac_engine_for_an_existing_instance() {
+        let home = crate::sockets::test_dir();
+        let old = crate::qemu_engine::root(&home);
+        let system = old.join("bin").join(crate::platform::qemu_system());
+        let firmware = old.join("share/qemu");
+        let vars = firmware.join("edk2-aarch64-vars.fd");
+        for path in [
+            &system,
+            &old.join("bin/qemu-img"),
+            &firmware.join("edk2-aarch64-code.fd"),
+            &vars,
+        ] {
+            ensure_dir(path.parent().unwrap()).unwrap();
+            fs::write(path, []).unwrap();
+        }
+        let cfg = Config {
+            home: home.clone(),
+            ..Config::default()
+        };
+        let resolved = resolve_qemu(&cfg).unwrap();
+        if let Some(bundle) = crate::vendor::vendor() {
+            assert_eq!(Path::new(&resolved.qemu_bin), bundle.qemu_system());
+        } else {
+            assert_eq!(Path::new(&resolved.qemu_bin), system);
+            assert_eq!(resolved.firmware_vars, vars);
+        }
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn stale_or_torn_image_verification_record_requires_a_checksum() {
+        use crate::steps::base::{Step, StepContext};
+        use crate::steps::global::ImageStep;
+        let home = crate::sockets::test_dir();
+        let cfg = Config {
+            home: home.clone(),
+            image_url: "https://example.invalid/image.img".into(),
+            image_sha256: crate::util::sha256_bytes(b"correct image"),
+            ..Config::default()
+        };
+        ensure_dir(&cfg.images_dir()).unwrap();
+        let path = cfg.image_path();
+        let cache = path.with_file_name(".image.img.verified.json");
+        fs::write(&path, b"correct image").unwrap();
+        let mut ctx = StepContext::new(&cfg, "image", "start").unwrap();
+        assert!(ImageStep.check(&mut ctx).unwrap().ok);
+        assert!(
+            ImageStep
+                .check(&mut ctx)
+                .unwrap()
+                .detail
+                .contains("previously verified")
+        );
+        fs::write(&path, b"invalid").unwrap();
+        assert!(
+            ImageStep
+                .check(&mut ctx)
+                .unwrap()
+                .detail
+                .contains("checksum mismatch")
+        );
+        fs::write(&cache, b"{\"broken").unwrap();
+        assert!(!ImageStep.check(&mut ctx).unwrap().ok);
+        drop(ctx);
+        fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn foreground_child_state_recovers_after_lock_poisoning() {

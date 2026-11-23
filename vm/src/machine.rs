@@ -17,7 +17,7 @@ use crate::lock::FileLock;
 use crate::paths::{InstancePaths, StatePaths};
 use crate::runner::Runner;
 use crate::startup::{Attempt, Phase};
-use crate::vm::Runtime;
+use crate::vm::{Lifecycle, Runtime, recorded_qemu_pid};
 use crate::{Config, Result};
 
 pub const NAME: &str = "agent";
@@ -313,12 +313,16 @@ pub struct Machine {
     agentd_binary: PathBuf,
     /// Configuration of the install in progress (for cancelling it).
     installing: std::sync::Mutex<Option<Config>>,
+    lifecycle: Arc<Lifecycle>,
 }
 
 impl Machine {
     pub fn new(home: impl Into<PathBuf>, root: impl Into<PathBuf>) -> Self {
+        let home = home.into();
+        let lifecycle = Lifecycle::for_home(&home);
         Self {
-            home: home.into(),
+            home,
+            lifecycle,
             root: root.into(),
             agentd_binary: crate::agentd::default_binary(),
             installing: std::sync::Mutex::new(None),
@@ -432,7 +436,15 @@ impl Machine {
     }
 
     pub fn storage_in_use(&self) -> bool {
-        self.live_recorded_pid().is_some()
+        let instance = StatePaths::new(&self.home).instance(NAME);
+        // Keep storage maintenance conservative while the pidfile is present.
+        crate::vm::pid_alive(crate::vm::read_pid(&instance.pidfile()))
+            || self.recorded_runtime_exists()
+    }
+
+    fn recorded_runtime_exists(&self) -> bool {
+        let instance = StatePaths::new(&self.home).instance(NAME);
+        !matches!(recorded_qemu_pid(&instance, NAME), Ok(None))
     }
 
     pub fn clean_storage(&self, target: crate::storage::CleanupTarget) -> Result<crate::storage::CleanupResult> {
@@ -485,7 +497,7 @@ impl Machine {
             _ => MachineInfo {
                 installed,
                 os: None,
-                running: installed && self.live_recorded_pid().is_some(),
+                running: installed && self.recorded_runtime_exists(),
                 ssh_port: None,
                 cpus: None,
                 memory_mb: None,
@@ -638,6 +650,8 @@ impl Machine {
             return crate::util::message("The machine is already installed or has files to recover");
         }
         let mut cfg = build_config(&self.install_overrides(options), &self.root)?;
+        crate::vm::validate_socket_paths(&cfg)?;
+        let _install = self.begin_install(&cfg)?;
         // Pin the newest build of the chosen OS before anything is saved.
         cfg.pin_image()?;
         let runner = Runner::new(cfg.clone())?.with_agentd(&self.agentd_binary);
@@ -687,9 +701,7 @@ impl Machine {
             })
         };
         let _stop = StopPoller(done.clone());
-        *self.installing.locked() = Some(cfg.clone());
-        let _clear = ClearInstalling(&self.installing);
-        let result = work();
+        let result = self.lifecycle.check().and_then(|()| work());
         done.store(true, Ordering::Relaxed);
         let _ = poller.join();
         on_progress(progress(cfg, since));
@@ -739,6 +751,7 @@ impl Machine {
     ) -> Result<MachineInfo> {
         let lock = self.lock()?;
         let mut cfg = self.config()?;
+        let _install = self.begin_install(&cfg)?;
         if let Some(mirror) = apt_mirror {
             cfg.apt_mirror = mirror
                 .map(|m| m.trim().trim_end_matches('/').to_string())
@@ -756,31 +769,79 @@ impl Machine {
         Ok(self.info())
     }
 
-    /// Stop an install in progress by stopping its VM. The running step then
-    /// fails and the install rolls back (removing the partial machine).
-    /// Returns false when no install is running.
+    fn begin_install(&self, cfg: &Config) -> Result<ClearInstalling<'_>> {
+        let mut installing = self.installing.locked();
+        self.lifecycle.check()?;
+        *installing = Some(cfg.clone());
+        Ok(ClearInstalling(self))
+    }
+
+    /// Cancel the install and stop its VM. Any later launch from that same
+    /// install observes the cancellation before creating a QEMU process.
     pub fn abort_install(&self) -> bool {
-        let cfg = self
-            .installing.locked()
-            .clone();
-        let Some(cfg) = cfg else {
-            return false;
+        let cfg = {
+            let installing = self.installing.locked();
+            let Some(cfg) = installing.as_ref() else {
+                return false;
+            };
+            self.lifecycle.set_cancelled(true);
+            cfg.clone()
         };
-        // An image download runs in-process: stop it between chunks.
         crate::download::cancel_all();
-        let runtime = Runtime::new(&cfg);
-        if let Some(pid) = runtime.pid().filter(|&pid| crate::vm::pid_alive(Some(pid)))
-            && runtime.terminate_vm(pid, true)
-        {
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while std::time::Instant::now() < deadline && crate::vm::pid_alive(Some(pid)) {
-                std::thread::sleep(Duration::from_millis(100));
+        let _ = self.stop_for_exit(&cfg, Duration::from_secs(12));
+        true
+    }
+
+    pub fn begin_quit(&self) {
+        self.lifecycle.begin_quit();
+        if self.installing.locked().is_some() {
+            crate::download::cancel_all();
+        }
+    }
+
+    /// Stop at exit even when the work that launched QEMU still holds the
+    /// operation lock. The runtime's separate barrier serializes launch/stop.
+    pub fn shutdown(&self, timeout: Duration) -> Result<()> {
+        self.begin_quit();
+        let installing = self.installing.locked().clone();
+        if let Some(cfg) = installing.or_else(|| self.config().ok()) {
+            return self.stop_for_exit(&cfg, timeout);
+        }
+        let _gate = self.lifecycle.lock();
+        let paths = StatePaths::new(&self.home);
+        let instance = paths.instance(NAME);
+        reject_symlink(&paths.instances())?;
+        reject_symlink(instance.root())?;
+        self.stop_without_config(&instance, timeout)
+    }
+
+    fn stop_for_exit(&self, cfg: &Config, timeout: Duration) -> Result<()> {
+        let runtime = Runtime::new(cfg);
+        let path = cfg.instance_logs_dir().join("shutdown.log");
+        if let Some(parent) = path.parent() {
+            let _ = crate::util::ensure_dir(parent);
+        }
+        // Logging failures must not leave QEMU running.
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path);
+        match log {
+            Ok(log) => {
+                runtime.stop(&Arc::new(std::sync::Mutex::new(log)), timeout);
+                if runtime.alive() {
+                    return crate::util::message(format!(
+                        "The machine could not be stopped. See {}",
+                        path.display()
+                    ));
+                }
+                Ok(())
             }
-            if crate::vm::pid_alive(Some(pid)) {
-                runtime.terminate_vm(pid, false);
+            Err(_) => {
+                let _gate = self.lifecycle.lock();
+                self.stop_without_config(&InstancePaths::new(cfg.instance_dir()), timeout)
             }
         }
-        true
     }
 
     /// Re-apply the configuration (repairs drift) and start the VM.
@@ -800,9 +861,15 @@ impl Machine {
     pub fn start_for_app(&self, attempt: &Attempt) -> Result<()> {
         attempt.begin(Phase::Preflight);
         let lock = self.lock()?;
+        self.lifecycle.check()?;
         let cfg = self.config()?;
         let runtime = Runtime::new(&cfg);
         if runtime.running() {
+            if cfg!(windows)
+                && let Ok(qemu) = crate::vm::resolve_qemu(&cfg)
+            {
+                crate::accel::restore_start_fallback(&cfg.home, Path::new(&qemu.qemu_bin));
+            }
             attempt.machine_facts(&cfg);
             attempt.follow_serial(cfg.serial_log_path());
             if let Some(pid) = runtime.pid() {
@@ -815,7 +882,7 @@ impl Machine {
             return Ok(());
         }
         if runtime.alive() {
-            return crate::util::message("The QEMU process exists, but its monitor did not report a running machine");
+            return runtime.previous_vm_error();
         }
         let runner = Runner::new(cfg.clone())?.with_agentd(&self.agentd_binary);
         runner.apply_for_start_locked(&lock, attempt)?;
@@ -823,37 +890,19 @@ impl Machine {
         runner.start_for_app_locked(&lock, &runtime, attempt)
     }
 
-    fn live_recorded_pid(&self) -> Option<u32> {
-        let paths = StatePaths::new(&self.home);
-        let instance = paths.instance(NAME);
-        let pidfile = instance.pidfile();
-        crate::vm::read_pid(&pidfile).filter(|&pid| crate::vm::pid_alive(Some(pid)))
-            .or_else(|| {
-                crate::util::read_json(&instance.runtime())
-                    .and_then(|record| record["pid"].as_u64())
-                    .and_then(|pid| u32::try_from(pid).ok())
-                    .filter(|&pid| crate::vm::owns_qemu_process(pid, &pidfile, NAME))
-            })
-    }
-
     /// The stable instance paths still identify its QEMU when metadata is unreadable.
-    fn stop_without_config(&self, instance: &InstancePaths) -> Result<()> {
-        let Some(pid) = self.live_recorded_pid() else { return Ok(()) };
-        let pidfile = instance.pidfile();
-        for (graceful, timeout) in [(true, 5), (false, 2)] {
-            if !crate::vm::pid_alive(Some(pid)) {
-                return Ok(());
-            }
-            if !crate::vm::owns_qemu_process(pid, &pidfile, NAME) {
-                return crate::util::message("The recorded machine process could not be identified; its files were kept");
-            }
-            crate::util::terminate_process(pid, graceful);
-            let deadline = std::time::Instant::now() + Duration::from_secs(timeout);
-            while std::time::Instant::now() < deadline && crate::vm::pid_alive(Some(pid)) {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        }
-        if crate::vm::pid_alive(Some(pid)) {
+    fn stop_without_config(&self, instance: &InstancePaths, timeout: Duration) -> Result<()> {
+        let Some(pid) = recorded_qemu_pid(instance, NAME)? else {
+            return Ok(());
+        };
+        if !crate::vm::stop_process(
+            pid,
+            instance,
+            NAME,
+            timeout,
+            |_| false,
+            || {},
+        ) {
             return crate::util::message("The machine could not be stopped; its files were kept");
         }
         Ok(())
@@ -871,7 +920,7 @@ impl Machine {
             let instance = paths.instance(NAME);
             reject_symlink(&paths.instances())?;
             reject_symlink(instance.root())?;
-            self.stop_without_config(&instance)?;
+            self.stop_without_config(&instance, Duration::from_secs(12))?;
         }
         drop(lock);
         Ok(self.info())
@@ -914,9 +963,9 @@ impl Machine {
             crate::chrome_viewer::stop(&cfg)?;
             crate::preview_forward::stop(&cfg)?;
         } else {
-            self.stop_without_config(&instance)?;
+            self.stop_without_config(&instance, Duration::from_secs(12))?;
         }
-        if self.live_recorded_pid().is_some() {
+        if recorded_qemu_pid(&instance, NAME)?.is_some() {
             return crate::util::message("A recorded machine process still exists; the disk and files were kept");
         }
         let proxy = crate::proxy::stop(&self.home, false)?;
@@ -1001,11 +1050,13 @@ fn reject_symlink(path: &Path) -> Result<()> {
     }
 }
 
-struct ClearInstalling<'a>(&'a std::sync::Mutex<Option<Config>>);
+struct ClearInstalling<'a>(&'a Machine);
 
 impl Drop for ClearInstalling<'_> {
     fn drop(&mut self) {
-        *self.0.locked() = None;
+        let mut installing = self.0.installing.locked();
+        *installing = None;
+        self.0.lifecycle.set_cancelled(false);
     }
 }
 
@@ -1044,6 +1095,41 @@ mod tests {
     }
 
     #[test]
+    fn quit_cancels_install_and_prevents_a_later_boot_even_with_operation_locked() {
+        // This path cancels all in-process downloads. Use a child test so
+        // concurrent download tests in the parent keep their own flag.
+        const CHILD: &str = "CABIN_R2_TEST_QUIT_DURING_INSTALL";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "machine::tests::quit_cancels_install_and_prevents_a_later_boot_even_with_operation_locked"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::null())
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let home = crate::sockets::test_dir();
+        let machine = Machine::new(&home, env!("CARGO_MANIFEST_DIR"));
+        let cfg = machine.install_config(&InstallOptions::default()).unwrap();
+        let lock = machine.lock().unwrap();
+        let install = machine.begin_install(&cfg).unwrap();
+        machine.shutdown(Duration::from_secs(4)).unwrap();
+        drop(install);
+        let runtime = Runtime::new(&cfg);
+        let log = Arc::new(std::sync::Mutex::new(
+            std::fs::File::create(home.join("start.log")).unwrap(),
+        ));
+        let err = runtime
+            .start(&log, crate::vm::Boot::new(Duration::from_secs(1)))
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Cabin is quitting");
+        assert!(!cfg.pidfile().exists());
+        drop(log);
+        drop(lock);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn destroy_removes_machine_cache_and_settings_but_not_shared_files() {
         let base = std::env::temp_dir().join(format!("vm-destroy-test-{}", std::process::id()));
         let home = base.join("vm");
@@ -1073,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn destroy_refuses_an_unknown_live_process_or_other_machine() {
+    fn stale_legacy_pid_is_ignored_but_other_instances_still_block_reset() {
         let base = std::env::temp_dir().join(format!("vm-destroy-safety-{}", std::process::id()));
         let home = base.join("vm");
         std::fs::create_dir_all(home.join("instances/agent")).unwrap();
@@ -1084,9 +1170,9 @@ mod tests {
         )
         .unwrap();
         let machine = Machine::new(&home, env!("CARGO_MANIFEST_DIR"));
-        assert!(machine.stop().is_err());
-        assert!(machine.destroy().is_err());
-        assert!(home.join("instances/agent/qemu.pid").exists());
+        assert!(machine.stop().is_ok());
+        assert!(machine.destroy().is_ok());
+        assert!(!home.join("instances/agent/qemu.pid").exists());
         assert!(child.try_wait().unwrap().is_none());
         let _ = child.kill();
         let _ = child.wait();
@@ -1105,12 +1191,12 @@ mod tests {
         cfg.save_instance_meta().unwrap();
         let mut child = long_sleeping_child();
         std::fs::write(cfg.pidfile(), child.id().to_string()).unwrap();
-        assert!(machine.destroy().is_err());
+        assert!(machine.destroy().is_ok());
         assert!(
             child.try_wait().unwrap().is_none(),
             "unrelated process was terminated"
         );
-        assert!(cfg.instance_meta_path().exists());
+        assert!(!cfg.instance_meta_path().exists());
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(home);
