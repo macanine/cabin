@@ -57,7 +57,7 @@ fn bridges() -> Result<std::sync::MutexGuard<'static, Registry>> {
 
 fn token() -> io::Result<String> {
     let mut random = [0; 32];
-    crate::compat::random_bytes(&mut random);
+    crate::util::random_bytes(&mut random);
     Ok(crate::util::hex_lower(&random))
 }
 
@@ -491,7 +491,7 @@ fn connect_upstream(peer: &Peer, target: &Target) -> io::Result<UpstreamIo> {
                 .open(log)?;
             let mut ssh_command = Command::new(&ssh[0]);
             ssh_command.args(&ssh[1..]);
-            crate::compat::no_window(&mut ssh_command);
+            crate::util::no_window(&mut ssh_command);
             let mut child = ssh_command
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())

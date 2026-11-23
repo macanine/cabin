@@ -3,8 +3,6 @@
 use crate::util::LockExt;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -145,9 +143,8 @@ impl Attempt {
         ));
         let mut options = OpenOptions::new();
         options.create_new(true).append(true);
-        #[cfg(unix)]
-        options.mode(0o600);
         let file = options.open(&path)?;
+        crate::util::chmod(&path, 0o600)?;
         let _ = self.log.set((path, Arc::new(Mutex::new(file))));
         self.note("Startup attempt began");
         Ok(())

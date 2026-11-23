@@ -770,14 +770,14 @@ impl Machine {
         crate::download::cancel_all();
         let runtime = Runtime::new(&cfg);
         if let Some(pid) = runtime.pid().filter(|&pid| crate::vm::pid_alive(Some(pid)))
-            && runtime.signal_vm(pid, crate::compat::signal::SIGTERM)
+            && runtime.terminate_vm(pid, true)
         {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while std::time::Instant::now() < deadline && crate::vm::pid_alive(Some(pid)) {
                 std::thread::sleep(Duration::from_millis(100));
             }
             if crate::vm::pid_alive(Some(pid)) {
-                runtime.signal_vm(pid, crate::compat::signal::SIGKILL);
+                runtime.terminate_vm(pid, false);
             }
         }
         true
@@ -840,17 +840,14 @@ impl Machine {
     fn stop_without_config(&self, instance: &InstancePaths) -> Result<()> {
         let Some(pid) = self.live_recorded_pid() else { return Ok(()) };
         let pidfile = instance.pidfile();
-        for (signal, timeout) in [
-            (crate::compat::signal::SIGTERM, 5),
-            (crate::compat::signal::SIGKILL, 2),
-        ] {
+        for (graceful, timeout) in [(true, 5), (false, 2)] {
             if !crate::vm::pid_alive(Some(pid)) {
                 return Ok(());
             }
             if !crate::vm::owns_qemu_process(pid, &pidfile, NAME) {
                 return crate::util::message("The recorded machine process could not be identified; its files were kept");
             }
-            crate::util::send_signal(pid, signal);
+            crate::util::terminate_process(pid, graceful);
             let deadline = std::time::Instant::now() + Duration::from_secs(timeout);
             while std::time::Instant::now() < deadline && crate::vm::pid_alive(Some(pid)) {
                 std::thread::sleep(Duration::from_millis(100));
@@ -886,7 +883,7 @@ impl Machine {
     pub fn destroy(&self) -> Result<MachineInfo> {
         reject_symlink(&self.home)?;
         if let Ok(root) = self.home.canonicalize()
-            && (root.parent().is_none() || crate::compat::home_dir().is_some_and(|home| {
+            && (root.parent().is_none() || std::env::home_dir().is_some_and(|home| {
                 home.canonicalize().is_ok_and(|home| home == root)
             }))
         {
@@ -1027,7 +1024,7 @@ mod tests {
     /// A process that stays alive for the duration of these checks.
     fn long_sleeping_child() -> std::process::Child {
         let mut command = long_sleeping_command();
-        crate::compat::no_window(&mut command);
+        crate::util::no_window(&mut command);
         command.spawn().unwrap()
     }
 

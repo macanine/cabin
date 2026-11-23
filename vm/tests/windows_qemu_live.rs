@@ -145,7 +145,7 @@ fn the_app_argv_boots_qmp_and_stops_cleanly() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    vm_core::compat::no_window(&mut command);
+    vm_core::util::no_window(&mut command);
     let mut child = command
         .spawn()
         .unwrap_or_else(|error| panic!("QEMU spawn failed: {error}"));
@@ -229,7 +229,7 @@ fn gateway_mode_connects_qemu_to_the_loopback_gateway() {
     let mut command = Command::new(&args[0]);
     command.args(&args[1..]);
     command.stdin(Stdio::null());
-    vm_core::compat::no_window(&mut command);
+    vm_core::util::no_window(&mut command);
     let mut child = command.spawn().unwrap();
 
     let deadline = Instant::now() + Duration::from_secs(90);

@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use crate::lock::FileLock;
 use crate::paths::StatePaths;
 use crate::util::{
-    atomic_write_json, capture, ensure_dir, now_millis, pid_alive, read_json, remove_path,
+    atomic_write_json, capture, ensure_dir, now_millis, pid_alive, terminate_process, read_json, remove_path,
 };
 use crate::{Error, Result};
 
@@ -143,30 +143,7 @@ fn process_matches(runtime: &Value, pid: u32) -> bool {
 
 /// The command line of a process, or None when it does not exist.
 fn process_command_line(pid: u32) -> Option<String> {
-    #[cfg(unix)]
-    {
-        let output = Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "command="])
-            .output()
-            .ok()
-            .filter(|out| out.status.success())?;
-        Some(String::from_utf8_lossy(&output.stdout).into_owned())
-    }
-    #[cfg(windows)]
-    {
-        let script = format!(
-            "(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine",
-        );
-        let mut command = Command::new("powershell");
-        command.args(["-NoProfile", "-Command", &script]);
-        crate::compat::no_window(&mut command);
-        let output = command
-            .output()
-            .ok()
-            .filter(|result| result.status.success())?;
-        let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Some(line).filter(|line| !line.is_empty())
-    }
+    crate::util::process_command(pid).map(|argv| argv.join(" "))
 }
 
 fn write_runtime(home: &Path, runtime: Value) -> Result<Value> {
@@ -257,7 +234,7 @@ fn probe_global(home: &Path) -> Result<ProxyProbe> {
     let proxy = format!("http://{}", current.listen);
     let result = capture(
         &[
-            crate::compat::curl_binary().into(),
+            crate::util::curl_binary().into(),
             "-q".into(),
             "--silent".into(),
             "--show-error".into(),
@@ -519,13 +496,13 @@ fn stop_unlocked(home: &Path, force: bool) -> Result<ProxyStatus> {
     let Some(pid) = current.pid.and_then(|value| i32::try_from(value).ok()) else {
         return Ok(current);
     };
-    crate::compat::terminate_process(pid as u32, !force);
+    terminate_process(pid as u32, !force);
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline && pid_alive(pid as u32) {
         thread::sleep(Duration::from_millis(60));
     }
     if pid_alive(pid as u32) {
-        crate::compat::terminate_process(pid as u32, false);
+        terminate_process(pid as u32, false);
     }
     let _ = remove_path(&runtime_path(home));
     status(home)

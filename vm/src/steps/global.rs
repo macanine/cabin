@@ -1,8 +1,6 @@
 //! Global steps: the built-in QEMU and the OS image download.
 
 use std::fs::{self, Metadata};
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 
 use serde_json::{Value, json};
 
@@ -114,33 +112,19 @@ fn remember_verified_image(image: &std::path::Path, identity: &Value) {
 }
 
 fn verified_image_identity(metadata: &Metadata, checksum: &crate::download::Checksum) -> Value {
-    #[cfg(unix)]
-    {
-        json!({
-            "algorithm": checksum.name(),
-            "checksum": checksum.hex(),
-            "device": metadata.dev(),
-            "inode": metadata.ino(),
-            "size": metadata.len(),
-            "modified": [metadata.mtime(), metadata.mtime_nsec()],
-            "changed": [metadata.ctime(), metadata.ctime_nsec()],
-        })
-    }
-    #[cfg(windows)]
-    {
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        json!({
-            "algorithm": checksum.name(),
-            "checksum": checksum.hex(),
-            "size": metadata.len(),
-            "modified": modified,
-        })
-    }
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|at| (at.as_secs(), at.subsec_nanos()));
+    json!({
+        "algorithm": checksum.name(),
+        "checksum": checksum.hex(),
+        "id": crate::storage::file_id(metadata),
+        "size": metadata.len(),
+        "modified": modified,
+        "changed": crate::storage::changed_time(metadata),
+    })
 }
 
 impl Step for ImageStep {

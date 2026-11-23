@@ -257,7 +257,7 @@ pub fn browser_paste(home: &Path, name: &str, text: Option<&str>) -> Result<()> 
             let output = {
                 let mut command = std::process::Command::new("powershell");
                 command.args(["-NoProfile", "-Command", "Get-Clipboard"]);
-                crate::compat::no_window(&mut command);
+                crate::util::no_window(&mut command);
                 command.output()?
             };
             if !output.status.success() {

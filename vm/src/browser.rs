@@ -1124,11 +1124,17 @@ mod tests {
         assert!(script.contains("scale 1.0"));
         assert!(script.contains("expected 1600x900@1.0"));
         assert!(script.contains("get_outputs -r >&2"));
-        let path = std::env::temp_dir().join(format!("cabin-install-{}.sh", std::process::id()));
-        std::fs::write(&path, &script).unwrap();
-        let status = std::process::Command::new("bash").arg("-n").arg(&path).status().unwrap();
-        let _ = std::fs::remove_file(&path);
-        assert!(status.success(), "the generated install script is not valid shell");
+        // `bash -n` reads the script from stdin, so no host path is involved.
+        let Some(bash) = crate::util::which("bash") else {
+            eprintln!("skipping the syntax check: bash is not installed");
+            return;
+        };
+        let checked = crate::util::capture(
+            &[bash.display().to_string(), "-n".to_string()],
+            std::time::Duration::from_secs(20),
+            Some(&script),
+        );
+        assert_eq!(checked.code, 0, "the generated install script is not valid shell: {}", checked.output);
     }
 
 }

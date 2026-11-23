@@ -74,18 +74,7 @@ fn guest_dns_tcp_proxy_switch_and_fail_closed() {
         .join(":");
     std::fs::write(temp.join("seed/network-config"), format!("version: 2\nethernets:\n  mgmt0:\n    match: {{macaddress: '52:54:00:12:34:56'}}\n    set-name: mgmt0\n    dhcp4: true\n    dhcp4-overrides: {{use-routes: false, use-dns: false}}\n    optional: true\n  data0:\n    match: {{macaddress: '{data_mac}'}}\n    set-name: data0\n    dhcp4: true\n")).unwrap();
     let iso = temp.join("seed.iso");
-    run(Command::new("hdiutil")
-        .args([
-            "makehybrid",
-            "-quiet",
-            "-iso",
-            "-joliet",
-            "-default-volume-name",
-            "cidata",
-            "-o",
-        ])
-        .arg(&iso)
-        .arg(temp.join("seed")));
+    vm_core::platform::build_seed_iso(&temp.join("seed"), &iso, &["user-data", "meta-data", "network-config"]).unwrap();
     let disk = temp.join("disk.qcow2");
     run(Command::new("qemu-img")
         .args(["create", "-f", "qcow2", "-F", "qcow2", "-b"])
