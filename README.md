@@ -184,7 +184,8 @@ from `npm run vendor` (pinned and hash-checked, see [Packaging](#packaging)). Th
 uses a QEMU on `PATH`, and prefers the bundled `ssh` over the system one.
 
 Windows shares the AF_UNIX transport used by the other hosts for QMP, the guest agent,
-the serial console, and the QEMU gateway stream. Inside the gateway, connected loopback
+the serial console, and the QEMU gateway stream. The loopback SSH relay starts at port 12233
+by default and tries successive ports until it can listen. Inside the gateway, connected loopback
 UDP sockets carry IP packets to the shoes proxy stack. If setup reports that a VM socket
 path is too long, set `CABIN_HOME` to a shorter local data directory before restarting Cabin.
 Windows uses system routing. Adapter binding and SPICE require a supported Unix host. `tauri.windows.conf.json` builds

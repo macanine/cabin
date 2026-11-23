@@ -80,6 +80,24 @@ async function test(name, url, run, options) {
 await test("start page leads with status, composer and lists", `${base}/harness8.html?v=new`, async (_, has) => {
   await has("Machine running", "What should an agent work on?", "Continue", "Projects", "Add Tailwind to the UI", "Today $");
 });
+await test("installer fits a narrow window and moves from setup to live progress", `${base}/harness8.html?v=install&windows`, async (p, has) => {
+  await has("Set up your agent machine", "Ubuntu 24.04 LTS", "This computer is ready", "Install Ubuntu");
+  await p.resize(390, 765);
+  await p.click("button", "Advanced settings");
+  await has("Size", "Username", "Package mirror");
+  if (!await p.eval(`(() => {
+    const screen = document.querySelector('.install-wizard');
+    return screen.scrollWidth <= screen.clientWidth &&
+      document.querySelector('.install-phases [aria-current="step"]').textContent.includes('Prepare');
+  })()`)) throw new Error("Installer overflows or shows the wrong phase");
+  await p.click("button", "Install Ubuntu");
+  await has("Installing Ubuntu 24.04 LTS", "Installation progress", "Download Ubuntu", "Cancel install");
+  await p.click("button", "Details and logs");
+  await has("Hide details", "In progress");
+  if (!await p.eval(`document.querySelector('.install-phases [aria-current="step"]').textContent.includes('Install')`)) {
+    throw new Error("The install phase is not marked current");
+  }
+}, { windows: true });
 await test("start page machine menu offers stop and settings", `${base}/harness8.html?v=new`, async (p, has) => {
   await p.click("button", "Machine running"); await has("Stop machine", "Machine settings");
   const menu = await p.eval(`(() => {

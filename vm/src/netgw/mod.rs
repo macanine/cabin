@@ -150,27 +150,9 @@ impl Gateway {
         stacks.activate(&shared, egress)?;
         let forward = {
             let shared = shared.clone();
-            // The configured port can be taken by another program; the
-            // relay then takes any free loopback port and reports it.
-            let send = move |frame: &[u8]| {
+            Arc::new(crate::net_forward::SshForward::start(ssh, move |frame| {
                 shared.write_guest(frame);
-            };
-            let send = Arc::new(send);
-            let first = {
-                let send = send.clone();
-                crate::net_forward::SshForward::start(ssh, move |frame| send(frame))
-            };
-            Arc::new(match first {
-                Err(Error::Io(io))
-                    if io.kind() == std::io::ErrorKind::AddrInUse && ssh.port() != 0 =>
-                {
-                    let send = send.clone();
-                    crate::net_forward::SshForward::start((ssh.ip(), 0).into(), move |frame| {
-                        send(frame)
-                    })?
-                }
-                other => other?,
-            })
+            })?)
         };
 
         // Own the workers before starting any of them. A later startup

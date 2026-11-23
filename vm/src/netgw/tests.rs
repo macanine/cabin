@@ -12,11 +12,19 @@ use crate::network_probe_targets::PUBLIC_PROBE_V4;
 use crate::sockets::UnixStream;
 
 #[test]
-fn a_taken_ssh_port_moves_the_relay_to_a_free_one() {
-    let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let port = taken.local_addr().unwrap().port();
-    let dir = std::env::temp_dir().join(format!("netgw-taken-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn occupied_ssh_ports_move_the_relay_to_the_next_free_port() {
+    // Stay below the ephemeral range used by other loopback tests.
+    let (first, second, expected) = (12350..13000)
+        .find_map(|port| {
+            let first = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).ok()?;
+            let expected = port + 2;
+            let second = TcpListener::bind((Ipv4Addr::LOCALHOST, port + 1)).ok()?;
+            TcpListener::bind((Ipv4Addr::LOCALHOST, expected)).ok()?;
+            Some((first, second, expected))
+        })
+        .expect("three consecutive loopback ports");
+    let port = first.local_addr().unwrap().port();
+    let dir = crate::sockets::test_dir();
     let gateway = Gateway::start(
         &dir.join("net.sock"),
         Vec::new(),
@@ -25,7 +33,8 @@ fn a_taken_ssh_port_moves_the_relay_to_a_free_one() {
     )
     .expect("a taken SSH port is not fatal");
     let actual = gateway.ssh_addr().unwrap();
-    assert_ne!(actual.port(), port);
+    assert_eq!(actual.port(), expected);
+    drop((first, second));
     assert!(
         TcpStream::connect(actual).is_ok(),
         "the relay listens on the new port"

@@ -138,13 +138,6 @@ export function formProblem(options: MachineInstallOptions): string | null {
 
 const gb = (mb: number) => `${mb / 1024 % 1 === 0 ? mb / 1024 : (mb / 1024).toFixed(1)} GB`;
 
-/** "Ubuntu 24.04 LTS · Balanced (4 CPUs, 4 GB, 20 GB) · user nic" */
-export function setupSummary(options: MachineInstallOptions, os: OsChoice | null, fallbackUser: string): string {
-  const preset = matchingPreset(options);
-  const size = `${options.cpus ?? "?"} CPUs, ${gb(options.memoryMb ?? 0)}, ${diskGb(options.diskSize) ?? "?"} GB`;
-  return [os?.name ?? "Ubuntu", preset ? `${preset.label} (${size})` : `Custom (${size})`, `user ${options.username || fallbackUser}`].join(" · ");
-}
-
 /** "Ubuntu 24.04 LTS · 4 CPU · 4 GB memory · 20 GB disk" */
 export function installSummary(options: MachineInstallOptions, os: OsChoice | null): string {
   return [

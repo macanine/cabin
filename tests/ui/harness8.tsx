@@ -30,11 +30,12 @@ if (q.get("theme")) document.documentElement.dataset.theme = q.get("theme")!;
 const networkMode = q.get("network");
 const mock = v === "session" ? (await import("./chatmock"), null) : mockIpc(networkMode, q.has("windows"));
 const stopped = networkMode === "stopped";
+const install = v === "install";
 const now = Date.now();
 const ws = (id: string, name: string) => ({ id, name, path: "/home/dev/" + name, modelOverrides: [], archived: false, createdAt: now, updatedAt: now });
 const se = (id: string, w: string, name: string, agent: any, state: any = { state: "stopped" }, ago = 3600e3) => ({ id, workspaceId: w, name, worktree: null, agent, mode: "ui", archived: false, starred: false, createdAt: now - ago, updatedAt: now - ago, lastStartedAt: now - ago, status: state });
-patchState((s: any) => ({ ...s, ready: true, guestReady: !stopped, networkLoaded: true,
-  machine: { state: stopped ? "stopped" : "running", connection: stopped ? "offline" : "connected", busy: null, username: "dev", hostname: "dev-vm", error: null, os: "ubuntu-24.04", guestVersion: "0.2.0", cpus: 4, memoryMb: 4096 },
+patchState((s: any) => ({ ...s, ready: true, guestReady: !stopped && !install, networkLoaded: true,
+  machine: { state: install ? "notInstalled" : stopped ? "stopped" : "running", connection: stopped || install ? "offline" : "connected", busy: null, username: "dev", hostname: "dev-vm", error: null, os: "ubuntu-24.04", guestVersion: "0.2.0", cpus: 4, memoryMb: 4096, diskSize: "20G" },
   workspaces: [ws("w1", "cabin"), ws("w2", "notes"), ws("w3", "api-server")],
   sessions: [se("s1", "w1", "Add Tailwind to the UI", "claude", { state: "running", pid: 1 }, 600e3), se("s2", "w1", "Fix sync conflicts", "codex", undefined, 7200e3), se("s3", "w2", "Shell", null, undefined, 86400e3), se("s4", "w3", "Refactor the parser", "pi", undefined, 90000e3), se("s5", "w3", "Write release notes", "opencode", undefined, 200000e3)],
   agents: ["claude", "codex", "opencode", "pi", "antigravity"].map((kind, i) => {
@@ -62,6 +63,22 @@ patchState((s: any) => ({ ...s, ready: true, guestReady: !stopped, networkLoaded
     ],
   } : s.start,
 }));
+if (install && mock) {
+  const os = { id: "ubuntu-24.04", name: "Ubuntu 24.04 LTS", testing: false, mirrors: [] };
+  mock.handlers.machine_checks = () => ({
+    host: { platform: q.has("windows") ? "windows" : "macos", memoryMb: 16384, cpus: 8, username: "dev", deviceProfileSupported: !q.has("windows"), maxDiskGb: 120 },
+    items: [{ id: "engine", label: "Virtualization", ok: true, optional: false, detail: "Ready", fix: null }],
+  });
+  mock.handlers.machine_plan = () => ({ os: os.id, osName: os.name, osChoices: [os], username: "dev", hostname: "dev-vm" });
+  mock.handlers.machine_test_mirrors = () => [];
+  mock.handlers.machine_install = () => {
+    patchState((state) => ({ ...state, machine: state.machine && { ...state.machine, busy: "Installing the machine" }, install: [{
+      id: "image", title: "Download Ubuntu", state: "running", detail: null, logTail: ["Downloading Ubuntu image"],
+      logPath: null, seconds: null, appliedAt: null, fingerprint: null,
+      download: { doneBytes: 400_000_000, totalBytes: 800_000_000, bytesPerSec: 18_000_000, verifying: false },
+    }] }));
+  };
+}
 if (v === "agents") uiActions.navigate({ kind: "agents" });
 if (v === "agents" && q.has("claudeSwitch")) {
   window.addEventListener("test:claude-seat", () => patchState((state) => ({
@@ -107,5 +124,5 @@ function Shell() {
     </TitleBarSlotProvider>
   );
 }
-ReactDOM.createRoot(document.getElementById("root")!).render(v === "permissions" ? <App />
+ReactDOM.createRoot(document.getElementById("root")!).render(v === "permissions" || install ? <App />
   : <MantineProvider theme={theme} forceColorScheme={(q.get("theme") as never) ?? "light"}><UsageMonitor><Shell /></UsageMonitor></MantineProvider>);

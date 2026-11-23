@@ -206,10 +206,10 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   progress. Respect Reduce Motion and Lite mode. Views rise in with `.view-enter`, lists
   that open with a view use `.stagger`, a moving selection glides with `--ease-spring` and
   `--motion-glide` (the sidebar indicator, segmented controls), and a running task uses
-  `.live-dot`. `StartReportView` uses the `Boot` parts
-  shared by the three-step installer, shows begun steps with a bounded stagger, and keeps
-  detailed logs folded until failure. Use `StepProgress`, `LogView`, and `RecoveryPanel`
-  for progress, logs, and recovery actions.
+  `.live-dot`. `StartReportView` uses the shared `Boot` parts, shows begun steps with a
+  bounded stagger, and keeps detailed logs folded until failure. The installer keeps a
+  two-phase layout for setup and live progress and reuses the `Boot` step and log controls.
+  Use `StepProgress`, `LogView`, and `RecoveryPanel` for progress, logs, and recovery actions.
 - AppKit owns macOS traffic-light controls. `window_chrome` reads their geometry on the main
   thread. The web toolbar follows that geometry, reserves space before the first
   measurement, and uses color feedback with stable layout. Keep sidebar vibrancy and the

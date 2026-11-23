@@ -97,11 +97,27 @@ pub struct SshForward {
     thread: Option<JoinHandle<()>>,
 }
 
+fn port_unavailable(error: &std::io::Error) -> bool {
+    // Winsock can report an excluded port as WSAEACCES instead of WSAEADDRINUSE.
+    error.kind() == ErrorKind::AddrInUse || (cfg!(windows) && error.raw_os_error() == Some(10013))
+}
+
 impl SshForward {
-    /// Listen on `listen` and relay to the guest. `send` delivers Ethernet
-    /// frames to the guest.
-    pub fn start(listen: SocketAddr, send: impl Fn(&[u8]) + Send + 'static) -> Result<Self> {
-        let listener = TcpListener::bind(listen)?;
+    /// Start at the preferred port and keep the first available listener.
+    /// Port zero asks the OS to choose a port, as before.
+    pub fn start(mut listen: SocketAddr, send: impl Fn(&[u8]) + Send + 'static) -> Result<Self> {
+        let listener = loop {
+            match TcpListener::bind(listen) {
+                Ok(listener) => break listener,
+                Err(error) if listen.port() != 0 && port_unavailable(&error) => {
+                    let Some(next) = listen.port().checked_add(1) else {
+                        return Err(error.into());
+                    };
+                    listen.set_port(next);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
         let local = listener.local_addr()?;
         listener.set_nonblocking(true)?;
         let (wake, wake_rx) = wake_pair()?;

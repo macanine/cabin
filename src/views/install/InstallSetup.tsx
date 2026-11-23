@@ -1,6 +1,6 @@
 import { Button, NumberInput, Slider, Switch, TextInput } from "@mantine/core";
 import {
-  IconBrandUbuntu, IconCheck, IconCpu, IconDeviceDesktop, IconDownload, IconSettings, IconUser,
+  IconArrowRight, IconCheck, IconCpu, IconDeviceDesktop, IconSettings, IconUser,
 } from "@tabler/icons-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { HostFacts, Readiness } from "../../services/ipc/generated/common";
@@ -13,7 +13,7 @@ import { ReadinessPanel } from "./ReadinessPanel";
 import { explainFailure } from "../../lib/wizard";
 import {
   chosenOs, diskGb, formProblem, hostnameProblem, installSummary, matchingPreset, mirrorHost,
-  presetFitsHost, readinessView, RESOURCE_PRESETS, setupSummary, usernameProblem,
+  presetFitsHost, readinessView, RESOURCE_PRESETS, usernameProblem,
 } from "../../lib/installForm";
 
 const gb = (mb: number) => `${mb / 1024 % 1 === 0 ? mb / 1024 : (mb / 1024).toFixed(1)} GB`;
@@ -46,7 +46,7 @@ function Choice({ selected, onSelect, children, disabled = false }: { selected: 
 const Sub = ({ children }: { children: ReactNode }) => <span className="text-sm text-muted">{children}</span>;
 const Heading = ({ children, hint }: { children: ReactNode; hint?: ReactNode }) => (
   <div className="mb-2.5 flex items-baseline justify-between gap-3">
-    <h2 className="m-0 text-xs font-semibold tracking-wider text-muted uppercase">{children}</h2>
+    <h2 className="m-0 text-md font-semibold text-fg">{children}</h2>
     {hint && <span className="text-xs text-faint">{hint}</span>}
   </div>
 );
@@ -103,44 +103,47 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
   const osChoices = choices.length ? choices : [{ id: "ubuntu-24.04", name: "Ubuntu 24.04 LTS", testing: false, mirrors: [] }];
   const checks = <ReadinessPanel items={readiness} checking={checking} onChanged={onRecheck} />;
 
-  if (unsupported) return (
-    <div className="view-enter grid gap-4">
-      <h1 className="m-0 text-2xl font-semibold tracking-tight">Cabin setup</h1>
-      {checks}
-    </div>
-  );
-
   return (
-    <div className="view-enter grid min-w-0 gap-6">
-      <header className="grid justify-items-center gap-1.5 text-center">
-        <span className="glass mb-1 grid size-14 place-items-center rounded-2xl text-accent"><IconBrandUbuntu size={30} /></span>
-        <h1 className="m-0 text-2xl font-semibold tracking-tight">Set up your agent machine</h1>
-        <p className="m-0 max-w-[560px] text-md text-balance text-muted">Claude Code, Codex, OpenCode, Pi and Antigravity run in one Ubuntu machine on this computer. Cabin sets it up for you.</p>
+    <>
+      <header className="install-header">
+        <h1>{unsupported ? "Cabin setup" : "Set up your agent machine"}</h1>
+        {!unsupported && <p>Cabin installs a local Ubuntu machine for Claude Code, Codex, OpenCode, Pi and Antigravity.</p>}
       </header>
 
+      {!unsupported && (
+        <section className="install-machine" aria-label="Machine configuration">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+            <h2 className="m-0 text-lg font-semibold">{os?.name ?? plan?.osName ?? "Ubuntu"}</h2>
+            <span className="text-sm text-muted">{preset?.label ?? "Custom"}</span>
+          </div>
+          <dl className="install-specs">
+            {[
+              ["CPU", `${options.cpus ?? "?"} vCPUs`],
+              ["Memory", gb(options.memoryMb ?? 0)],
+              ["Disk", `${diskGb(options.diskSize) ?? "?"} GB`],
+              ["Linux user", options.username || plan?.username || "dev"],
+            ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+          </dl>
+        </section>
+      )}
+
       {checks}
 
-      <section className="glass grid gap-3 rounded-xl p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <span className="min-w-0 text-md font-medium [overflow-wrap:anywhere]">{setupSummary(options, os, plan?.username ?? "dev")}</span>
-          <Button size="md" leftSection={<IconDownload size={18} />} disabled={problem != null || plan == null || planError != null || blocked} onClick={onInstall}>
-            Install
-          </Button>
-        </div>
+      {!unsupported && <div>
         {(problem || planHelp) && <Note tone="bad" role="alert">
           {problem ?? <><strong>{planHelp?.title}</strong> · {planHelp?.advice}<br /><span className="text-faint">{planError}</span></>}
         </Note>}
-      </section>
-
-      <div>
-        <button
-          type="button"
-          aria-expanded={advanced}
-          onClick={() => setAdvanced((v) => !v)}
-          className="press flex cursor-pointer items-center gap-2 border-0 bg-transparent px-1 py-1 text-sm font-medium text-muted hover:text-fg"
-        >
-          <IconSettings size={15} /> Advanced <DisclosureChevron open={advanced} />
-        </button>
+        <div className="install-actions">
+          <Button type="button" variant="subtle" color="gray" size="sm" aria-expanded={advanced}
+            leftSection={<IconSettings size={16} />} rightSection={<DisclosureChevron open={advanced} />}
+            onClick={() => setAdvanced((v) => !v)}>
+            Advanced settings
+          </Button>
+          <Button size="md" className="install-primary" rightSection={<IconArrowRight size={17} />}
+            disabled={problem != null || plan == null || planError != null || blocked} onClick={onInstall}>
+            Install Ubuntu
+          </Button>
+        </div>
         <Reveal open={advanced}>
           <div className="grid min-w-0 gap-6 px-1 pt-4 pb-1">
             <div>
@@ -225,7 +228,7 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
             )}
           </div>
         </Reveal>
-      </div>
-    </div>
+      </div>}
+    </>
   );
 }

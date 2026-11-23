@@ -12,7 +12,7 @@ import { MirrorPicker } from "../../components/MirrorPicker";
 import { type StateTone } from "../../components/common";
 import { StepProgress } from "../../components/StepProgress";
 import { CopyDiagnosticsButton } from "../../components/Recovery";
-import { BootDetails, BootHero, BootStep, BootSteps, Elapsed, Note, Ticker } from "../../components/Boot";
+import { BootDetails, BootStep, Note, Ticker } from "../../components/Boot";
 import { useAutoOpen } from "../../components/motion";
 import { downloadSummary, formatDuration } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
@@ -53,7 +53,7 @@ function DownloadBar({ download }: { download: DownloadProgress }) {
         striped={percent == null || download.verifying}
         animated={percent == null || download.verifying}
         transitionDuration={260}
-        color={download.verifying ? "teal" : undefined}
+        color={download.verifying ? "teal" : "var(--accent)"}
         aria-label="Download progress"
       />
       <span className="text-xs text-faint">{download.verifying ? "Verifying the checksum…" : text}</span>
@@ -62,11 +62,8 @@ function DownloadBar({ download }: { download: DownloadProgress }) {
 }
 
 /**
- * The install, told like the machine start: one ring with overall progress,
- * the six stages with the running one's live line (a download bar or the
- * newest log line), a plain explanation and Retry if one fails, and every
- * step's full log behind "Details". A stopped installation is verified
- * automatically and can be resumed here.
+ * Show overall progress and the current stage. Keep full logs under Details
+ * and let users retry failures or resume an incomplete installation.
  */
 export function InstallProgress({
   machine, steps, startedAt, error, installOptions, cancelled, osName, onRetry, onEdit,
@@ -155,16 +152,27 @@ export function InstallProgress({
 
   return (
     <>
-      <BootHero
-        tone={justInstalled || (installed && !failed && !installing && !starting) ? "ok" : failed ? "bad" : "running"}
-        progress={installing || failed || justInstalled ? progress : installed ? 1 : progress}
-        title={title}
-        subtitle={subtitle}
-        aside={elapsed ? <Elapsed>{elapsed}</Elapsed> : undefined}
-      />
+      <header className="install-header">
+        <h1><span role="status">{title}</span></h1>
+        {subtitle && <p>{subtitle}</p>}
+      </header>
+
+      {(installing || starting || failed || justInstalled) && (
+        <div className="install-meter">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 text-sm text-muted">
+            <span>Installation progress</span>
+            <span className="flex gap-3 tabular-nums">
+              {elapsed && <span>{elapsed}</span>}
+              <strong className="text-fg">{Math.round(progress * 100)}%</strong>
+            </span>
+          </div>
+          <Progress value={progress * 100} size="sm" radius="xl" transitionDuration={260}
+            color={failed ? "var(--bad)" : justInstalled ? "var(--ok)" : "var(--accent)"} aria-label="Installation progress" />
+        </div>
+      )}
 
       {justInstalled && (
-        <div className="grid justify-items-center gap-3">
+        <div className="flex flex-wrap gap-3">
           {noAgents ? (
             <Button size="md" onClick={() => uiActions.navigate({ kind: "agents" })}>Install your agents</Button>
           ) : (
@@ -192,7 +200,7 @@ export function InstallProgress({
         </div>
       )}
 
-      <BootSteps>
+      <ol className="install-stages" aria-label="Installation stages">
         {WIZARD_STEPS.map((def, index) => {
           const state = states[index];
           const own = steps.filter((s) => def.pipeline.includes(s.id));
@@ -211,12 +219,12 @@ export function InstallProgress({
             </BootStep>
           );
         })}
-      </BootSteps>
+      </ol>
 
       {installing && machine.busy === "Installing the machine" && (
-        <div className="flex items-center justify-between gap-3 text-sm text-faint">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-sm text-muted">
           <span>You can leave this page; the install continues.</span>
-          <Button size="xs" variant="subtle" color="red" onClick={cancel}>Cancel install</Button>
+          <Button className="shrink-0" size="xs" variant="subtle" color="red" onClick={cancel}>Cancel install</Button>
         </div>
       )}
 
