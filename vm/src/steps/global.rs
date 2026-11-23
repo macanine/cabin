@@ -201,15 +201,28 @@ impl Step for ImageStep {
         let bundled = cfg.bundled_image_path();
         if bundled.is_file() {
             ctx.log(&format!("using embedded image: {}", bundled.display()));
-            std::fs::copy(&bundled, cfg.image_path()).map_err(|error| {
-                crate::Error::Message(format!("copy embedded image failed: {error}"))
-            })?;
-            let identity = verified_image_identity(&fs::metadata(cfg.image_path())?, &expected);
-            let actual = expected.of_file(&cfg.image_path())?;
-            if actual != expected.hex() {
-                let _ = std::fs::remove_file(cfg.image_path());
-                return message(format!("embedded image checksum mismatch: {actual}"));
+            let image = cfg.image_path();
+            let stage = image.with_extension("embedded.tmp");
+            let result = (|| -> Result<_> {
+                fs::copy(&bundled, &stage).map_err(|error| {
+                    let detail = if error.kind() == std::io::ErrorKind::StorageFull {
+                        "not enough free space to copy the embedded image".to_owned()
+                    } else {
+                        format!("copy embedded image failed: {error}")
+                    };
+                    crate::Error::Message(detail)
+                })?;
+                let actual = expected.of_file(&stage)?;
+                if actual != expected.hex() {
+                    return message(format!("embedded image checksum mismatch: {actual}"));
+                }
+                fs::rename(&stage, &image)?;
+                Ok(verified_image_identity(&fs::metadata(&image)?, &expected))
+            })();
+            if result.is_err() {
+                let _ = fs::remove_file(&stage);
             }
+            let identity = result?;
             ctx.track_file(&cfg.image_path())?;
             if verified_image_identity(&fs::metadata(cfg.image_path())?, &expected) == identity {
                 remember_verified_image(&cfg.image_path(), &identity);
@@ -227,13 +240,7 @@ impl Step for ImageStep {
             );
             return Ok(());
         }
-        let part = cfg.image_path().with_file_name(format!(
-            "{}.part",
-            cfg.image_path()
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("image")
-        ));
+        let part = crate::download::partial_path(&cfg.image_path());
         let candidates = crate::os::order_by_latency(
             crate::os::image_candidates(&cfg.image_url),
             crate::os::probe_latency,
