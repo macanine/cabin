@@ -17,60 +17,46 @@ pub mod store;
 pub mod sync;
 pub mod util;
 
-#[cfg(unix)]
-pub mod agent_runtime;
-#[cfg(unix)]
-pub mod agents;
-#[cfg(unix)]
-pub mod app;
-#[cfg(unix)]
-pub mod browser;
-#[cfg(unix)]
-pub mod chat;
-#[cfg(unix)]
-pub mod chat_view;
-#[cfg(unix)]
-pub mod context;
-#[cfg(unix)]
-pub mod device_probe;
-#[cfg(unix)]
-pub mod environment;
-#[cfg(unix)]
-pub mod fetch;
-#[cfg(unix)]
-pub mod guest_desktop;
-#[cfg(unix)]
-pub mod guest_dns;
-#[cfg(unix)]
-pub mod guest_ipv4;
-#[cfg(unix)]
-pub mod guest_system;
-#[cfg(unix)]
-pub mod monitor;
-#[cfg(unix)]
-pub mod native_display;
-#[cfg(unix)]
-pub mod network_probe;
-#[cfg(unix)]
-pub mod node;
-#[cfg(unix)]
-pub mod ops;
-#[cfg(unix)]
-pub mod python;
-#[cfg(unix)]
-pub mod rpc;
-#[cfg(unix)]
-pub mod sessions;
-#[cfg(unix)]
-pub mod setup;
-#[cfg(unix)]
-pub mod system;
-#[cfg(unix)]
-pub mod workbench;
-#[cfg(unix)]
-pub mod workspace_diff;
-#[cfg(unix)]
-pub mod worktree;
+/// Modules that run inside the Ubuntu guest. They use Unix APIs, so they are
+/// compiled on Unix only; the host links just the modules above.
+macro_rules! guest_modules {
+    ($($name:ident),* $(,)?) => {
+        $(
+            #[cfg(unix)]
+            pub mod $name;
+        )*
+    };
+}
+
+guest_modules!(
+    agent_runtime,
+    agents,
+    app,
+    browser,
+    chat,
+    chat_view,
+    context,
+    device_probe,
+    environment,
+    fetch,
+    guest_desktop,
+    guest_dns,
+    guest_ipv4,
+    guest_system,
+    monitor,
+    native_display,
+    network_probe,
+    node,
+    ops,
+    python,
+    rpc,
+    sessions,
+    setup,
+    system,
+    workbench,
+    workspace_diff,
+    worktree,
+);
 
 pub use error::{Error, Result};
 
@@ -305,9 +291,7 @@ mod bindings {
         }
         // Checkouts may carry CRLF line endings; compare content only.
         assert_eq!(
-            std::fs::read_to_string(path).unwrap_or_default().replace("
-", "
-"),
+            std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n"),
             generated,
             "TypeScript bindings are stale; run CABIN_UPDATE_IPC_BINDINGS=1 cargo test ipc_bindings"
         );

@@ -2,8 +2,6 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
@@ -42,18 +40,14 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> 
     let result = (|| {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(mode);
         let mut file = options
             .open(&temp)
             .map_err(|error| Error::path("create", &temp, error))?;
+        set_mode(&temp, mode).map_err(|error| Error::path("chmod", &temp, error))?;
         file.write_all(bytes)
             .map_err(|error| Error::path("write", &temp, error))?;
         file.sync_all()
             .map_err(|error| Error::path("sync", &temp, error))?;
-        #[cfg(unix)]
-        fs::set_permissions(&temp, fs::Permissions::from_mode(mode))
-            .map_err(|error| Error::path("chmod", &temp, error))?;
         fs::rename(&temp, path).map_err(|error| Error::path("replace", path, error))
     })();
     if result.is_err() {
@@ -111,6 +105,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn atomic_write_replaces_and_keeps_mode() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("nested/config.json");
         atomic_write(&path, b"one", Some(0o600))?;
@@ -142,12 +137,15 @@ mod tests {
     }
 }
 
-/// Unix mode bits of `meta` (Windows derives them from the attributes; the
-/// guest applies them as-is, so Windows-hosted syncs simply send plain
-/// read-only/normal files).
+// ---- the few places Unix and Windows files differ ---------------------------
+
+/// Unix mode bits of `meta`. Windows derives them from the attributes; the
+/// guest applies them as-is, so Windows-hosted syncs send plain read-only or
+/// normal files.
 pub fn mode_of(meta: &fs::Metadata) -> u32 {
     #[cfg(unix)]
     {
+        use std::os::unix::fs::PermissionsExt;
         meta.permissions().mode() & 0o7777
     }
     #[cfg(not(unix))]
@@ -162,38 +160,46 @@ pub fn mode_of(meta: &fs::Metadata) -> u32 {
     }
 }
 
-/// Modified time in Unix seconds (floored).
-pub fn mtime_secs_of(meta: &fs::Metadata) -> u64 {
+/// Apply Unix mode bits. Windows stores none, so this does nothing there.
+pub fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
-        meta.mtime().max(0) as u64
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
     }
     #[cfg(not(unix))]
     {
-        meta.modified()
-            .ok()
-            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
+        let _ = (path, mode);
+        Ok(())
     }
+}
+
+/// Create a symbolic link at `link` pointing to `target`.
+pub fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+}
+
+/// Modified time since the epoch (zero when unknown or earlier).
+fn mtime_of(meta: &fs::Metadata) -> std::time::Duration {
+    meta.modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .unwrap_or_default()
+}
+
+/// Modified time in Unix seconds (floored).
+pub fn mtime_secs_of(meta: &fs::Metadata) -> u64 {
+    mtime_of(meta).as_secs()
 }
 
 /// Modified time in nanoseconds since the epoch.
 pub fn mtime_nanos_of(meta: &fs::Metadata) -> u64 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        (meta.mtime().max(0) as u64)
-            .saturating_mul(1_000_000_000)
-            .saturating_add(meta.mtime_nsec().max(0) as u64)
-    }
-    #[cfg(not(unix))]
-    {
-        meta.modified()
-            .ok()
-            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
-    }
+    u64::try_from(mtime_of(meta).as_nanos()).unwrap_or(u64::MAX)
 }
