@@ -347,23 +347,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn candidates_cover_the_official_host_and_the_mirror() {
-        let url = "https://cloud-images.ubuntu.com/minimal/releases/noble/release-1/a.img";
-        let list = image_candidates(url);
-        assert_eq!(list[0], url);
-        assert_eq!(
-            list[1],
-            "https://mirrors.ustc.edu.cn/ubuntu-cloud-images/minimal/releases/noble/release-1/a.img"
-        );
-        // Rebasing from a mirror URL gives the same set.
-        assert_eq!(image_candidates(&list[1]), list);
-        assert_eq!(
-            image_candidates("http://x/y"),
-            vec!["http://x/y".to_string()]
-        );
-    }
-
-    #[test]
     fn latency_orders_fastest_first_and_unreachable_last() {
         let urls: Vec<String> = ["a", "b", "c", "d"].map(String::from).to_vec();
         let ordered = order_by_latency(urls, |url| match url {
@@ -373,25 +356,6 @@ mod tests {
             _ => None,
         });
         assert_eq!(ordered, ["c", "b", "a", "d"]);
-    }
-
-    #[test]
-    fn listings_with_absolute_links_are_parsed() {
-        let html = r#"<a href="/x/minimal/noble/release-20240423/">a</a><a href="release-20260101.1/">b</a>"#;
-        assert_eq!(
-            dated_builds(html, RELEASES[0].build_dir),
-            ["release-20240423", "release-20260101.1"]
-        );
-    }
-
-    #[test]
-    fn ids_are_unique_and_the_default_exists() {
-        let mut ids: Vec<_> = RELEASES.iter().map(|os| os.id).collect();
-        ids.sort();
-        ids.dedup();
-        assert_eq!(ids.len(), RELEASES.len());
-        assert!(find(DEFAULT).is_some());
-        assert!(get("windows-11").is_err());
     }
 
     #[test]

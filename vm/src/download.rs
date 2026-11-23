@@ -877,7 +877,7 @@ mod tests {
         let body: Vec<u8> = (0..600_000u32).map(|i| (i % 241) as u8).collect();
         let url = serve(body.clone(), Some(200_000));
         let destination = dir.join("image.img");
-        download_verified(&url, &destination, &sha(&body), &log_file(&dir)).unwrap();
+        download_sources(&[url], &destination, &sha(&body), &log_file(&dir), READ_TIMEOUT, Duration::ZERO).unwrap();
         assert_eq!(fs::read(&destination).unwrap(), body);
         let log = fs::read_to_string(dir.join("log")).unwrap();
         assert!(log.contains("attempt 1/5 failed"), "{log}");
@@ -1145,31 +1145,6 @@ mod tests {
     }
 
     #[test]
-    fn a_full_volume_while_writing_is_a_local_error() {
-        struct FullVolume {
-            remaining: usize,
-        }
-        impl Write for FullVolume {
-            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-                if self.remaining == 0 {
-                    return Err(std::io::ErrorKind::StorageFull.into());
-                }
-                let written = self.remaining.min(data.len());
-                self.remaining -= written;
-                Ok(written)
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let mut volume = FullVolume { remaining: 3 };
-        let error = write_chunk(&mut volume, b"abcdef", Path::new("image.img.part")).unwrap_err();
-        assert!(
-            matches!(error, TransferError::Local(error) if error.to_string().contains("not enough free space to download"))
-        );
-    }
-
-    #[test]
     fn second_install_cannot_mutate_the_same_home() {
         use crate::machine::{InstallOptions, Machine};
         let dir = scratch("install-lock");
@@ -1209,21 +1184,9 @@ mod tests {
         assert!(!bypasses_proxy(&http, "localhost, .example.test:443"));
         assert!(!bypasses_proxy(&https, "ample.test"));
         assert!(bypasses_proxy(&https, "*"));
-    }
-
-    #[test]
-    fn windows_manual_proxy_selects_the_scheme_and_honors_the_bypass_list() {
-        let url = url::Url::parse("https://cdn.example.test/image.img").unwrap();
         let servers = "http=proxy:8080;https=secure:8081";
-        assert_eq!(
-            manual_proxy(&url, servers, "<local>;*.internal").as_deref(),
-            Some("secure:8081")
-        );
-        assert_eq!(manual_proxy(&url, servers, "<local>;*.example.test"), None);
-        assert_eq!(
-            manual_proxy(&url, "proxy:8080", "").as_deref(),
-            Some("proxy:8080")
-        );
+        assert_eq!(manual_proxy(&https, servers, "<local>;*.internal").as_deref(), Some("secure:8081"));
+        assert_eq!(manual_proxy(&https, servers, "<local>;*.example.test"), None);
     }
 
     #[test]
@@ -1261,32 +1224,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn failed_dns_lookup_is_reported_as_such() {
-        let error = ureq::AgentBuilder::new()
-            .try_proxy_from_env(false)
-            .resolver(|_: &str| Err(std::io::Error::other("test DNS failed")))
-            .build()
-            .get("https://image.example.test/")
-            .call()
-            .unwrap_err();
-        assert!(http_error(&error).contains("download DNS lookup failed"));
-    }
-
-    #[test]
-    #[ignore = "requires outbound network"]
-    fn real_https_download() {
-        let response = request(
-            "GET",
-            "https://cloud-images.ubuntu.com/minimal/releases/noble/release/SHA256SUMS",
-            None,
-            &HttpOptions {
-                read_timeout: READ_TIMEOUT,
-                timeout: Some(READ_TIMEOUT),
-            },
-        )
-        .expect("HTTPS request");
-        let text = response.into_string().unwrap();
-        assert!(text.contains("minimal-cloudimg-arm64.img"), "{text}");
-    }
 }

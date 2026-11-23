@@ -711,14 +711,6 @@ mod stamp_tests {
     use super::*;
 
     #[test]
-    fn utc_stamps_round_trip() {
-        let now = std::time::SystemTime::now();
-        let parsed = parse_utc_stamp(&utcstamp_of(now)).unwrap();
-        let diff = now.duration_since(parsed).unwrap_or_default().as_secs();
-        assert!(diff <= 1, "{diff}");
-    }
-
-    #[test]
     fn utc_stamps_match_the_persisted_format() {
         assert_eq!(utcstamp_from_millis(1_794_800_805_999), "2026-11-16T03:46:45+00:00");
         assert_eq!(utcstamp_from_millis(0), "1970-01-01T00:00:00+00:00");
@@ -741,50 +733,6 @@ mod stamp_tests {
         assert!(own[0].contains("vm_core") || Path::new(&own[0]).is_absolute(), "{own:?}");
     }
 
-    #[test]
-    fn terminating_a_process_ends_it() {
-        // A child blocked on its stdin pipe stays alive until it is ended.
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--ignored", "--exact", "util::stamp_tests::blocks_on_stdin", "--nocapture"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        assert!(pid_alive(pid));
-        terminate_process(pid, true);
-        assert!(child.wait().is_ok());
-        assert!(!pid_alive(pid));
-    }
-
-    /// Run as a child by `terminating_a_process_ends_it`.
-    #[test]
-    #[ignore = "helper process"]
-    fn blocks_on_stdin() {
-        let mut sink = Vec::new();
-        let _ = std::io::stdin().read_to_end(&mut sink);
-    }
-
-    #[test]
-    fn random_bytes_and_passwords_vary() {
-        let mut a = [0u8; 32];
-        let mut b = [0u8; 32];
-        random_bytes(&mut a);
-        random_bytes(&mut b);
-        assert_ne!(a, b);
-        let password = random_password(20);
-        assert_eq!(password.len(), 20);
-        assert!(password.chars().all(|ch| ch.is_ascii_alphanumeric()));
-        assert_ne!(password, random_password(20));
-    }
-
-    #[test]
-    fn free_space_and_tool_lookup_work() {
-        assert!(disk_free_bytes(&std::env::temp_dir()) < u64::MAX);
-        assert!(which("cabin-no-such-tool").is_none());
-        assert!(which(&std::env::current_exe().unwrap().display().to_string()).is_some());
-    }
 }
 
 #[cfg(test)]

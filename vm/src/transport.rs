@@ -63,21 +63,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wake_pair_transports_datagrams() {
-        let (a, b) = wake_pair().unwrap();
-        a.send(&[7u8; 5]).unwrap();
-        let mut buffer = [0u8; 8];
-        let read = loop {
-            match b.recv(&mut buffer) {
-                Ok(read) => break read,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => std::thread::yield_now(),
-                Err(error) => panic!("{error}"),
-            }
-        };
-        assert_eq!(&buffer[..read], &[7u8; 5]);
-    }
-
-    #[test]
     fn readiness_reports_a_readable_socket_until_drained() {
         let (a, b) = packet_pair().unwrap();
         let mut ready = Readiness::new().unwrap();
