@@ -1,9 +1,10 @@
 # Cabin
 
-Cabin runs coding agents inside one Ubuntu ARM64 virtual machine on an Apple Silicon
-Mac. Manage workspaces, chats, terminals, and a Linux desktop from a Tauri 2 app. The guest
-service, `cabind`, supervises sessions so they can keep running when the desktop app
-closes.
+Cabin runs coding agents inside one Ubuntu virtual machine. Manage workspaces, chats,
+terminals, and a Linux desktop from a Tauri 2 app. The guest service, `cabind`, supervises
+sessions so they can keep running when the desktop app closes. The desktop shell runs on
+Apple Silicon macOS and on Windows and Linux development hosts. The guest runs ARM64 on
+Apple Silicon and follows the host architecture on Windows and Linux.
 
 ## Quick start
 
@@ -119,6 +120,7 @@ QEMU archives, and diagnostic logs older than 30 days.
 |---|---|
 | Run the desktop app on macOS | `npm run tauri:mac -- dev` |
 | Build a debug macOS `.app` | `npm run tauri:mac -- build --debug` |
+| Run the desktop app on Windows | `npm run tauri dev -- --config src-tauri/tauri.windows.conf.json` |
 | Run frontend tests | `npm test` |
 | Type-check and bundle the frontend | `npm run build` |
 | Run Chromium smoke tests with mocked IPC | `npm run test:ui` |
@@ -134,6 +136,26 @@ Linux development uses the distribution's QEMU with KVM or TCG. Use `npm run tau
 the Linux development shell or `npm run tauri build` for Linux packages. Tauri builds the
 guest daemon before running or packaging the app. The macOS bundle includes the daemon, VM
 configuration, and assets. The app downloads the pinned QEMU build during setup.
+
+### Windows host
+
+On Windows x64, Cabin runs the amd64 Ubuntu guest. TCG software emulation uses longer
+startup and provisioning timeouts. Requirements:
+
+- QEMU for Windows (`qemu-system-x86_64`, `qemu-img`, and EDK2 firmware) from the qemu.org
+  installer. Add QEMU to `PATH` if you install it outside Program Files.
+- Microsoft C++ Build Tools, WebView2, and the Windows OpenSSH client
+  (`ssh`, `ssh-keygen`).
+- Zig, `cargo-zigbuild`, and `rustup target add x86_64-unknown-linux-musl` to build the
+  guest daemon (`npm run build:agentd`).
+
+Windows specifics: QEMU control channels use loopback TCP ports recorded per instance in
+`sockets.json`, the seed ISO is written in-process (no ISO tooling required), gateway
+networking runs through a loopback TCP datapath with the same shoes proxy stack, and the
+seed ISO password hash uses the same `$6$` SHA-512 format. Adapter-scoped routes
+(`bind_interface`) and SPICE are not available on Windows; guest networking otherwise
+behaves the same. `tauri.windows.conf.json` builds the NSIS installer with the daemon and
+VM resources bundled.
 
 ### Opt-in verification
 
@@ -159,6 +181,23 @@ Claude Code, Codex, Pi, and Antigravity use offline checks.
 CABIN_LIVE_OPENCODE=1 CABIN_OPENCODE2_BIN=/path/to/opencode2 \
   cargo test --manifest-path core/Cargo.toml --test live_opencode -- --ignored --nocapture
 ```
+
+### Packaging
+
+Release builds ship everything the app needs, so end users install nothing. `scripts/vendor.json`
+pins QEMU for macOS arm64 and Windows x64, and Win32-OpenSSH for Windows x64 (url, sha256,
+version, license, source URL). `npm run vendor` (also run by Tauri's `beforeDevCommand` and
+`beforeBuildCommand`) downloads the pins into `build/vendor-cache/`, verifies the hashes, and
+unpacks a pruned tree into `build/vendor/<platform>/` with `manifest.json`, `SOURCES.txt`, and
+license files. Tauri bundles that directory as the resource `vendor/`. The manifest format is
+documented at the top of `scripts/fetch-vendor.mjs`.
+
+To bump a pin, edit the entry in `scripts/vendor.json`: download the new file, compute its
+SHA-256 yourself (`shasum -a 256`), and update `url`, `sha256`, `version`, and `sourceUrl`
+together. For the macOS QEMU, keep `vm/src/qemu_engine.rs` (`RELEASE`, `SHA256`) in step until
+it reads the manifest. Then run `npm run vendor` and check the tree. `npm run tauri:win -- build`
+builds the Windows installer, and CI (`.github/workflows/build.yml`) builds both platforms.
+Linux uses the distribution's QEMU and skips the fetch.
 
 ### IPC bindings
 

@@ -74,8 +74,8 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   rollback point tied to the gateway session and path revision. `poll_interface_paths`
   invalidates stale adapter bindings and triggers recovery while the SSH relay remains
   available.
-- `vm/src/network_interfaces.rs` uses `getifaddrs` for link and address state and macOS
-  hardware labels for display. Compare interface index and usable IPv4 addresses
+- `vm/src/network_interfaces.rs` uses `netdev` on every host for index, link state, IPv4
+  addresses, and display labels. Compare interface index and usable IPv4 addresses
   independently of default-path events. Keep the probe and packet allowlist aligned through
   `vm/src/network_probe_targets.rs`.
 - Observe the exit through the gateway listener. `ip-detection` follows
@@ -229,6 +229,32 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   `@git-diff-view/react` for inline and side-by-side diffs, word highlights, wrapping, and
   copying. `src/lib/patch.ts::toHunk` converts a unified patch for the component. Keep chat
   layouts and disclosures in their components.
+
+## Host platforms
+
+- `vm/src/arch.rs` (`GuestArch`) is the single source of architecture decisions: QEMU
+  binary, firmware names, machine type, image suffix, mirrors, Chrome package, and browser
+  platform. `vm/src/accel.rs` owns acceleration status and the WHPX probe and TCG fallback.
+  Do not branch on `aarch64` or `x86_64` elsewhere.
+- macOS (Apple Silicon) runs an arm64 guest on HVF with
+  the AppKit window chrome. Windows x64 runs an amd64 guest on WHPX. Both bundle their
+  QEMU (and Windows its OpenSSH) under `vendor/` (`vm/src/vendor.rs`). Linux development
+  uses distro QEMU (KVM or TCG). One code path serves every host: `chrono` for time,
+  `getrandom`, `fs4` for volumes, `sysinfo` for process checks, termination, and memory,
+  `which` for tools, `netdev` for adapters, `sha-crypt` for the guest password hash, std
+  file locks, and the in-process seed ISO writer (`vm/src/iso.rs`). Every host uses the
+  same transport (`vm/src/sockets.rs`, `vm/src/transport.rs`): QMP, the guest agent, the
+  serial console, and the gateway `-netdev stream` are AF_UNIX sockets at the instance
+  paths (`uds_windows` supplies the Windows `UnixStream`/`UnixListener`), and the gateway
+  reaches the shoes stack through a connected loopback UDP pair waited on with `polling`
+  (see `third_party/shoes/VENDORED.txt`). Keep socket paths within about 104 bytes. The few
+  real differences (Unix mode bits, `setsid`, the effective-owner check) live in
+  `util::chmod` and `platform.rs`. The guest side of `core` stays Unix-only: the
+  host links only `hello`, `model`, `sync` (host half), `store`, `proxy`, `ipv4`, `fsx`,
+  `error`, `paths`, and `util`; `agent_core::hello` carries the handshake the shell
+  compares builds with. Windows app data lives under `%APPDATA%\cabin`, WebView2 data
+  under `%LOCALAPPDATA%`, and OpenSSH ControlMaster is off. Keep new host code
+  platform-neutral or cfg-gated; never let guest-only modules grow host dependencies.
 
 ## Verification
 

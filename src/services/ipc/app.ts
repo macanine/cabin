@@ -1,10 +1,10 @@
 import type {
-  AppEvent, AppSettings, GuestClock, HostCheck, HostSnapshot, InstallPlan, InstallStep, MachineInstallOptions, MachineStatus,
+  AppEvent, AppSettings, GuestClock, HostSnapshot, InstallPlan, InstallStep, MachineInstallOptions, MachineStatus,
   GuestMachineObservation, MirrorResult, OperationRecord,
   SetupAction, SetupCheck,
 } from "./generated/core";
 import { invokeGuest, invokeIpc, invokeTask, subscribe } from "./common";
-import type { CleanupResult, CleanupTarget, MachineDetails, StorageReport } from "./generated/common";
+import type { CleanupResult, CleanupTarget, Fix, FixOutcome, MachineDetails, ReadinessReport, StorageReport } from "./generated/common";
 
 export const appIpc = {
   subscribe: (onEvent: (event: AppEvent) => void) => subscribe<AppEvent, HostSnapshot>("app_subscribe", onEvent),
@@ -23,7 +23,10 @@ export const storageIpc = {
 };
 
 export const machineIpc = {
-  checks: () => invokeIpc<HostCheck[]>("machine_checks"),
+  checks: (diskGb: number, memoryMb: number) => invokeIpc<ReadinessReport>("machine_checks", { diskGb, memoryMb }),
+  diagnostics: (diskGb: number, memoryMb: number, steps: InstallStep[], installError: string | null, installUser: string | null) =>
+    invokeIpc<string>("machine_diagnostics", { diskGb, memoryMb, steps, installError, installUser }),
+  fix: (fix: Fix) => invokeIpc<FixOutcome>("host_fix", { fix }),
   details: () => invokeIpc<MachineDetails | null>("machine_details"),
   observation: () => invokeGuest<GuestMachineObservation>("machine_observation"),
   plan: (options: MachineInstallOptions) => invokeIpc<InstallPlan>("machine_plan", { options }),

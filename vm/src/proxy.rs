@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use crate::lock::FileLock;
 use crate::paths::StatePaths;
 use crate::util::{
-    atomic_write_json, capture, ensure_dir, now_millis, pid_alive, read_json, remove_path,
+    atomic_write_json, capture, ensure_dir, now_millis, pid_alive, terminate_process, read_json, remove_path,
 };
 use crate::{Error, Result};
 
@@ -111,14 +111,8 @@ pub fn restricted_runtime(runtime: &crate::vm::Runtime) -> bool {
     let Some(pid) = runtime.pid() else {
         return false;
     };
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output();
-    output
-        .ok()
-        .filter(|result| result.status.success())
-        .is_some_and(|result| {
-            let command = String::from_utf8_lossy(&result.stdout);
+    process_command_line(pid)
+        .is_some_and(|command| {
             command.contains("restrict=on") && command.contains("--vmctl-proxy-relay")
         })
 }
@@ -142,15 +136,14 @@ fn process_matches(runtime: &Value, pid: u32) -> bool {
         return false;
     }
     let expected = binary_path();
-    Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .is_some_and(|out| {
-            let command = String::from_utf8_lossy(&out.stdout);
-            command.contains(&*expected.to_string_lossy()) && command.contains(config)
-        })
+    process_command_line(pid).is_some_and(|command| {
+        command.contains(&*expected.to_string_lossy()) && command.contains(config)
+    })
+}
+
+/// The command line of a process, or None when it does not exist.
+fn process_command_line(pid: u32) -> Option<String> {
+    crate::util::process_command(pid).map(|argv| argv.join(" "))
 }
 
 fn write_runtime(home: &Path, runtime: Value) -> Result<Value> {
@@ -241,7 +234,7 @@ fn probe_global(home: &Path) -> Result<ProxyProbe> {
     let proxy = format!("http://{}", current.listen);
     let result = capture(
         &[
-            "/usr/bin/curl".into(),
+            crate::util::curl_binary().into(),
             "-q".into(),
             "--silent".into(),
             "--show-error".into(),
@@ -503,18 +496,13 @@ fn stop_unlocked(home: &Path, force: bool) -> Result<ProxyStatus> {
     let Some(pid) = current.pid.and_then(|value| i32::try_from(value).ok()) else {
         return Ok(current);
     };
-    let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
-    unsafe {
-        libc::kill(pid, signal);
-    }
+    terminate_process(pid as u32, !force);
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline && pid_alive(pid as u32) {
         thread::sleep(Duration::from_millis(60));
     }
     if pid_alive(pid as u32) {
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
-        }
+        terminate_process(pid as u32, false);
     }
     let _ = remove_path(&runtime_path(home));
     status(home)

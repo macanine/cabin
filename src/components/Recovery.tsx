@@ -1,11 +1,37 @@
 import { Button } from "@mantine/core";
-import { IconAlertTriangle, IconPlugConnected, IconRefresh } from "@tabler/icons-react";
+import { IconAlertTriangle, IconCopy, IconPlugConnected, IconRefresh } from "@tabler/icons-react";
 import { useState } from "react";
 import { machineIpc } from "../services/ipc/app";
 import { networkIpc } from "../services/ipc/network";
+import { clipboard } from "../services/ipc/dialogs";
 import { useApp } from "../state/store";
+import { diskGb } from "../lib/installForm";
 import { attempt } from "../lib/operations";
 import { recoveryFor } from "../lib/recovery";
+
+export function CopyDiagnosticsButton({ installError = null, installOptions }: {
+  installError?: string | null;
+  installOptions?: { diskSize: string | null; memoryMb: number | null; username: string | null };
+}) {
+  const machine = useApp((state) => state.machine);
+  const steps = useApp((state) => state.install);
+  const [copying, setCopying] = useState(false);
+
+  async function copy() {
+    setCopying(true);
+    try {
+      const size = diskGb(installOptions?.diskSize ?? machine?.diskSize) ?? 20;
+      const memory = installOptions?.memoryMb ?? machine?.memoryMb ?? 4096;
+      const report = steps.filter((step) => step.state !== "satisfied" && step.state !== "needed");
+      await attempt(machineIpc.diagnostics(size, memory, report, installError, installOptions?.username ?? null)
+        .then(clipboard.write), "Diagnostics copied");
+    } finally {
+      setCopying(false);
+    }
+  }
+
+  return <Button size="xs" variant="default" leftSection={<IconCopy size={14} aria-hidden />} loading={copying} onClick={() => void copy()}>Copy diagnostics</Button>;
+}
 
 /** Stop, then start: the machine keeps its disk; sessions resume after. */
 export async function restartMachine(): Promise<boolean> {

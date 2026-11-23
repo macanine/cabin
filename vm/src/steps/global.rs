@@ -1,7 +1,6 @@
 //! Global steps: the built-in QEMU and the OS image download.
 
 use std::fs::{self, Metadata};
-use std::os::unix::fs::MetadataExt;
 
 use serde_json::{Value, json};
 
@@ -9,16 +8,26 @@ use crate::Result;
 use crate::steps::base::{CheckResult, Step, StepContext, delete_artifacts};
 use crate::util::{capture, ensure_dir, format_bytes, message};
 
-/// The built-in QEMU (`qemu_engine`): the pinned macanine/qemu build with
-/// its firmware. Never PATH or Homebrew.
+/// Verifies the QEMU bundled with the app (`qemu_engine`, `vendor`): it runs
+/// `qemu-img` and the system binary. Only a macOS development build without a
+/// vendor directory downloads the pinned macanine/qemu build instead.
 pub struct QemuStep;
+
+/// A bundled engine that is present but does not run is a damaged install.
+fn damaged(detail: &str) -> String {
+    if crate::vendor::vendor().is_some() {
+        format!("{} ({detail})", crate::qemu_engine::BUNDLED_MISSING)
+    } else {
+        detail.to_string()
+    }
+}
 
 impl Step for QemuStep {
     fn id(&self) -> &str {
         "qemu"
     }
     fn title(&self) -> &str {
-        "Install the built-in QEMU and UEFI firmware"
+        "Verify the bundled QEMU and UEFI firmware"
     }
     fn scope(&self) -> &str {
         "global"
@@ -26,10 +35,18 @@ impl Step for QemuStep {
 
     fn check(&self, ctx: &mut StepContext) -> Result<CheckResult> {
         let Some(engine) = crate::qemu_engine::installed(&ctx.cfg.home) else {
-            return Ok(CheckResult::pending(format!(
-                "built-in QEMU {} is not installed",
-                crate::qemu_engine::RELEASE
-            )));
+            return Ok(CheckResult::pending(
+                crate::vendor::vendor_problem().unwrap_or_else(|| {
+                    if cfg!(target_os = "macos") && !cfg!(debug_assertions) {
+                        crate::qemu_engine::BUNDLED_MISSING.to_string()
+                    } else {
+                        format!(
+                            "QEMU is not available ({})",
+                            crate::qemu_engine::RELEASE
+                        )
+                    }
+                }),
+            ));
         };
         let (version, image) = std::thread::scope(|scope| {
             let version = scope.spawn(|| crate::qemu_engine::version(&engine));
@@ -45,10 +62,10 @@ impl Step for QemuStep {
         });
         let version = match version {
             Ok(version) => version,
-            Err(error) => return Ok(CheckResult::pending(error.to_string())),
+            Err(error) => return Ok(CheckResult::pending(damaged(&error.to_string()))),
         };
         if image.code != 0 {
-            return Ok(CheckResult::pending("qemu-img does not run"));
+            return Ok(CheckResult::pending(damaged("qemu-img does not run")));
         }
         Ok(CheckResult::ready(format!(
             "{version}; firmware + qemu-img present"
@@ -61,7 +78,8 @@ impl Step for QemuStep {
         for path in &created {
             ctx.track_file(path)?;
         }
-        let version = crate::qemu_engine::version(&engine)?;
+        let version = crate::qemu_engine::version(&engine)
+            .map_err(|error| crate::Error::Message(damaged(&error.to_string())))?;
         ctx.log(&version);
         ctx.log(&format!(
             "UEFI firmware: {}",
@@ -94,14 +112,18 @@ fn remember_verified_image(image: &std::path::Path, identity: &Value) {
 }
 
 fn verified_image_identity(metadata: &Metadata, checksum: &crate::download::Checksum) -> Value {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|at| (at.as_secs(), at.subsec_nanos()));
     json!({
         "algorithm": checksum.name(),
         "checksum": checksum.hex(),
-        "device": metadata.dev(),
-        "inode": metadata.ino(),
+        "id": crate::storage::file_id(metadata),
         "size": metadata.len(),
-        "modified": [metadata.mtime(), metadata.mtime_nsec()],
-        "changed": [metadata.ctime(), metadata.ctime_nsec()],
+        "modified": modified,
+        "changed": crate::storage::changed_time(metadata),
     })
 }
 
@@ -179,15 +201,28 @@ impl Step for ImageStep {
         let bundled = cfg.bundled_image_path();
         if bundled.is_file() {
             ctx.log(&format!("using embedded image: {}", bundled.display()));
-            std::fs::copy(&bundled, cfg.image_path()).map_err(|error| {
-                crate::Error::Message(format!("copy embedded image failed: {error}"))
-            })?;
-            let identity = verified_image_identity(&fs::metadata(cfg.image_path())?, &expected);
-            let actual = expected.of_file(&cfg.image_path())?;
-            if actual != expected.hex() {
-                let _ = std::fs::remove_file(cfg.image_path());
-                return message(format!("embedded image checksum mismatch: {actual}"));
+            let image = cfg.image_path();
+            let stage = image.with_extension("embedded.tmp");
+            let result = (|| -> Result<_> {
+                fs::copy(&bundled, &stage).map_err(|error| {
+                    let detail = if error.kind() == std::io::ErrorKind::StorageFull {
+                        "not enough free space to copy the embedded image".to_owned()
+                    } else {
+                        format!("copy embedded image failed: {error}")
+                    };
+                    crate::Error::Message(detail)
+                })?;
+                let actual = expected.of_file(&stage)?;
+                if actual != expected.hex() {
+                    return message(format!("embedded image checksum mismatch: {actual}"));
+                }
+                fs::rename(&stage, &image)?;
+                Ok(verified_image_identity(&fs::metadata(&image)?, &expected))
+            })();
+            if result.is_err() {
+                let _ = fs::remove_file(&stage);
             }
+            let identity = result?;
             ctx.track_file(&cfg.image_path())?;
             if verified_image_identity(&fs::metadata(cfg.image_path())?, &expected) == identity {
                 remember_verified_image(&cfg.image_path(), &identity);
@@ -205,15 +240,14 @@ impl Step for ImageStep {
             );
             return Ok(());
         }
-        let part = cfg.image_path().with_file_name(format!(
-            "{}.part",
-            cfg.image_path()
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("image")
-        ));
-        let result = crate::download::download_verified(
-            &cfg.image_url,
+        let part = crate::download::partial_path(&cfg.image_path());
+        let candidates = crate::os::order_by_latency(
+            crate::os::image_candidates(&cfg.image_url),
+            crate::os::probe_latency,
+        );
+        ctx.log(&format!("download sources: {}", candidates.join(", ")));
+        let result = crate::download::download_first(
+            &candidates,
             &cfg.image_path(),
             &expected,
             &ctx.log_file,
@@ -221,10 +255,10 @@ impl Step for ImageStep {
         if result.is_err() && part.exists() {
             let _ = ctx.track(&part, "file", false);
         }
-        result?;
+        let used = result?;
         ctx.track_file(&cfg.image_path())?;
         ctx.set_meta("source", json!("download"));
-        ctx.set_meta("url", json!(cfg.image_url));
+        ctx.set_meta("url", json!(used));
         ctx.set_meta("checksum", json!(expected.hex()));
         ctx.set_meta(
             "size",

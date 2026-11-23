@@ -9,9 +9,7 @@
 
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixDatagram;
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -26,6 +24,7 @@ use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
 
 use crate::Result;
 use crate::netgw::{GATEWAY_IP, GATEWAY_MAC, GUEST_IP, MTU};
+use crate::transport::{Readiness, wake_pair};
 
 const GUEST_SSH: u16 = 22;
 const BUFFER: usize = 256 * 1024;
@@ -93,7 +92,7 @@ struct Relay {
 pub struct SshForward {
     local: SocketAddr,
     frames: Sender<Vec<u8>>,
-    wake: UnixDatagram,
+    wake: UdpSocket,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -105,7 +104,7 @@ impl SshForward {
         let listener = TcpListener::bind(listen)?;
         let local = listener.local_addr()?;
         listener.set_nonblocking(true)?;
-        let (wake, wake_rx) = UnixDatagram::pair()?;
+        let (wake, wake_rx) = wake_pair()?;
         wake.set_nonblocking(true)?;
         wake_rx.set_nonblocking(true)?;
         let (frames, inbox) = mpsc::channel();
@@ -155,7 +154,7 @@ fn now() -> Instant {
 fn run(
     listener: TcpListener,
     inbox: Receiver<Vec<u8>>,
-    wake: UnixDatagram,
+    wake: UdpSocket,
     stop: Arc<AtomicBool>,
     send: impl Fn(&[u8]),
 ) {
@@ -317,48 +316,27 @@ fn pump(relay: &mut Relay, socket: &mut tcp::Socket, chunk: &mut [u8]) {
 /// timer due (capped so a stop request is noticed).
 fn wait(
     listener: &TcpListener,
-    wake: &UnixDatagram,
+    wake: &UdpSocket,
     relays: &[Relay],
     sockets: &SocketSet<'_>,
     delay: Option<smoltcp::time::Duration>,
 ) {
-    let mut fds = vec![
-        libc::pollfd {
-            fd: listener.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        },
-        libc::pollfd {
-            fd: wake.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        },
-    ];
-    for relay in relays {
+    let Ok(mut ready) = Readiness::new() else { return };
+    let mut watched = ready.watch(0, listener, true, false).and(ready.watch(1, wake, true, false));
+    for (index, relay) in relays.iter().enumerate() {
         let socket = sockets.get::<tcp::Socket>(relay.handle);
-        let mut events = 0;
-        if !relay.host_eof && relay.to_guest.is_empty() && socket.may_send() {
-            events |= libc::POLLIN;
-        }
-        if !relay.to_host.is_empty() {
-            events |= libc::POLLOUT;
-        }
-        fds.push(libc::pollfd {
-            fd: relay.host.as_raw_fd(),
-            events,
-            revents: 0,
-        });
+        let read = !relay.host_eof && relay.to_guest.is_empty() && socket.may_send();
+        let write = !relay.to_host.is_empty();
+        watched = watched.and(ready.watch(index + 2, &relay.host, read, write));
     }
     let cap = Duration::from_millis(250);
     let timeout = delay
         .map(|d| Duration::from_micros(d.total_micros()).min(cap))
         .unwrap_or(cap);
-    unsafe {
-        libc::poll(
-            fds.as_mut_ptr(),
-            fds.len() as libc::nfds_t,
-            timeout.as_millis() as libc::c_int,
-        );
+    if watched.is_ok() {
+        let _ = ready.wait(Some(timeout));
+    } else {
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 

@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, Metadata};
 use std::io;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -114,13 +113,13 @@ impl Inventory {
                     continue;
                 }
             };
-            if meta.dev() != *device.get_or_insert(meta.dev()) {
+            if device_id(&meta) != *device.get_or_insert(device_id(&meta)) {
                 self.entry(kind).complete = false;
                 continue;
             }
             if !meta.is_file()
-                || meta.nlink() < 2
-                || self.hard_links.insert((meta.dev(), meta.ino()))
+                || link_count(&meta) < 2
+                || self.hard_links.insert(file_id(&meta).unwrap_or((0, 0)))
             {
                 let entry = self.entry(kind);
                 entry.bytes = entry.bytes.saturating_add(allocated_bytes(&meta));
@@ -205,9 +204,53 @@ impl Inventory {
     }
 }
 
-pub fn allocated_bytes(meta: &Metadata) -> u64 {
-    meta.blocks().saturating_mul(512)
+/// File identity and allocation: Unix inodes and blocks, and the coarser
+/// facts Windows metadata offers.
+#[cfg(unix)]
+mod native {
+    use std::fs::Metadata;
+    use std::os::unix::fs::MetadataExt;
+
+    pub fn device_id(meta: &Metadata) -> u64 {
+        meta.dev()
+    }
+    pub fn link_count(meta: &Metadata) -> u64 {
+        meta.nlink()
+    }
+    pub fn file_id(meta: &Metadata) -> Option<(u64, u64)> {
+        Some((meta.dev(), meta.ino()))
+    }
+    pub fn changed_time(meta: &Metadata) -> Option<(i64, i64)> {
+        Some((meta.ctime(), meta.ctime_nsec()))
+    }
+    pub fn allocated_bytes(meta: &Metadata) -> u64 {
+        meta.blocks().saturating_mul(512)
+    }
 }
+
+#[cfg(not(unix))]
+mod native {
+    use std::fs::Metadata;
+
+    pub fn device_id(_: &Metadata) -> u64 {
+        0
+    }
+    pub fn link_count(_: &Metadata) -> u64 {
+        1
+    }
+    pub fn file_id(_: &Metadata) -> Option<(u64, u64)> {
+        None
+    }
+    pub fn changed_time(_: &Metadata) -> Option<(i64, i64)> {
+        None
+    }
+    pub fn allocated_bytes(meta: &Metadata) -> u64 {
+        meta.len()
+    }
+}
+
+pub use native::allocated_bytes;
+pub(crate) use native::{changed_time, device_id, file_id, link_count};
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "bindings", derive(ts_rs::TS))]
@@ -220,20 +263,9 @@ pub struct StorageVolume {
 }
 
 pub fn volume(path: &Path) -> Option<StorageVolume> {
-    use std::os::unix::ffi::OsStrExt;
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: statvfs initializes the supplied buffer on success.
-    if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    let info = unsafe { info.assume_init() };
-    let bytes = |blocks: u128| {
-        u64::try_from(blocks.saturating_mul(info.f_frsize.into())).unwrap_or(u64::MAX)
-    };
     Some(StorageVolume {
-        total_bytes: bytes(info.f_blocks.into()),
-        available_bytes: bytes(info.f_bavail.into()),
+        total_bytes: fs4::total_space(path).ok()?,
+        available_bytes: fs4::available_space(path).ok()?,
     })
 }
 
@@ -257,13 +289,14 @@ pub struct CleanupResult {
 pub const LOG_RETENTION_DAYS: u64 = 30;
 
 fn image_partial(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some(
-            "ubuntu-24.04-minimal-cloudimg-arm64.img.part"
-                | "ubuntu-26.04-minimal-cloudimg-arm64.img.part"
-        )
-    )
+    let suffix = format!("-minimal-cloudimg-{}.img.part", crate::arch::GuestArch::current().cloud_image_suffix());
+    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+        name.strip_suffix(&suffix).is_some_and(|release| {
+            release
+                .strip_prefix("ubuntu-")
+                .is_some_and(|version| !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        })
+    })
 }
 
 fn real_directory(path: &Path) -> io::Result<Option<Metadata>> {
@@ -285,7 +318,7 @@ fn candidates(home: &Path, target: CleanupTarget, now: SystemTime) -> io::Result
     };
     let paths = StatePaths::new(home);
     let same_volume = |path: &Path| -> io::Result<bool> {
-        Ok(real_directory(path)?.is_some_and(|meta| meta.dev() == root.dev()))
+        Ok(real_directory(path)?.is_some_and(|meta| device_id(&meta) == device_id(&root)))
     };
     match target {
         CleanupTarget::Downloads => {
@@ -301,7 +334,7 @@ fn candidates(home: &Path, target: CleanupTarget, now: SystemTime) -> io::Result
                 let archive = crate::qemu_engine::archive_path(home);
                 let staging = crate::qemu_engine::staging_path(home);
                 if fs::symlink_metadata(&staging)
-                    .is_ok_and(|meta| meta.is_dir() && meta.dev() == root.dev())
+                    .is_ok_and(|meta| meta.is_dir() && device_id(&meta) == device_id(&root))
                 {
                     result.push(staging);
                 }
@@ -366,7 +399,7 @@ pub(crate) fn clean(home: &Path, target: CleanupTarget) -> crate::Result<Cleanup
     if candidates.is_empty() {
         return Ok(result);
     }
-    let device = fs::metadata(home)?.dev();
+    let device = device_id(&fs::metadata(home)?);
     let staging_path = crate::qemu_engine::staging_path(home);
     for path in candidates {
         let meta = match fs::symlink_metadata(&path) {
@@ -382,7 +415,7 @@ pub(crate) fn clean(home: &Path, target: CleanupTarget) -> crate::Result<Cleanup
         } else {
             meta.is_file()
         };
-        if meta.dev() != device || !valid_type {
+        if device_id(&meta) != device || !valid_type {
             result.failures.push(format!(
                 "{}: unexpected file type or volume",
                 path.display()
@@ -404,7 +437,7 @@ pub(crate) fn clean(home: &Path, target: CleanupTarget) -> crate::Result<Cleanup
     Ok(result)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -485,7 +518,8 @@ mod tests {
         ] {
             fs::create_dir_all(dir).unwrap();
         }
-        let image = paths.image("ubuntu-26.04-minimal-cloudimg-arm64.img");
+        let arch = crate::arch::GuestArch::current().debian();
+        let image = paths.image(&format!("ubuntu-26.04-minimal-cloudimg-{arch}.img"));
         let partial = crate::download::partial_path(&image);
         let recent = logs.join("start-recent.log");
         let old = logs.join("start-old.log");
@@ -546,12 +580,7 @@ mod tests {
         );
         if cfg!(target_os = "macos") {
             let engine = crate::qemu_engine::root(&home);
-            for name in [
-                "bin/qemu-system-aarch64",
-                "bin/qemu-img",
-                "share/qemu/edk2-aarch64-code.fd",
-                "share/qemu/edk2-aarch64-vars.fd",
-            ] {
+            for name in crate::arch::GuestArch::current().engine_files() {
                 let path = engine.join(name);
                 fs::create_dir_all(path.parent().unwrap()).unwrap();
                 fs::write(path, [42]).unwrap();
@@ -576,7 +605,10 @@ mod tests {
         fs::create_dir(&home).unwrap();
         let shared = scratch.0.join("shared");
         fs::create_dir(&shared).unwrap();
-        let partial = shared.join("ubuntu-26.04-minimal-cloudimg-arm64.img.part");
+        let partial = shared.join(format!(
+            "ubuntu-26.04-minimal-cloudimg-{}.img.part",
+            crate::arch::GuestArch::current().debian()
+        ));
         fs::write(&partial, "keep").unwrap();
         symlink(&shared, paths.images()).unwrap();
         symlink(&shared, paths.logs()).unwrap();

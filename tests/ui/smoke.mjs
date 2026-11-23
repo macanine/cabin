@@ -26,9 +26,12 @@ async function page(url, { reducedMotion = false, mac = false } = {}) {
   const send = (method, params = {}) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
   await send("Runtime.enable"); await send("Page.enable");
   await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 860, deviceScaleFactor: 1, mobile: false });
-  if (reducedMotion) {
-    await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-  }
+  // Pin the media preferences: CI machines may have Reduce Motion or Reduce
+  // Transparency on, which would silently switch the UI to lite effects.
+  await send("Emulation.setEmulatedMedia", { features: [
+    { name: "prefers-reduced-motion", value: reducedMotion ? "reduce" : "no-preference" },
+    { name: "prefers-reduced-transparency", value: "no-preference" },
+  ] });
   if (mac) {
     await send("Emulation.setUserAgentOverride", { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" });
   }

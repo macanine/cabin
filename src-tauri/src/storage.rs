@@ -31,24 +31,21 @@ impl StorageReport {
             scan.measure(path, StorageKind::Application, None);
         }
         scan.measure_vm(home);
-        if let Some(user_home) = std::env::var_os("HOME").map(PathBuf::from) {
-            let library = user_home.join("Library");
-            let caches = library.join("Caches");
-            scan.measure(
-                &caches.join(identifier).join("WebKit"),
-                StorageKind::WebkitCache,
-                None,
-            );
-            scan.measure(
-                &library.join("WebKit").join(identifier).join("WebsiteData"),
-                StorageKind::WebkitData,
-                None,
-            );
-            scan.measure(
-                &caches.join("cabin"),
-                StorageKind::DeveloperCache,
-                app.as_deref(),
-            );
+        if let Some(caches) = dirs::cache_dir() {
+            // WebView2 on Windows, WKWebView on macOS.
+            let (webkit_cache, webkit_data) = if cfg!(windows) {
+                let webview = caches.join(identifier).join("EBWebView");
+                (webview.join("Default").join("Cache"), webview)
+            } else {
+                let library = caches.parent().unwrap_or(&caches);
+                (
+                    caches.join(identifier).join("WebKit"),
+                    library.join("WebKit").join(identifier).join("WebsiteData"),
+                )
+            };
+            scan.measure(&webkit_cache, StorageKind::WebkitCache, None);
+            scan.measure(&webkit_data, StorageKind::WebkitData, None);
+            scan.measure(&caches.join("cabin"), StorageKind::DeveloperCache, app.as_deref());
         }
         let entries = scan.finish(home);
         let total_bytes = entries

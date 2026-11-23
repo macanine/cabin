@@ -29,27 +29,34 @@ fn public_ip(ip: Ipv4Addr) -> bool {
 }
 
 fn is_host_address(ip: Ipv4Addr) -> io::Result<bool> {
-    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
-    if unsafe { libc::getifaddrs(&mut list) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut item = list;
-    let mut found = false;
-    while !item.is_null() {
-        let addr = unsafe { (*item).ifa_addr };
-        if !addr.is_null() && unsafe { (*addr).sa_family as i32 } == libc::AF_INET {
-            let socket = unsafe { &*(addr as *const libc::sockaddr_in) };
-            if Ipv4Addr::from(u32::from_be(socket.sin_addr.s_addr)) == ip {
-                found = true;
-                break;
-            }
+    #[cfg(unix)]
+    {
+        let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+        if unsafe { libc::getifaddrs(&mut list) } != 0 {
+            return Err(io::Error::last_os_error());
         }
-        item = unsafe { (*item).ifa_next };
+        let mut item = list;
+        let mut found = false;
+        while !item.is_null() {
+            let addr = unsafe { (*item).ifa_addr };
+            if !addr.is_null() && unsafe { (*addr).sa_family as i32 } == libc::AF_INET {
+                let socket = unsafe { &*(addr as *const libc::sockaddr_in) };
+                if Ipv4Addr::from(u32::from_be(socket.sin_addr.s_addr)) == ip {
+                    found = true;
+                    break;
+                }
+            }
+            item = unsafe { (*item).ifa_next };
+        }
+        unsafe {
+            libc::freeifaddrs(list);
+        }
+        Ok(found)
     }
-    unsafe {
-        libc::freeifaddrs(list);
+    #[cfg(windows)]
+    {
+        Ok(crate::network_interfaces::is_host_address(ip))
     }
-    Ok(found)
 }
 
 fn checked_ip(ip: Ipv4Addr) -> io::Result<Ipv4Addr> {
@@ -146,7 +153,7 @@ fn resolve(host: &str, upstream: SocketAddr) -> io::Result<Ipv4Addr> {
                 return Err(io::Error::other("local destination"));
             }
             let query = dns_query(&domain)?;
-            let mut child = Command::new("/usr/bin/curl")
+            let mut child = Command::new(crate::util::curl_binary())
                 .args([
                     "-q",
                     "--fail",

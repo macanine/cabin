@@ -12,21 +12,11 @@
 //! └─────────────────┘     └─────────────────┘     └─────────────────┘
 //! ```
 //!
-//! The smoltcp stack runs in a dedicated OS thread with direct fd access,
-//! using `poll()` for TUN readiness and cross-thread wakeups.
-//!
-//! # Platform Support
-//!
-//! - **Linux**: Creates TUN device with specified name/address. Requires root
-//!   privileges or `CAP_NET_ADMIN` capability.
-//!
-//! - **Android**: Accepts raw FD from `VpnService.Builder.establish()`. The
-//!   VPN configuration (routes, DNS, etc.) is handled by the Android VpnService.
-//!   You must pass the FD via `TunServerConfig::raw_fd()`.
-//!
-//! - **iOS/macOS**: Accepts raw FD from `NEPacketTunnelProvider.packetFlow`.
-//!   Use `TunServerConfig::packet_information(true)` if using the socket FD
-//!   directly, or `false` if using the readPackets/writePackets API.
+//! The smoltcp stack runs in a dedicated OS thread, waiting for packet
+//! readiness and cross-thread wakeups. Cabin embeds it: the packet device is
+//! always one half of a loopback UDP pair the host owns (one datagram per raw
+//! IP packet), on every platform. Creating or wrapping real TUN devices is not
+//! supported (see VENDORED.txt).
 
 mod packet;
 mod relay_gate;
@@ -58,14 +48,14 @@ pub use platform::{
 
 pub use relay_gate::{RelayGate, RelayTicket};
 pub use tun_server::TunServerConfig;
+pub use wake::loopback_udp_pair;
 
-use std::net::SocketAddr;
-use std::os::fd::{BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 
 use log::{debug, info, warn};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
 
 use crate::address::{Address, NetLocation};
 use crate::client_proxy_selector::ClientProxySelector;
@@ -78,16 +68,16 @@ use packet::PacketBuffer;
 use tcp_stack_direct::{NewTcpConnection, PACKET_QUEUE_CAPACITY, TcpStackDirect};
 use udp_manager::TunUdpManager;
 
-/// Run the TUN server with the given configuration.
+/// Run the TUN server on `device` until `shutdown_rx` fires.
 ///
 /// This function:
-/// 1. Creates/wraps a TUN device
-/// 2. Sets up our smoltcp-based TCP/IP stack with direct fd access
-/// 3. The stack thread reads packets directly from TUN using poll()
-/// 4. Handles TCP connections through the proxy chain
-/// 5. Handles UDP packets through tokio (forwarded from stack thread)
+/// 1. Sets up our smoltcp-based TCP/IP stack on the packet socket
+/// 2. The stack thread reads packets directly from it
+/// 3. Handles TCP connections through the proxy chain
+/// 4. Handles UDP packets through tokio (forwarded from stack thread)
 async fn run_tun_server(
     config: TunServerConfig,
+    device: UdpSocket,
     proxy_selector: Arc<ClientProxySelector>,
     resolver: Arc<dyn Resolver>,
     mut shutdown_rx: oneshot::Receiver<()>,
@@ -99,27 +89,10 @@ async fn run_tun_server(
         config.mtu, config.tcp_enabled, config.udp_enabled, config.icmp_enabled
     );
 
-    let fd = if let Some(fd) = config.raw_fd {
-        info!("Using provided raw FD: {}", fd);
-        if config.close_fd_on_drop {
-            unsafe { OwnedFd::from_raw_fd(fd) }
-        } else {
-            unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?
-        }
-    } else {
-        let tun_device = config.create_sync_device()?;
-        let fd = tun_device.into_raw_fd();
-        info!("Created TUN device with FD: {}", fd);
-        unsafe { OwnedFd::from_raw_fd(fd) }
-    };
-
     // Creates the direct TCP stack in a dedicated thread.
-    let mut stack_config = config.clone();
-    if config.raw_fd.is_none() && cfg!(any(target_os = "macos", target_os = "ios")) {
-        stack_config.packet_information = true;
-    }
+    let mut tcp_stack = TcpStackDirect::with_config(device, config.clone(), gate.clone())?;
+
     let mut gate_updates = gate.subscribe();
-    let mut tcp_stack = TcpStackDirect::with_config(fd, stack_config, gate.clone())?;
 
     // Get UDP receiver (stack thread filters UDP and sends here)
     let udp_from_stack_rx = tcp_stack.take_udp_rx().expect("udp_rx already taken");
@@ -314,44 +287,11 @@ async fn handle_udp_packets(
     info!("UDP handler stopped");
 }
 
-/// Start TUN server based on the provided configuration.
-pub async fn start_tun_server(
-    config: TunConfig,
-    resolver: std::sync::Arc<dyn crate::resolver::Resolver>,
-) -> std::io::Result<JoinHandle<()>> {
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let handle = tokio::spawn(async move {
-        let _keep_alive = shutdown_tx;
-        if let Err(e) = run_tun_from_config(config, shutdown_rx, true, resolver).await {
-            warn!("TUN server error: {}", e);
-        }
-    });
-
-    Ok(handle)
-}
-
-/// Run TUN server from config with external shutdown control.
-pub async fn run_tun_from_config(
-    config: TunConfig,
-    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
-    close_fd_on_drop: bool,
-    resolver: Arc<dyn Resolver>,
-) -> std::io::Result<()> {
-    run_tun_from_config_controlled(
-        config,
-        shutdown_rx,
-        close_fd_on_drop,
-        resolver,
-        RelayGate::default(),
-    )
-    .await
-}
-
+/// Run the TUN config on the host-owned packet `device` until `shutdown_rx` fires.
 pub(crate) async fn run_tun_from_config_controlled(
     config: TunConfig,
+    device: UdpSocket,
     shutdown_rx: oneshot::Receiver<()>,
-    close_fd_on_drop: bool,
     resolver: Arc<dyn Resolver>,
     gate: RelayGate,
 ) -> std::io::Result<()> {
@@ -359,40 +299,15 @@ pub(crate) async fn run_tun_from_config_controlled(
         .mtu(config.mtu)
         .tcp_enabled(config.tcp_enabled)
         .udp_enabled(config.udp_enabled)
-        .icmp_enabled(config.icmp_enabled)
-        .close_fd_on_drop(close_fd_on_drop);
+        .icmp_enabled(config.icmp_enabled);
     tun_server_config.resource_limits = config.resource_limits;
-
-    if let Some(ref name) = config.device_name {
-        tun_server_config = tun_server_config.tun_name(name.clone());
-        println!("Starting TUN server on device {}", name);
-    }
-    if let Some(fd) = config.device_fd {
-        tun_server_config = tun_server_config.raw_fd(fd);
-        #[cfg(any(target_os = "ios", target_os = "macos"))]
-        {
-            tun_server_config = tun_server_config.packet_information(true);
-        }
-        println!("Starting TUN server from device FD {}", fd);
-    }
-    if let Some(addr) = config.address {
-        tun_server_config = tun_server_config.address(addr);
-    }
-    if let Some(mask) = config.netmask {
-        tun_server_config = tun_server_config.netmask(mask);
-    }
-    if let Some(dest) = config.destination {
-        tun_server_config = tun_server_config.destination(dest);
-    }
-    if let Some(packet_information) = config.packet_information {
-        tun_server_config.packet_information = packet_information;
-    }
 
     let rules = config.rules.map(ConfigSelection::unwrap_config).into_vec();
     let client_proxy_selector = Arc::new(create_tcp_client_proxy_selector(rules, resolver.clone()));
 
     run_tun_server(
         tun_server_config,
+        device,
         client_proxy_selector,
         resolver,
         shutdown_rx,
@@ -404,18 +319,15 @@ pub(crate) async fn run_tun_from_config_controlled(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::fd::AsRawFd;
 
     #[tokio::test]
-    async fn borrowed_tun_fd_remains_open_after_stop() {
-        let (_peer, client) = std::os::unix::net::UnixStream::pair().unwrap();
-        let config = TunServerConfig::new()
-            .raw_fd(client.as_raw_fd())
-            .close_fd_on_drop(false);
+    async fn stop_signal_ends_the_server() {
+        let (device, _peer) = wake::loopback_udp_pair(None).unwrap();
         let (tx, rx) = oneshot::channel();
         tx.send(()).unwrap();
         run_tun_server(
-            config,
+            TunServerConfig::new(),
+            device,
             Arc::new(ClientProxySelector::new(Vec::new())),
             Arc::new(crate::resolver::NativeResolver::new()),
             rx,
@@ -423,6 +335,5 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(unsafe { libc::fcntl(client.as_raw_fd(), libc::F_GETFD) } >= 0);
     }
 }

@@ -1,8 +1,6 @@
 //! Effective access to Mac folders selected for project sync.
 
-use std::ffi::CString;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use agent_core::sync::SyncMode;
@@ -46,7 +44,7 @@ pub(crate) struct MacProjectAccess {
 impl FolderAccess {
     fn failed(error: io::Error, write: bool) -> Self {
         let privacy_settings =
-            cfg!(target_os = "macos") && error.raw_os_error() == Some(libc::EPERM);
+            cfg!(target_os = "macos") && error.raw_os_error() == Some(1 /* EPERM */);
         let (state, message) = match error.kind() {
             io::ErrorKind::NotFound => (
                 FolderAccessState::Missing,
@@ -86,25 +84,62 @@ impl FolderAccess {
     }
 }
 
-fn access(path: &CString, mode: libc::c_int) -> io::Result<()> {
-    // SAFETY: the path is NUL-terminated and lives through the call.
-    if unsafe { libc::access(path.as_ptr(), mode) } == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
+/// Effective access without opening the folder: opening would bring up the
+/// macOS consent dialog. POSIX `access` answers from permissions alone, and
+/// Windows has no `access`, so a read is checked through the metadata and a
+/// write through a small probe file inside the folder.
+#[cfg(unix)]
+mod probe {
+    use std::io;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    fn access(path: &Path, mode: libc::c_int) -> io::Result<()> {
+        let native = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid folder path"))?;
+        // SAFETY: the path is NUL-terminated and lives through the call.
+        if unsafe { libc::access(native.as_ptr(), mode) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    pub fn read(path: &Path) -> io::Result<()> {
+        access(path, libc::R_OK | libc::X_OK)
+    }
+
+    pub fn write(path: &Path) -> io::Result<()> {
+        access(path, libc::W_OK)
     }
 }
 
-/// A per-path preflight using POSIX access, which does not trigger consent.
-/// The real scan or write must still handle errors after this check.
+#[cfg(not(unix))]
+mod probe {
+    use std::io;
+    use std::path::Path;
+
+    pub fn read(path: &Path) -> io::Result<()> {
+        if path.to_string_lossy().contains('\0') {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid folder path"));
+        }
+        Ok(())
+    }
+
+    pub fn write(path: &Path) -> io::Result<()> {
+        let probe = path.join(".cabin-access-probe");
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+            Ok(_) => std::fs::remove_file(&probe),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// A per-path preflight. The real scan or write must still handle errors
+/// after this check.
 pub(crate) fn check_folder(path: &Path, write: bool) -> FolderAccess {
-    let Ok(native) = CString::new(path.as_os_str().as_bytes()) else {
-        return FolderAccess::failed(
-            io::Error::new(io::ErrorKind::InvalidInput, "Invalid folder path"),
-            false,
-        );
-    };
-    if let Err(error) = access(&native, libc::R_OK | libc::X_OK) {
+    if let Err(error) = probe::read(path) {
         return FolderAccess::failed(error, false);
     }
     match path.metadata() {
@@ -117,7 +152,7 @@ pub(crate) fn check_folder(path: &Path, write: bool) -> FolderAccess {
         }
         Err(error) => return FolderAccess::failed(error, false),
     }
-    if write && let Err(error) = access(&native, libc::W_OK) {
+    if write && let Err(error) = probe::write(path) {
         return FolderAccess::failed(error, true);
     }
     FolderAccess {
@@ -202,10 +237,11 @@ pub(crate) async fn mac_open_file_settings() -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
     #[test]
     fn checks_the_selected_folder_and_mode_without_creating_any_files() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
         assert_eq!(check_folder(path, true).state, FolderAccessState::Available);
@@ -232,8 +268,8 @@ mod tests {
 
     #[test]
     fn privacy_and_filesystem_denials_have_distinct_guidance() {
-        let privacy = FolderAccess::failed(io::Error::from_raw_os_error(libc::EPERM), false);
-        let filesystem = FolderAccess::failed(io::Error::from_raw_os_error(libc::EACCES), false);
+        let privacy = FolderAccess::failed(io::Error::from_raw_os_error(1 /* EPERM */), false);
+        let filesystem = FolderAccess::failed(io::Error::from(io::ErrorKind::PermissionDenied), false);
         assert_eq!(privacy.privacy_settings, cfg!(target_os = "macos"));
         assert!(!filesystem.privacy_settings);
         assert_eq!(filesystem.state, FolderAccessState::ReadDenied);

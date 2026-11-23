@@ -14,8 +14,6 @@ use tokio::task::JoinHandle;
 use crate::config::{Config, convert_cert_paths, create_server_configs, load_config_str};
 use crate::dns::build_dns_registry;
 use crate::tcp::tcp_server::start_servers;
-#[cfg(unix)]
-use crate::tun::run_tun_from_config;
 
 /// Global log file handle for file-based logging.
 pub static LOG_FILE: OnceLock<parking_lot::Mutex<Option<File>>> = OnceLock::new();
@@ -249,16 +247,12 @@ pub async fn start_from_config(
             .extend(start_servers(Config::Server(server_config), resolver).await?);
     }
 
-    // Run TUN server (blocks until shutdown). close_fd_on_drop = false because mobile owns the FD
-    #[cfg(unix)]
-    let result = {
-        let resolver = dns_registry.get_for_server(tun_config.dns.as_ref());
-        run_tun_from_config(tun_config, shutdown_rx, false, resolver).await
-    };
-    #[cfg(not(unix))]
+    // Cabin's build runs TUN only on a host-owned packet socket (see VENDORED.txt),
+    // so mobile TUN descriptors are unsupported.
+    let _ = (tun_config, shutdown_rx);
     let result = Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "TUN is not supported on this platform",
+        "TUN descriptors are not supported",
     ));
 
     // Cleanup any servers when TUN stops

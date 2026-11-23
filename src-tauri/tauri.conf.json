@@ -4,9 +4,9 @@
   "version": "0.2.0",
   "identifier": "dev.cabin.desktop",
   "build": {
-    "beforeDevCommand": "npm run build:agentd && npm run dev",
+    "beforeDevCommand": "npm run vendor && npm run build:agentd && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build:agentd && npm run build",
+    "beforeBuildCommand": "npm run vendor && npm run build:agentd && npm run build",
     "frontendDist": "../dist"
   },
   "app": {

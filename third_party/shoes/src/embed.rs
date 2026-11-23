@@ -4,13 +4,12 @@
 //! Upstream only exposes a TUN-oriented entry point for mobile FFI; desktop
 //! hosts need plain listeners (HTTP/SOCKS/mixed) started in-process.
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
-#[cfg(unix)]
-pub use crate::tun::{RelayGate, RelayTicket};
+pub use crate::tun::{RelayGate, RelayTicket, loopback_udp_pair};
 
 use crate::config::{
     BindLocation, ClientChainHop, Config, ConfigSelection, RuleActionConfig, ServerProxyConfig,
@@ -207,7 +206,6 @@ fn reject_external_dns(configs: &[Config], has_groups: bool) -> std::io::Result<
 }
 
 fn reject_tun(configs: &[Config]) -> std::io::Result<()> {
-    #[cfg(unix)]
     if configs
         .iter()
         .any(|config| matches!(config, Config::TunServer(_)))
@@ -217,7 +215,6 @@ fn reject_tun(configs: &[Config]) -> std::io::Result<()> {
             "TUN configs are not supported by the embedded entry point",
         ));
     }
-    let _ = configs;
     Ok(())
 }
 
@@ -366,41 +363,35 @@ impl HttpRelay {
     }
 }
 
-/// Run the single TUN config in `config_yaml` on a packet descriptor the host
-/// owns (its `device_fd`; never closed here) until `shutdown` fires. Packets
-/// are raw IP without any header; `packet_information` must be false.
-#[cfg(unix)]
-pub async fn run_tun(config_yaml: &str, shutdown: oneshot::Receiver<()>) -> std::io::Result<()> {
-    run_tun_controlled(config_yaml, shutdown, RelayGate::default()).await
-}
-
-/// Like `run_tun`, with a host-controlled pause barrier for packet and relay I/O.
-#[cfg(unix)]
+/// Run the single TUN config in `config_yaml` on `device`, a packet socket the
+/// host owns (one half of a loopback UDP pair, see [`loopback_udp_pair`]; each
+/// datagram is one raw IP packet), until `shutdown` fires.
 pub async fn run_tun_controlled(
     config_yaml: &str,
     shutdown: oneshot::Receiver<()>,
     gate: RelayGate,
+    device: UdpSocket,
 ) -> std::io::Result<()> {
-    run_tun_inner(config_yaml, shutdown, gate, None).await
+    run_tun_inner(config_yaml, shutdown, gate, None, device).await
 }
 
 /// Run a controlled TUN relay with DNS and first-hop sockets bound to one interface.
-#[cfg(unix)]
 pub async fn run_tun_controlled_with_bound_dns(
     config_yaml: &str,
     shutdown: oneshot::Receiver<()>,
     gate: RelayGate,
     bound: BoundDns,
+    device: UdpSocket,
 ) -> std::io::Result<()> {
-    run_tun_inner(config_yaml, shutdown, gate, Some(bound)).await
+    run_tun_inner(config_yaml, shutdown, gate, Some(bound), device).await
 }
 
-#[cfg(unix)]
 async fn run_tun_inner(
     config_yaml: &str,
     shutdown: oneshot::Receiver<()>,
     gate: RelayGate,
     bound: Option<BoundDns>,
+    device: UdpSocket,
 ) -> std::io::Result<()> {
     let configs = parse(config_yaml)?;
     let (configs, _) = convert_cert_paths(configs).await?;
@@ -426,12 +417,6 @@ async fn run_tun_inner(
     let tun = tun.ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "no TUN config given")
     })?;
-    if tun.device_fd.is_none() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "the TUN config needs device_fd",
-        ));
-    }
     crate::resources::configure(global_limits)?;
     let resolver = match bound {
         Some(bound) => bound.resolver()?,
@@ -440,7 +425,7 @@ async fn run_tun_inner(
             crate::resolver::ipv4_only(dns_registry.get_for_server(None))
         }
     };
-    crate::tun::run_tun_from_config_controlled(tun, shutdown, false, resolver, gate).await
+    crate::tun::run_tun_from_config_controlled(tun, device, shutdown, resolver, gate).await
 }
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]

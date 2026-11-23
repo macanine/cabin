@@ -16,6 +16,23 @@ export type DeviceReportState = "missing" | "stale" | "unverified" | "failed" | 
 export type DeviceFinding = { id: string, group: string, severity: string, title: string, residual: boolean, };
 export type DeviceDetails = { preset: string | null, cpu: string | null, storage: string | null, nic: string | null, runtime: boolean, sealed: boolean, state: DeviceReportState, measuredAt: number | null, reportPath: string | null, findings: Array<DeviceFinding>, };
 export type MachineDetails = { osName: string, accelerator: string, qemuRelease: string | null, imageUrl: string | null, imageChecksum: string | null, aptMirror: string | null, diskPath: string, diskAllocatedBytes: number | null, instancePath: string, logsPath: string, networkMode: string, sshEndpoint: string | null, mac: string, timezone: string, locale: string, desktop: string | null, displayMode: string, resolution: string, scale: number, gpu: string, audio: string, spice: boolean, pid: number | null, startedAt: number | null, device: DeviceDetails | null, };
+export type Fix = { "kind": "enableWhpx" } | { "kind": "restartHost" } | { "kind": "reinstallApp" } | { "kind": "openUrl", url: string, };
+export type Readiness = { id: string, label: string, ok: boolean, 
+/**
+ * A warning: the install can proceed.
+ */
+optional: boolean, detail: string, fix: Fix | null, };
+export type HostFacts = { memoryMb: number, cpus: number, 
+/**
+ * The host account name, as the OS reports it (not yet sanitized).
+ */
+username: string | null, deviceProfileSupported: boolean, 
+/**
+ * macos | windows | linux
+ */
+platform: string, maxDiskGb: number, };
+export type ReadinessReport = { items: Array<Readiness>, host: HostFacts, };
+export type FixOutcome = { restartRequired: boolean, };
 export type StorageKind = "application" | "virtualDisk" | "guestFiles" | "systemImages" | "engine" | "downloads" | "logs" | "settings" | "webkitCache" | "webkitData" | "otherData" | "developerCache";
 export type StorageEntry = { kind: StorageKind, bytes: number, cleanableBytes: number, complete: boolean, };
 export type StorageVolume = { totalBytes: number, availableBytes: number, };
@@ -31,6 +48,8 @@ export type IpcCommand =
   | "app_background"
   | "guest_invoke"
   | "machine_checks"
+  | "machine_diagnostics"
+  | "host_fix"
   | "machine_details"
   | "storage_status"
   | "storage_clean"

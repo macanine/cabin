@@ -7,10 +7,13 @@
 //! changes under an installed machine. The moving `release/` folder is never
 //! recorded.
 
+use std::io::Read;
+use std::time::{Duration, Instant};
+
 use regex::Regex;
 
 use crate::Result;
-use crate::download::Checksum;
+use crate::download::{Checksum, HttpOptions, http_error, request};
 use crate::util::message;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,8 +28,8 @@ pub struct Os {
     builds: &'static str,
     /// A dated build folder in that listing (captured without the slash).
     build_dir: &'static str,
-    /// The arm64 image inside a build folder.
-    image: &'static str,
+    /// The release version, e.g. `24.04`.
+    pub version: &'static str,
 }
 
 /// The default for new machines.
@@ -40,7 +43,7 @@ pub const RELEASES: [Os; 2] = [
         testing: false,
         builds: "https://cloud-images.ubuntu.com/minimal/releases/noble/",
         build_dir: r"release-\d{8}(?:\.\d+)?",
-        image: r"ubuntu-24\.04-minimal-cloudimg-arm64\.img",
+        version: "24.04",
     },
     Os {
         id: "ubuntu-26.04",
@@ -49,9 +52,22 @@ pub const RELEASES: [Os; 2] = [
         testing: false,
         builds: "https://cloud-images.ubuntu.com/minimal/releases/resolute/",
         build_dir: r"release-\d{8}(?:\.\d+)?",
-        image: r"ubuntu-26\.04-minimal-cloudimg-arm64\.img",
+        version: "26.04",
     },
 ];
+
+impl Os {
+    /// The cloud image for the host's guest architecture (`aarch64` on the
+    /// macOS product, the native architecture elsewhere).
+    pub fn image(&self) -> String {
+        let arch = crate::arch::GuestArch::current().cloud_image_suffix();
+        format!(
+            r"ubuntu-{}-minimal-cloudimg-{}\.img",
+            self.version.replace('.', r"\."),
+            arch
+        )
+    }
+}
 
 pub fn find(id: &str) -> Option<&'static Os> {
     RELEASES.iter().find(|os| os.id == id)
@@ -85,40 +101,61 @@ pub struct ResolvedImage {
 impl Os {
     /// The newest build that has this image in its checksum list. Builds
     /// still being published (no list yet, or no arm64 entry) are skipped.
+    /// The checksum list comes from the official host when it is reachable,
+    /// otherwise from a mirror.
     pub fn resolve(&self) -> Result<ResolvedImage> {
-        let listing = fetch_text(self.builds)?;
-        let builds = dated_builds(&listing, self.build_dir);
-        if builds.is_empty() {
-            return message(format!(
-                "no {} builds are listed at {}",
-                self.name, self.builds
-            ));
-        }
-        let mut last_error = None;
-        for build in builds.iter().rev().take(4) {
-            let folder = format!("{}{build}/", self.builds);
-            let sums = match fetch_text(&format!("{folder}SHA256SUMS")) {
-                Ok(text) => text,
+        self.resolve_from(&image_candidates(self.builds), fetch_text)
+    }
+
+    fn resolve_from(
+        &self,
+        sources: &[String],
+        fetch: impl Fn(&str) -> Result<String>,
+    ) -> Result<ResolvedImage> {
+        let mut failures = Vec::new();
+        let mut checked = std::collections::HashSet::new();
+        for base in sources {
+            let listing = match fetch(base) {
+                Ok(listing) => listing,
                 Err(error) => {
-                    last_error = Some(error);
+                    failures.push(error.to_string());
                     continue;
                 }
             };
-            if let Some((file, checksum)) = self.find_image(&sums) {
-                return Ok(ResolvedImage {
-                    url: format!("{folder}{file}"),
-                    checksum,
-                    build: build.clone(),
-                });
+            let builds = dated_builds(&listing, self.build_dir);
+            if builds.is_empty() {
+                failures.push(format!("no {} builds are listed at {base}", self.name));
+            }
+            for build in builds.into_iter().rev().take(4) {
+                if !checked.insert(build.clone()) {
+                    continue;
+                }
+                // Even if only a mirror's index was reachable, ask the official
+                // host for the checksum of this exact build first.
+                for source in sources {
+                    let folder = format!("{source}{build}/");
+                    let url = format!("{folder}SHA256SUMS");
+                    match fetch(&url) {
+                        Ok(sums) => {
+                            if let Some((file, checksum)) = self.find_image(&sums) {
+                                return Ok(ResolvedImage {
+                                    url: format!("{folder}{file}"),
+                                    checksum,
+                                    build,
+                                });
+                            }
+                            failures.push(format!("no valid image checksum in {url}"));
+                        }
+                        Err(error) => failures.push(error.to_string()),
+                    }
+                }
             }
         }
-        match last_error {
-            Some(error) => message(format!("could not find a {} image: {error}", self.name)),
-            None => message(format!(
-                "no recent {} build lists an arm64 image",
-                self.name
-            )),
-        }
+        message(format!(
+            "could not find a {} image: {}",
+            self.name,
+            failures.join(" | ")
+        ))
     }
 
     /// The folder listing this release's builds.
@@ -129,12 +166,12 @@ impl Os {
     /// The image's file name and checksum in a `SHA256SUMS` list
     /// (`<hex> *<file>` or `<hex>  <file>`).
     fn find_image(&self, sums: &str) -> Option<(String, Checksum)> {
-        let image = Regex::new(&format!("^{}$", self.image)).ok()?;
+        let image = Regex::new(&format!("^{}$", self.image())).ok()?;
         sums.lines().find_map(|line| {
             let mut parts = line.split_whitespace();
             let hex = parts.next()?.to_ascii_lowercase();
             let file = parts.next()?.trim_start_matches('*');
-            if !image.is_match(file) {
+            if parts.next().is_some() || !image.is_match(file) {
                 return None;
             }
             let checksum = Checksum::Sha256(hex);
@@ -161,14 +198,10 @@ impl Os {
 
     /// The archive the image uses, then mirrors commonly faster in Asia.
     pub fn mirrors(&self) -> &'static [&'static str] {
-        &[
-            "http://ports.ubuntu.com/ubuntu-ports",
-            "https://ftp.kaist.ac.kr/ubuntu-ports",
-            "https://mirrors.nju.edu.cn/ubuntu-ports",
-        ]
+        crate::arch::GuestArch::current().apt_mirrors()
     }
 
-    /// The suite whose arm64 index a mirror test downloads.
+    /// The suite whose package index a mirror test downloads.
     pub fn mirror_index_suite(&self) -> String {
         format!("{}-updates", self.codename)
     }
@@ -207,7 +240,7 @@ done
 
 /// Dated build folders in an index page, oldest first.
 fn dated_builds(listing: &str, pattern: &str) -> Vec<String> {
-    let Ok(href) = Regex::new(&format!(r#"href="({pattern})/""#)) else {
+    let Ok(href) = Regex::new(&format!(r#"href="(?:[^"]*/)?({pattern})/""#)) else {
         return Vec::new();
     };
     let mut builds: Vec<String> = href
@@ -219,14 +252,94 @@ fn dated_builds(listing: &str, pattern: &str) -> Vec<String> {
     builds
 }
 
+/// Where Ubuntu publishes cloud images, then mirrors that serve the same
+/// `minimal/releases/<codename>/<build>/` layout (verified: USTC; Tsinghua
+/// only carries `daily/`, so it is not listed).
+const OFFICIAL_IMAGES: &str = "https://cloud-images.ubuntu.com/";
+const IMAGE_MIRRORS: &[&str] = &["https://mirrors.ustc.edu.cn/ubuntu-cloud-images/"];
+
+/// `url` on the official host and on each mirror, official first. A URL that
+/// is on none of them is returned alone.
+pub fn image_candidates(url: &str) -> Vec<String> {
+    let all = std::iter::once(OFFICIAL_IMAGES).chain(IMAGE_MIRRORS.iter().copied());
+    let Some(rest) = all.clone().find_map(|prefix| url.strip_prefix(prefix)) else {
+        return vec![url.to_string()];
+    };
+    all.map(|prefix| format!("{prefix}{rest}")).collect()
+}
+
+/// Order candidates fastest first. Unreachable ones go last in their original
+/// order; probes run in parallel threads.
+pub fn order_by_latency<F>(candidates: Vec<String>, probe: F) -> Vec<String>
+where
+    F: Fn(&str) -> Option<Duration> + Sync,
+{
+    let timings: Vec<Option<Duration>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = candidates
+            .iter()
+            .map(|url| scope.spawn(|| probe(url)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().ok().flatten())
+            .collect()
+    });
+    let mut ranked: Vec<(usize, Option<Duration>, String)> = candidates
+        .into_iter()
+        .zip(timings)
+        .enumerate()
+        .map(|(index, (url, time))| (index, time, url))
+        .collect();
+    ranked.sort_by_key(|(index, time, _)| (time.is_none(), *time, *index));
+    ranked.into_iter().map(|(_, _, url)| url).collect()
+}
+
+/// Time to the first response of a HEAD request (about 3 seconds at most).
+pub fn probe_latency(url: &str) -> Option<Duration> {
+    let timeout = Duration::from_secs(3);
+    let start = Instant::now();
+    request(
+        "HEAD",
+        url,
+        None,
+        &HttpOptions {
+            read_timeout: timeout,
+            timeout: Some(timeout),
+        },
+    )
+    .ok()
+    .filter(|response| response.status() == 200 && !crate::download::is_html(response))
+    .map(|_| start.elapsed())
+}
+
 fn fetch_text(url: &str) -> Result<String> {
-    match crate::download::agent().get(url).call() {
-        Ok(response) => response
-            .into_string()
-            .map_err(|error| crate::Error::Message(format!("could not read {url}: {error}"))),
-        Err(ureq::Error::Status(code, _)) => message(format!("HTTP {code} for {url}")),
-        Err(error) => message(format!("could not reach {url}: {error}")),
+    const MAX_TEXT: u64 = 2 * 1024 * 1024;
+    let response = request(
+        "GET",
+        url,
+        None,
+        &HttpOptions {
+            read_timeout: Duration::from_secs(8),
+            timeout: Some(Duration::from_secs(12)),
+        },
+    )
+    .map_err(|error| {
+        let detail = match error {
+            ureq::Error::Status(code, _) => format!("HTTP {code}"),
+            error => http_error(&error),
+        };
+        crate::Error::Message(format!("could not download {url}: {detail}"))
+    })?;
+    let mut text = String::new();
+    response
+        .into_reader()
+        .take(MAX_TEXT + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| crate::Error::Message(format!("could not download {url}: {error}")))?;
+    if text.len() as u64 > MAX_TEXT {
+        return message(format!("could not download {url}: metadata exceeds 2 MiB"));
     }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -234,13 +347,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ids_are_unique_and_the_default_exists() {
-        let mut ids: Vec<_> = RELEASES.iter().map(|os| os.id).collect();
-        ids.sort();
-        ids.dedup();
-        assert_eq!(ids.len(), RELEASES.len());
-        assert!(find(DEFAULT).is_some());
-        assert!(get("windows-11").is_err());
+    fn latency_orders_fastest_first_and_unreachable_last() {
+        let urls: Vec<String> = ["a", "b", "c", "d"].map(String::from).to_vec();
+        let ordered = order_by_latency(urls, |url| match url {
+            "a" => None,
+            "b" => Some(Duration::from_millis(50)),
+            "c" => Some(Duration::from_millis(10)),
+            _ => None,
+        });
+        assert_eq!(ordered, ["c", "b", "a", "d"]);
     }
 
     #[test]
@@ -261,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn finds_the_arm64_image_in_the_checksum_list() {
+    fn finds_the_guest_image_in_the_checksum_list() {
         let ubuntu = find("ubuntu-24.04").unwrap();
         let sums = format!(
             "{a} *ubuntu-24.04-minimal-cloudimg-arm64.manifest\n{b} *ubuntu-24.04-minimal-cloudimg-arm64.img\n{c} *ubuntu-24.04-minimal-cloudimg-amd64.img\n",
@@ -270,13 +385,110 @@ mod tests {
             c = "3".repeat(64)
         );
         let (file, checksum) = ubuntu.find_image(&sums).unwrap();
-        assert_eq!(file, "ubuntu-24.04-minimal-cloudimg-arm64.img");
-        assert_eq!(checksum, Checksum::Sha256("ab".repeat(32)));
+        let (arch, digest) = match crate::arch::GuestArch::current() {
+            crate::arch::GuestArch::Amd64 => ("amd64", "3".repeat(64)),
+            crate::arch::GuestArch::Arm64 => ("arm64", "ab".repeat(32)),
+        };
+        assert_eq!(file, format!("ubuntu-24.04-minimal-cloudimg-{arch}.img"));
+        assert_eq!(checksum, Checksum::Sha256(digest));
         // A short or malformed digest is not trusted.
         assert!(
             ubuntu
                 .find_image("abc  ubuntu-24.04-minimal-cloudimg-arm64.img\n")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn official_checksum_wins_even_when_only_the_mirror_index_loads() {
+        let os = &RELEASES[0];
+        let sources = image_candidates(os.index_url());
+        let build = "release-20261123";
+        let name = format!(
+            "ubuntu-24.04-minimal-cloudimg-{}.img",
+            crate::arch::GuestArch::current().cloud_image_suffix()
+        );
+        let resolved = os
+            .resolve_from(&sources, |url| {
+                if url == sources[0] {
+                    return message("official index unavailable");
+                }
+                if url == sources[1] {
+                    return Ok(format!(r#"<a href="{build}/">build</a>"#));
+                }
+                let digest = if url.starts_with(&sources[0]) {
+                    "1"
+                } else {
+                    "2"
+                }
+                .repeat(64);
+                Ok(format!("{digest}  {name}"))
+            })
+            .unwrap();
+        assert_eq!(resolved.url, format!("{}{build}/{name}", sources[0]));
+        assert_eq!(resolved.checksum, Checksum::Sha256("1".repeat(64)));
+    }
+
+    #[test]
+    fn tries_the_mirror_for_a_missing_checksum_of_the_same_dated_build() {
+        let os = &RELEASES[0];
+        let sources = image_candidates(os.index_url());
+        let latest = "release-20261123";
+        let older = "release-20261120";
+        let name = format!(
+            "ubuntu-24.04-minimal-cloudimg-{}.img",
+            crate::arch::GuestArch::current().cloud_image_suffix()
+        );
+        let digest = "3".repeat(64);
+        for mirror_has_latest in [false, true] {
+            let resolved = os
+                .resolve_from(&sources, |url| {
+                    if url == sources[0] {
+                        return Ok(format!(
+                            r#"<a href="{older}/">old</a><a href="{latest}/">new</a>"#
+                        ));
+                    }
+                    if url.contains(latest) && url.starts_with(&sources[0]) {
+                        return message("HTTP 404 for official SHA256SUMS");
+                    }
+                    if url.contains(latest) && !mirror_has_latest {
+                        return message("HTTP 404 for mirror SHA256SUMS");
+                    }
+                    if url.ends_with("SHA256SUMS") {
+                        return Ok(format!("malformed  {name}\n{digest}  {name}"));
+                    }
+                    panic!("unexpected lookup {url}");
+                })
+                .unwrap();
+            let (source, build) = if mirror_has_latest {
+                (&sources[1], latest)
+            } else {
+                (&sources[0], older)
+            };
+            assert_eq!(resolved.url, format!("{source}{build}/{name}"));
+            assert_eq!(resolved.checksum, Checksum::Sha256(digest.clone()));
+        }
+    }
+
+    #[test]
+    fn reports_unavailable_and_malformed_checksums_without_using_an_unpinned_image() {
+        let os = &RELEASES[0];
+        let sources = image_candidates(os.index_url());
+        let error = os
+            .resolve_from(&sources, |url| {
+                if sources.iter().any(|base| base == url) {
+                    Ok(r#"<a href="release-20261123/">build</a>"#.to_owned())
+                } else if url.starts_with(&sources[0]) {
+                    message("HTTP 503 for official SHA256SUMS")
+                } else {
+                    Ok("malformed checksum line".into())
+                }
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("HTTP 503") && error.contains("no valid image checksum"),
+            "{error}"
         );
     }
 

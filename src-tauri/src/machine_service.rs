@@ -1,7 +1,7 @@
 //! Window subscription, guest forwarding and VM lifecycle commands.
 
 use agent_core::model::{
-    AppEvent, BrowserEnvironmentView, BrowserSettings, HostCheck, HostSnapshot, InstallPlan, InstallStep, MachineInstallOptions,
+    AppEvent, BrowserEnvironmentView, BrowserSettings, HostSnapshot, InstallPlan, InstallStep, MachineInstallOptions,
     MachineStatus, MirrorResult, SyncPreview, SyncProjectInput, SyncView,
 };
 use agent_core::sync::{SyncMode, SyncRules};
@@ -33,8 +33,33 @@ pub(crate) async fn guest_invoke(
 }
 
 #[tauri::command]
-pub(crate) async fn machine_checks(host: State<'_, Shared>) -> Result<Vec<HostCheck>, AppError> {
-    blocking(&host, |host| Ok(host.checks())).await
+pub(crate) async fn machine_checks(
+    host: State<'_, Shared>,
+    disk_gb: u32,
+    memory_mb: u32,
+) -> Result<vm_core::readiness::ReadinessReport, AppError> {
+    blocking(&host, move |host| Ok(host.checks(disk_gb, memory_mb))).await
+}
+
+#[tauri::command]
+pub(crate) async fn machine_diagnostics(
+    host: State<'_, Shared>,
+    disk_gb: u32,
+    memory_mb: u32,
+    steps: Vec<InstallStep>,
+    install_error: Option<String>,
+    install_user: Option<String>,
+) -> Result<String, AppError> {
+    blocking(&host, move |host| host.diagnostics(disk_gb, memory_mb, steps, install_error, install_user)).await
+}
+
+/// Run a readiness fix (enable WHPX, restart, open a help page).
+#[tauri::command]
+pub(crate) async fn host_fix(
+    host: State<'_, Shared>,
+    fix: vm_core::readiness::Fix,
+) -> Result<vm_core::readiness::FixOutcome, AppError> {
+    blocking(&host, move |host| host.fix(fix)).await
 }
 
 #[tauri::command]
@@ -76,7 +101,13 @@ pub(crate) fn machine_install(
     options: MachineInstallOptions,
 ) {
     let shared = host.inner().clone();
-    spawn_task(&host, channel, move |_| shared.install(options));
+    spawn_task(&host, channel, move |_| {
+        let username = options.username.clone();
+        let started_at = vm_core::util::now_millis();
+        let result = shared.install(options);
+        shared.record_install_result(started_at, &result, username.as_deref());
+        result
+    });
 }
 
 #[tauri::command]
@@ -211,7 +242,6 @@ pub(crate) async fn write_codex_export(
     contents: String,
 ) -> Result<String, AppError> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
 
     if contents.len() > 2 * 1024 * 1024 {
         return Err(AppError {
@@ -227,15 +257,13 @@ pub(crate) async fn write_codex_export(
             format!("codex-account-{number}.json")
         };
         let path = std::path::Path::new(&directory).join(name);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        match options.open(&path)
         {
             Ok(mut file) => {
-                if let Err(error) = file
-                    .write_all(contents.as_bytes())
+                if let Err(error) = vm_core::util::chmod(&path, 0o600)
+                    .and_then(|()| file.write_all(contents.as_bytes()))
                     .and_then(|()| file.sync_all())
                 {
                     drop(file);
@@ -268,7 +296,6 @@ pub(crate) async fn write_codex_export(
 #[cfg(test)]
 mod export_tests {
     use super::write_codex_export;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn exports_are_private_and_never_overwrite() {
@@ -282,14 +309,13 @@ mod export_tests {
         assert_ne!(first, second);
         assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
         assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
-        assert_eq!(
-            std::fs::metadata(first).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::metadata(second).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        // Windows has no mode bits to check.
+        if cfg!(unix) {
+            for path in [first, second] {
+                let meta = std::fs::metadata(path).unwrap();
+                assert_eq!(agent_core::fsx::mode_of(&meta), 0o600);
+            }
+        }
     }
 }
 
@@ -321,7 +347,10 @@ pub(crate) fn machine_resume(
 ) {
     let shared = host.inner().clone();
     spawn_task(&host, channel, move |_| {
-        shared.resume(change_mirror, apt_mirror)
+        let started_at = vm_core::util::now_millis();
+        let result = shared.resume(change_mirror, apt_mirror);
+        shared.record_install_result(started_at, &result, None);
+        result
     });
 }
 

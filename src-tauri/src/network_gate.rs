@@ -1320,7 +1320,7 @@ mod tests {
             timezone: Some(timezone.into()),
             language: Some("en-US".into()),
             languages: vec!["en-US".into(), "en".into()],
-            platform: Some("Linux aarch64".into()),
+            platform: Some(vm_core::arch::GuestArch::current().ua_platform().into()),
         }
     }
 

@@ -32,9 +32,8 @@ export function MachineGate({ children }: { children?: ReactNode }) {
             <div className="grid gap-3">
               {start.error && <RecoveryPanel message={start.error} compact retry={machine.state === "running"} />}
               <div className="flex flex-wrap justify-end gap-2.5">
-                <MachineSettingsButton />
                 <Button variant="default" onClick={() => uiActions.navigate({ kind: "install" })}>
-                  Review installation
+                  Repair installation
                 </Button>
                 <Button leftSection={<IconPlayerPlay size={16} />} onClick={() => attempt(machineIpc.start())}>
                   Try again
@@ -70,9 +69,9 @@ export function MachineGate({ children }: { children?: ReactNode }) {
         <EmptyState
           icon={<IconDownload size={36} stroke={1.4} />}
           title="Install the machine first"
-          action={<Button onClick={() => uiActions.navigate({ kind: "install" })}>Open the installation wizard</Button>}
+          action={<Button onClick={() => uiActions.navigate({ kind: "install" })}>Set up the machine</Button>}
         >
-          Cabin runs Claude Code, Codex, OpenCode, Pi and Antigravity inside one Ubuntu VM on this Mac. The wizard creates it step by step.
+          Cabin runs Claude Code, Codex, OpenCode, Pi and Antigravity inside one Ubuntu VM on this computer.
         </EmptyState>
       </div>
     );
@@ -103,7 +102,7 @@ export function MachineGate({ children }: { children?: ReactNode }) {
       <BootHero
         tone={machine.error ? "bad" : "running"}
         progress={null}
-        title={machine.connection === "updating" ? "Updating cabind…" : "Connecting to your machine…"}
+        title={machine.connection === "updating" ? "Updating Cabin's service…" : "Connecting to your machine…"}
         subtitle={
           machine.connection === "updating"
             ? "Installing the build that matches this app. Sessions resume after."

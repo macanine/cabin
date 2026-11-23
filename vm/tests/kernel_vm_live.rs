@@ -110,18 +110,7 @@ fn first_boot_replaces_virtual_kernel_metapackage_and_boots_generic() {
     .unwrap();
 
     let iso = temp.0.join("seed.iso");
-    run(Command::new("hdiutil")
-        .args([
-            "makehybrid",
-            "-quiet",
-            "-iso",
-            "-joliet",
-            "-default-volume-name",
-            "cidata",
-            "-o",
-        ])
-        .arg(&iso)
-        .arg(temp.0.join("seed")));
+    vm_core::platform::build_seed_iso(&temp.0.join("seed"), &iso, &["user-data", "meta-data", "network-config"]).unwrap();
     let disk = temp.0.join("disk.qcow2");
     run(Command::new("qemu-img")
         .args(["create", "-f", "qcow2", "-F", "qcow2", "-b"])

@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "platforms": {
+    "macos-arm64": {
+      "guestArch": "aarch64",
+      "qemu": {
+        "version": "11.1.90",
+        "license": "GPL-2.0-or-later",
+        "format": "tar.gz",
+        "url": "https://github.com/macanine/qemu/releases/download/macos-qemu-11.1.90-r10/qemu-macos-arm64-virgl-spice.tar.gz",
+        "sha256": "152a966dfe59b4e9518183c53f89f61e06da3947cfdf3088c5852de8aee6e5ab",
+        "sourceUrl": "https://github.com/macanine/qemu/tree/macos-qemu-11.1.90-r10",
+        "upstreamSourceUrl": "https://github.com/qemu/qemu/tree/b2cefd856fcc9d4feb85360e6dd3cb3f197cd0ea",
+        "extraFiles": [
+          {
+            "name": "COPYING",
+            "url": "https://raw.githubusercontent.com/qemu/qemu/b2cefd856fcc9d4feb85360e6dd3cb3f197cd0ea/COPYING",
+            "sha256": "dd3ce02338c3a48abb6ba59b48809f7108a8bd242cb0cc8be90daafa30707c28"
+          }
+        ]
+      }
+    },
+    "windows-x64": {
+      "guestArch": "x86_64",
+      "qemu": {
+        "version": "11.1.0",
+        "license": "GPL-2.0-or-later",
+        "format": "nsis",
+        "urls": [
+          "https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe",
+          "https://qemu.weilnetz.de/w64/2026/qemu-w64-setup-20260811.exe"
+        ],
+        "sha256": "f98a8aeb5f7faea9765b6dee28316c266cd179d80354a2fed8e50176f9a2e59f",
+        "sourceUrl": "https://qemu.weilnetz.de/",
+        "upstreamSourceUrl": "https://download.qemu.org/qemu-11.1.0.tar.xz"
+      },
+      "openssh": {
+        "version": "10.4.0.0p1-Preview",
+        "license": "BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT",
+        "format": "zip",
+        "url": "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.4.0.0p1-Preview/OpenSSH-Win64.zip",
+        "sha256": "b67ff8becd203502190ec42ac7787c24c2cd3325ed7700485fe7a1c83d2a7957",
+        "sourceUrl": "https://github.com/PowerShell/Win32-OpenSSH/tree/10.4.0.0p1-Preview"
+      }
+    }
+  }
+}

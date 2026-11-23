@@ -3,6 +3,7 @@ fn main() {
         std::process::exit(vm_core::net_relay::run());
     }
     // Match normal Unix CLI behaviour when a downstream pipe closes (`| head`).
+    #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }

@@ -628,7 +628,7 @@ fn fetch(url: &str) -> Result<String> {
         url.replace('\\', "\\\\").replace('"', "\\\"")
     );
     let argv = vector_args(&[
-        "/usr/bin/curl",
+        crate::util::curl_binary(),
         "-q",
         "--fail",
         "--silent",
@@ -835,7 +835,7 @@ pub(crate) fn node_delay(
         url.as_str().replace('\\', "\\\\").replace('"', "\\\"")
     );
     let argv = vector_args(&[
-        "/usr/bin/curl",
+        crate::util::curl_binary(),
         "-q",
         "--silent",
         "--show-error",

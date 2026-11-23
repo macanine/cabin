@@ -630,7 +630,6 @@ aptMirror: string | null,
  * Guest operating system id (`None`: the default, Ubuntu 24.04).
  */
 os: string | null, };
-export type HostCheck = { id: string, label: string, ok: boolean, detail: string, };
 export type StartFact = { label: string, value: string, };
 export type StartPhaseState = "pending" | "running" | "done" | "skipped" | "failed";
 export type StartPhase = { id: string, title: string, state: StartPhaseState, startedAt: number | null, finishedAt: number | null, detail: string | null, };

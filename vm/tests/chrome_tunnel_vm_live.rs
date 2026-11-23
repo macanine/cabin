@@ -70,18 +70,7 @@ fn websocket_bridges_to_guest_loopback_over_ssh() {
             .unwrap(),
     )
     .unwrap();
-    run(Command::new("hdiutil")
-        .args([
-            "makehybrid",
-            "-quiet",
-            "-iso",
-            "-joliet",
-            "-default-volume-name",
-            "cidata",
-            "-o",
-        ])
-        .arg(cfg.seed_path())
-        .arg(&seed));
+    vm_core::platform::build_seed_iso(&seed, &cfg.seed_path(), &["user-data", "meta-data", "network-config"]).unwrap();
     let engine_path = vm_core::qemu_engine::root(&dir);
     std::fs::create_dir_all(engine_path.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(vm_core::qemu_engine::root(&engine_home), engine_path).unwrap();

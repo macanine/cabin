@@ -20,8 +20,12 @@ pub struct Antigravity;
 /// The app's model picker leaves the native model selection in effect.
 pub const DEFAULT_MODEL: &str = "default";
 const VERSION: &str = "1.5.14";
-const ARCHIVE_URL: &str = "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_linux_arm64.tar.gz";
-const ARCHIVE_SHA256: &str = "e5f69a3123fac66974b303d9a201f381a0fb32b3ef869d9139da85d5caf67a2a";
+const ARCHIVE_ARCH: &str = if cfg!(target_arch = "x86_64") { "x64" } else { "arm64" };
+const ARCHIVE_SHA256: &str = if cfg!(target_arch = "x86_64") {
+    "d58386322d2073e96b33f7cc32b4e9ae2db6228f58440369725967b2de48c7b5"
+} else {
+    "e5f69a3123fac66974b303d9a201f381a0fb32b3ef869d9139da85d5caf67a2a"
+};
 const OAUTH_FILE: &str = ".gemini/antigravity-cli/antigravity-oauth-token";
 
 static SPEC: AgentSpec = AgentSpec {
@@ -269,14 +273,14 @@ struct Install {
 
 impl Step for Install {
     fn name(&self) -> String {
-        format!("Install agy {VERSION} for Linux ARM64")
+        format!("Install agy {VERSION} for Linux {ARCHIVE_ARCH}")
     }
 
     fn prepare(&mut self, _: &StepCtx<'_>) -> Result<()> {
         // The daemon is built with musl and launches the CLI against Ubuntu's glibc.
-        if !cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        if !cfg!(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86_64"))) {
             return Err(Error::Unavailable(
-                "The managed Antigravity build requires ARM64 Ubuntu.".into(),
+                "The managed Antigravity build requires x64 or ARM64 Ubuntu.".into(),
             ));
         }
         Ok(())
@@ -288,8 +292,10 @@ impl Step for Install {
         let staging = tempfile::Builder::new()
             .prefix(".agy-install-")
             .tempdir_in(bin)?;
-        let archive = staging.path().join("agy_cli_linux_arm64.tar.gz");
-        let bytes = crate::fetch::download_to(&self.ctx, ARCHIVE_URL, &archive, step)?;
+        let name = format!("agy_cli_linux_{ARCHIVE_ARCH}.tar.gz");
+        let url = format!("https://github.com/google-antigravity/antigravity-cli/releases/download/{VERSION}/{name}");
+        let archive = staging.path().join(name);
+        let bytes = crate::fetch::download_to(&self.ctx, &url, &archive, step)?;
         step.log(format!("Downloaded {:.1} MB", bytes as f64 / 1e6));
         if crate::util::sha256_file(&archive)? != ARCHIVE_SHA256 {
             return Err(Error::invalid(

@@ -1,10 +1,61 @@
 // Pure logic for the install setup: presets, defaults and validation (the
 // same rules as vm/src/machine.rs and config.rs).
 import type { MachineInstallOptions, OsChoice } from "../services/ipc/generated/core";
+import type { HostFacts, Readiness } from "../services/ipc/generated/common";
 
-/** Mac checks that only matter for one optional feature. */
-export const OPTIONAL_CHECKS = ["socketVmnet"];
-export const isOptionalCheck = (id: string) => OPTIONAL_CHECKS.includes(id);
+/** Readiness items split for the panel: blockers, warnings, and what passed. */
+export function readinessView(items: Readiness[]) {
+  return {
+    blocking: items.filter((i) => !i.ok && !i.optional),
+    warnings: items.filter((i) => !i.ok && i.optional),
+    passed: items.filter((i) => i.ok),
+  };
+}
+
+/**
+ * The size preset for a host: light under 8 GB of memory, balanced under 16,
+ * roomy otherwise (8 and 16 GB machines report a little less, hence the
+ * margin). Leave memory for the host and room for the image on disk.
+ * If even Light is too large, start with the closest supported custom size.
+ */
+export function pickPreset(hostMemoryMb: number, hostCpus: number, maxDiskGb = Infinity): ResourcePreset {
+  const mb = hostMemoryMb || 8192;
+  const cpuLimit = hostCpus || Infinity;
+  const memoryLimit = Math.floor(Math.min(mb / 2 * 1.05, mb - 2048) / 512) * 512;
+  const fitting = [...RESOURCE_PRESETS].reverse().find((preset) =>
+    preset.cpus <= cpuLimit && preset.memoryMb <= Math.min(mb / 2 * 1.05, mb - 2048) && preset.diskGb <= maxDiskGb);
+  if (fitting) return fitting;
+  const light = RESOURCE_PRESETS[0];
+  return {
+    ...light, key: "custom", label: "Custom",
+    cpus: Math.min(light.cpus, cpuLimit),
+    memoryMb: Math.max(1024, Math.min(light.memoryMb, memoryLimit)),
+    diskGb: Math.max(8, Math.min(light.diskGb, maxDiskGb)),
+  };
+}
+
+export function presetFitsHost(preset: ResourcePreset, host: HostFacts | null): boolean {
+  return host != null && (!host.cpus || preset.cpus <= host.cpus)
+    && (!host.memoryMb || preset.memoryMb + 2048 <= host.memoryMb)
+    && preset.diskGb <= host.maxDiskGb;
+}
+
+/** A host account name as a valid Linux username, or null when nothing usable remains. */
+export function sanitizeUsername(raw: string | null | undefined): string | null {
+  let name = (raw ?? "").trim().toLowerCase();
+  name = name.slice(name.lastIndexOf("\\") + 1).split("@")[0];
+  name = name.replace(/[^a-z0-9_-]+/g, "_").replace(/^_+(?=_)/, "");
+  if (name !== "" && !/^[a-z_]/.test(name)) name = `u${name}`;
+  name = name.slice(0, 32);
+  return name === "" || name === "_" || usernameProblem(name) ? null : name;
+}
+
+/** The first-run options for this host. */
+export function optionsForHost(host: HostFacts | null): MachineInstallOptions {
+  if (!host) return defaultOptions();
+  const preset = pickPreset(host.memoryMb, host.cpus, host.maxDiskGb);
+  return { ...defaultOptions(preset), username: sanitizeUsername(host.username) };
+}
 
 export interface ResourcePreset {
   key: string;
@@ -17,14 +68,13 @@ export interface ResourcePreset {
 
 export const RESOURCE_PRESETS: ResourcePreset[] = [
   { key: "light", label: "Light", cpus: 2, memoryMb: 2048, diskGb: 12, note: "One agent at a time" },
-  { key: "balanced", label: "Balanced", cpus: 4, memoryMb: 4096, diskGb: 20, note: "Most Macs" },
+  { key: "balanced", label: "Balanced", cpus: 4, memoryMb: 4096, diskGb: 20, note: "Most computers" },
   { key: "roomy", label: "Roomy", cpus: 8, memoryMb: 8192, diskGb: 40, note: "Several agents, big repos" },
 ];
 
 export const DEFAULT_PRESET = "balanced";
 
-export function defaultOptions(): MachineInstallOptions {
-  const preset = RESOURCE_PRESETS.find((p) => p.key === DEFAULT_PRESET)!;
+export function defaultOptions(preset: ResourcePreset = RESOURCE_PRESETS.find((p) => p.key === DEFAULT_PRESET)!): MachineInstallOptions {
   return {
     cpus: preset.cpus,
     memoryMb: preset.memoryMb,
@@ -87,6 +137,13 @@ export function formProblem(options: MachineInstallOptions): string | null {
 }
 
 const gb = (mb: number) => `${mb / 1024 % 1 === 0 ? mb / 1024 : (mb / 1024).toFixed(1)} GB`;
+
+/** "Ubuntu 24.04 LTS · Balanced (4 CPUs, 4 GB, 20 GB) · user nic" */
+export function setupSummary(options: MachineInstallOptions, os: OsChoice | null, fallbackUser: string): string {
+  const preset = matchingPreset(options);
+  const size = `${options.cpus ?? "?"} CPUs, ${gb(options.memoryMb ?? 0)}, ${diskGb(options.diskSize) ?? "?"} GB`;
+  return [os?.name ?? "Ubuntu", preset ? `${preset.label} (${size})` : `Custom (${size})`, `user ${options.username || fallbackUser}`].join(" · ");
+}
 
 /** "Ubuntu 24.04 LTS · 4 CPU · 4 GB memory · 20 GB disk" */
 export function installSummary(options: MachineInstallOptions, os: OsChoice | null): string {

@@ -11,8 +11,11 @@
     "tauri": "tauri",
     "setup:mac": "node scripts/setup-macos.mjs",
     "tauri:mac": "sh scripts/tauri-macos.sh",
-    "build:agentd": "cd core && export CARGO_TARGET_DIR=target && (command -v cargo-zigbuild >/dev/null && cargo zigbuild --release --bin cabind --target aarch64-unknown-linux-musl || cargo build --release --bin cabind --target aarch64-unknown-linux-musl)",
-    "test:ui": "node tests/ui/smoke.mjs"
+    "tauri:win": "tauri --config src-tauri/tauri.windows.conf.json",
+    "vendor": "node scripts/fetch-vendor.mjs",
+    "build:agentd": "node scripts/build-agentd.mjs",
+    "test:ui": "node tests/ui/smoke.mjs",
+    "check:win": "node scripts/check-windows.mjs"
   },
   "dependencies": {
     "@git-diff-view/react": "^0.1.8",
@@ -41,6 +44,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
+    "7z-wasm": "^1.2.0",
     "tailwindcss": "^4.3.5",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"

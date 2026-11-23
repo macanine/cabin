@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Map, Value, json};
 
 use crate::Result;
@@ -10,8 +11,8 @@ use crate::device::render as device_render;
 use crate::journal::load_state;
 use crate::steps::base::{CheckResult, Step, StepContext, delete_artifacts};
 use crate::util::{
-    atomic_write_json, atomic_write_text, capture, ensure_dir, message, now_millis, read_json,
-    read_text, remove_path, sha256_file,
+    atomic_write_json, atomic_write_text, ensure_dir, message, now_millis, read_json, remove_path,
+    sha256_file,
 };
 
 /// Installed on every new guest: the Node.js runtime library and the full
@@ -38,21 +39,11 @@ pub fn generate_password() -> String {
 }
 
 pub fn hash_password(password: &str) -> Result<String> {
-    let result = capture(
-        &[
-            "openssl".to_string(),
-            "passwd".to_string(),
-            "-6".to_string(),
-            "-stdin".to_string(),
-        ],
-        std::time::Duration::from_secs(15),
-        Some(&format!("{password}\n")),
-    );
-    let hash = result.output.trim();
-    if result.code != 0 || !hash.starts_with("$6$") {
-        return message(format!("openssl passwd -6 failed: {hash}"));
-    }
-    Ok(hash.to_string())
+    use sha_crypt::{PasswordHasher, ShaCrypt};
+    ShaCrypt::SHA512
+        .hash_password(password.as_bytes())
+        .map(|hash| hash.to_string())
+        .map_err(|error| crate::Error::Message(format!("cannot hash the password: {error}")))
 }
 
 fn proxy_no_proxy(cfg: &crate::config::Config) -> String {
@@ -159,11 +150,32 @@ fn add_ipv4_policy(doc: &mut Map<String, Value>) {
     doc.insert("write_files".into(), Value::Array(files));
 }
 
+fn validate_ssh_public_key(key: &str) -> Result<()> {
+    let mut fields = key.split_whitespace();
+    let kind = fields.next();
+    let blob = fields
+        .next()
+        .and_then(|encoded| STANDARD.decode(encoded).ok());
+    // OpenSSH wire format: length-prefixed key type and 32-byte public key.
+    const ED25519_HEADER: &[u8] = b"\0\0\0\x0bssh-ed25519\0\0\0\x20";
+    if kind != Some("ssh-ed25519")
+        || key.chars().any(|ch| ch.is_control() && ch != '\t')
+        || !blob.is_some_and(|blob| {
+            blob.len() == ED25519_HEADER.len() + 32 && blob.starts_with(ED25519_HEADER)
+        })
+    {
+        return message("invalid SSH public key: expected one OpenSSH ed25519 public key");
+    }
+    Ok(())
+}
+
 pub fn build_user_data(
     cfg: &crate::config::Config,
     password_hash: &str,
     ssh_pubkey: &str,
 ) -> Result<Value> {
+    cfg.validate_seed_identity()?;
+    validate_ssh_public_key(ssh_pubkey)?;
     let guest_proxy = cfg.guest_proxy_url();
     let resolved = if cfg.device_enabled() {
         Some(cfg.device_resolved()?)
@@ -424,101 +436,21 @@ fn apt_settings(proxy: Option<&str>, mirror: Option<&str>) -> Value {
     apt
 }
 
+/// Read the written image back and compare its label and payload.
 fn verify_seed_iso(iso: &Path, expected: &[(&str, &Path)]) -> Result<()> {
-    if !cfg!(target_os = "macos") {
-        let out = iso.parent().unwrap_or(Path::new(".")).join(".seed-check");
-        let _ = std::fs::remove_dir_all(&out);
-        let result = (|| -> Result<()> {
-            let label = crate::platform::linux_extract_iso(iso, &out)?;
-            if label.to_lowercase() != "cidata" {
-                return message(format!(
-                    "seed ISO volume label is {label:?}, expected CIDATA"
-                ));
-            }
-            for (name, source) in expected {
-                let target = out.join(name);
-                if !target.exists() {
-                    return message(format!("seed ISO is missing {name}"));
-                }
-                if sha256_file(&target)? != sha256_file(source)? {
-                    return message(format!("seed ISO file hash mismatch: {name}"));
-                }
-            }
-            Ok(())
-        })();
-        let _ = std::fs::remove_dir_all(&out);
-        return result;
+    let (label, files) = crate::iso::read_iso(iso)?;
+    if !label.eq_ignore_ascii_case("cidata") {
+        return message(format!("seed ISO volume label is {label:?}, expected CIDATA"));
     }
-    let mount = iso.parent().unwrap_or(Path::new(".")).join(".seed-mnt");
-    let _ = std::fs::remove_dir_all(&mount);
-    ensure_dir(&mount)?;
-    let mut attached = false;
-    let result = (|| -> Result<()> {
-        let attach = capture(
-            &[
-                "hdiutil".to_string(),
-                "attach".to_string(),
-                "-readonly".to_string(),
-                "-nobrowse".to_string(),
-                "-mountpoint".to_string(),
-                mount.display().to_string(),
-                iso.display().to_string(),
-            ],
-            std::time::Duration::from_secs(60),
-            None,
-        );
-        if attach.code != 0 {
-            return message(format!(
-                "cannot mount generated seed ISO: {}",
-                attach.output.trim()
-            ));
+    for (name, source) in expected {
+        let Some((_, data)) = files.iter().find(|(found, _)| found == name) else {
+            return message(format!("seed ISO is missing {name}"));
+        };
+        if crate::util::sha256_bytes(data) != sha256_file(source)? {
+            return message(format!("seed ISO file hash mismatch: {name}"));
         }
-        attached = true;
-        let info = capture(
-            &[
-                "diskutil".to_string(),
-                "info".to_string(),
-                mount.display().to_string(),
-            ],
-            std::time::Duration::from_secs(20),
-            None,
-        );
-        let mut volume = String::new();
-        for line in info.output.lines() {
-            if let Some(rest) = line.trim().strip_prefix("Volume Name:") {
-                volume = rest.trim().to_string();
-            }
-        }
-        if volume.to_lowercase() != "cidata" {
-            return message(format!(
-                "seed ISO volume label is {volume:?}, expected CIDATA"
-            ));
-        }
-        for (name, source) in expected {
-            let target = mount.join(name);
-            if !target.exists() {
-                return message(format!("seed ISO is missing {name}"));
-            }
-            if sha256_file(&target)? != sha256_file(source)? {
-                return message(format!("seed ISO file hash mismatch: {name}"));
-            }
-        }
-        Ok(())
-    })();
-    if attached {
-        let _ = capture(
-            &[
-                "hdiutil".to_string(),
-                "detach".to_string(),
-                mount.display().to_string(),
-                "-force".to_string(),
-            ],
-            std::time::Duration::from_secs(60),
-            None,
-        );
     }
-    let _ = std::fs::remove_dir_all(&mount);
-    result
+    Ok(())
 }
 
 pub struct SeedStep;
@@ -625,6 +557,7 @@ impl Step for SeedStep {
 
     fn apply(&self, ctx: &mut StepContext) -> Result<()> {
         let cfg = ctx.cfg.clone();
+        cfg.validate_seed_identity()?;
         let provision = load_state(&cfg.home, &cfg.name, "provision").unwrap_or(Value::Null);
         if provision.get("status").and_then(Value::as_str) == Some("applied") {
             return message(
@@ -646,20 +579,6 @@ impl Step for SeedStep {
         {
             password = Some(existing.to_string());
         }
-        let mut removed = Vec::new();
-        for name in SEED_FILES {
-            let path = cfg.instance_file(name);
-            if path.exists() {
-                removed.push(name.to_string());
-                remove_path(&path)?;
-            }
-        }
-        if !removed.is_empty() {
-            ctx.log(&format!(
-                "removed previous seed files: {}",
-                removed.join(", ")
-            ));
-        }
         let password = match password {
             Some(password) => password,
             None => {
@@ -676,7 +595,7 @@ impl Step for SeedStep {
         let result = (|| -> Result<(Map<String, Value>, Value)> {
             ctx.log("generating ed25519 SSH key for the guest");
             ctx.run(
-                &[
+                &crate::platform::resolve_ssh_argv(vec![
                     "ssh-keygen".to_string(),
                     "-q".to_string(),
                     "-t".to_string(),
@@ -687,16 +606,22 @@ impl Step for SeedStep {
                     format!("vmctl:{}", cfg.name),
                     "-f".to_string(),
                     stage.join("id_ed25519").display().to_string(),
-                ],
+                ]),
                 std::time::Duration::from_secs(60),
                 true,
             )?;
             crate::util::chmod(&stage.join("id_ed25519"), 0o600)?;
-            let ssh_pubkey = read_text(&stage.join("id_ed25519.pub")).trim().to_string();
-            if !ssh_pubkey.starts_with("ssh-ed25519 ") {
-                return message("ssh-keygen produced an unexpected public key");
-            }
-            let user_data = build_user_data(&cfg, &password_hash, &ssh_pubkey)?;
+            let ssh_pubkey =
+                std::fs::read_to_string(stage.join("id_ed25519.pub")).map_err(|error| {
+                    crate::Error::Message(format!(
+                        "could not read the generated SSH public key: {error}"
+                    ))
+                })?;
+            let user_data = build_user_data(
+                &cfg,
+                &password_hash,
+                ssh_pubkey.trim_end_matches(['\r', '\n']),
+            )?;
             let user_data_text = format!(
                 "#cloud-config\n{}\n",
                 crate::py_json::dumps_pretty_with(&user_data, true)
@@ -729,16 +654,12 @@ impl Step for SeedStep {
             atomic_write_text(&stage.join("meta-data"), &meta_data_text, 0o600)?;
             atomic_write_text(&stage.join("network-config"), &network_config_text, 0o600)?;
             ctx.log("building the CIDATA seed ISO");
-            ctx.run(
-                &crate::platform::seed_iso_argv(
-                    &stage,
-                    &stage.join("seed.iso"),
-                    &["user-data", "meta-data", "network-config"],
-                ),
-                std::time::Duration::from_secs(120),
-                true,
+            crate::platform::build_seed_iso(
+                &stage,
+                &stage.join("seed.iso"),
+                &["user-data", "meta-data", "network-config"],
             )?;
-            ctx.log("verifying seed ISO label and payload by read-only mount");
+            ctx.log("verifying seed ISO label and payload");
             verify_seed_iso(
                 &stage.join("seed.iso"),
                 &[
@@ -770,6 +691,20 @@ impl Step for SeedStep {
                 &Value::Object(credentials.clone()),
                 0o600,
             )?;
+            let mut removed = Vec::new();
+            for name in SEED_FILES {
+                let path = cfg.instance_file(name);
+                if path.exists() {
+                    removed.push(name.to_string());
+                    remove_path(&path)?;
+                }
+            }
+            if !removed.is_empty() {
+                ctx.log(&format!(
+                    "removed previous seed files: {}",
+                    removed.join(", ")
+                ));
+            }
             let moves = [
                 ("seed.iso", cfg.seed_path()),
                 ("user-data", cfg.user_data_path()),
@@ -852,8 +787,68 @@ impl Step for SeedStep {
 #[cfg(test)]
 mod apt_tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
-    use std::process::Command;
+
+    const TEST_SSH_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f guest test";
+
+    #[test]
+    fn seed_validates_identity_and_the_ed25519_wire_format() {
+        let mut cfg = crate::config::Config {
+            username: "_guest-42".into(),
+            hostname: "9-guest".into(),
+            ..Default::default()
+        };
+        assert!(build_user_data(&cfg, "hash", TEST_SSH_KEY).is_ok());
+        for key in [
+            "ssh-ed25519",
+            "ssh-ed25519 !!!!",
+            "ssh-ed25519 YWJj",
+            &TEST_SSH_KEY.replace("AAAAC3", "AAAAD3"),
+            &TEST_SSH_KEY.replace(" guest", "\nguest"),
+            &TEST_SSH_KEY.replace(" guest", "\0guest"),
+        ] {
+            assert!(
+                build_user_data(&cfg, "hash", key)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("invalid SSH public key")
+            );
+        }
+        for username in ["", "guest\nroot", "名字", "guest user"] {
+            cfg.username = username.into();
+            assert!(
+                build_user_data(&cfg, "hash", TEST_SSH_KEY)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("--user")
+            );
+        }
+        cfg.username = "guest".into();
+        for hostname in ["-guest", "guest-", "guest.local", "名字", "guest\nsecond"] {
+            cfg.hostname = hostname.into();
+            assert!(
+                build_user_data(&cfg, "hash", TEST_SSH_KEY)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("--hostname")
+            );
+        }
+    }
+
+    #[test]
+    fn password_hashes_are_salted_sha512_crypt_that_verify() {
+        use sha_crypt::{PasswordVerifier, ShaCrypt};
+        let first = hash_password("correct horse").unwrap();
+        assert!(first.starts_with("$6$"), "{first}");
+        assert_ne!(first, hash_password("correct horse").unwrap());
+        let hash = sha_crypt::PasswordHashRef::new(&first).unwrap();
+        ShaCrypt::SHA512.verify_password(b"correct horse", hash).unwrap();
+        assert!(ShaCrypt::SHA512.verify_password(b"wrong", hash).is_err());
+        // `openssl passwd -6 -salt abcdefgh hunter2`: the format the guest checks.
+        let known = "$6$abcdefgh$M/eYsB4rVXAm3ZNc88J.UD9rCKAT6FB1rahiwJCHtEndQNORCub5qhjxn50qbqVVthkM.9HpEwtf0t.iV9uH0/";
+        ShaCrypt::SHA512
+            .verify_password(b"hunter2", sha_crypt::PasswordHashRef::new(known).unwrap())
+            .unwrap();
+    }
 
     #[test]
     fn gateway_cloud_init_is_explicitly_ipv4_only() {
@@ -865,8 +860,13 @@ mod apt_tests {
             assert_eq!(iface["dhcp6"], false);
             assert_eq!(iface["accept-ra"], false);
             assert_eq!(iface["link-local"], json!(["ipv4"]));
-            let data = build_user_data(&cfg, "hash", "ssh-ed25519 test").unwrap();
-            let file = data["write_files"].as_array().unwrap().iter().find(|file| file["path"] == "/etc/sysctl.d/zz-cabin-ipv4.conf").unwrap();
+            let data = build_user_data(&cfg, "hash", TEST_SSH_KEY).unwrap();
+            let file = data["write_files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|file| file["path"] == "/etc/sysctl.d/zz-cabin-ipv4.conf")
+                .unwrap();
             let content = file["content"].as_str().unwrap();
             assert!(content.contains("net.ipv6.conf.default.disable_ipv6 = 1"));
             assert!(content.contains("net.ipv6.conf.lo.disable_ipv6 = 0"));
@@ -901,7 +901,7 @@ mod apt_tests {
                 root,
             )
             .unwrap();
-            let doc = build_user_data(&cfg, "test-hash", "ssh-ed25519 test-key").unwrap();
+            let doc = build_user_data(&cfg, "test-hash", TEST_SSH_KEY).unwrap();
             let files = doc["write_files"].as_array().unwrap();
             let source = files
                 .iter()
@@ -939,7 +939,7 @@ mod apt_tests {
                 root,
             )
             .unwrap();
-            let doc = build_user_data(&cfg, "test-hash", "ssh-ed25519 test-key").unwrap();
+            let doc = build_user_data(&cfg, "test-hash", TEST_SSH_KEY).unwrap();
             let packages = doc["packages"].as_array().unwrap();
             assert_eq!(
                 packages
@@ -953,9 +953,16 @@ mod apt_tests {
         }
     }
 
-    fn switch_script() -> String {
+    pub(super) fn switch_script() -> String {
         crate::os::find("ubuntu-24.04").unwrap().kernel().script()
     }
+}
+
+#[cfg(all(test, unix))]
+mod kernel_switch_tests {
+    use super::apt_tests::switch_script;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
 
     fn exercise_kernel_switch(generic: &str, fail_mark: bool, fail_purge: &str) -> (bool, String) {
         let dir = std::env::temp_dir().join(format!(

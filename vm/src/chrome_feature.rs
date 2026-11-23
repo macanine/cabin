@@ -228,10 +228,12 @@ fn restore_native_display(cfg: &Config) -> Result<Option<Value>> {
 
 fn verify_spice(cfg: &Config, runtime: &Runtime) -> Result<()> {
     use std::io::BufRead;
+    #[cfg(unix)]
     use std::os::unix::fs::FileTypeExt;
 
     crate::vm::check_spice_dir(cfg)?;
     let endpoint = cfg.spice_socket();
+    #[cfg(unix)]
     if !std::fs::symlink_metadata(&endpoint)?
         .file_type()
         .is_socket()

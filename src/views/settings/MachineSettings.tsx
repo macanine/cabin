@@ -1,8 +1,8 @@
 import { useAutoRefresh } from "../../lib/useAutoRefresh";
 import { Button } from "@mantine/core";
 import { IconDownload, IconPlayerPlay, IconPlayerStop, IconServer, IconTrash } from "@tabler/icons-react";
-import { useEffect, useState } from "react";
-import { RecoveryPanel } from "../../components/Recovery";
+import { useCallback, useEffect, useState } from "react";
+import { CopyDiagnosticsButton, RecoveryPanel } from "../../components/Recovery";
 import { toIpcError } from "../../services/ipc/common";
 import { MachineDetailsPanel, MachineResources } from "./MachineDetailsPanel";
 import { machineIpc } from "../../services/ipc/app";
@@ -10,7 +10,7 @@ import { confirmAction } from "../../services/ipc/dialogs";
 import { useApp } from "../../state/store";
 import { attempt } from "../../lib/operations";
 import { uiActions } from "../../state/ui";
-import { isOptionalCheck } from "../../lib/installForm";
+import { diskGb } from "../../lib/installForm";
 import { reportElapsed } from "../../lib/startReport";
 import { formatBytes, formatDuration, formatInteger } from "../../lib/format";
 import { machineLabel } from "../../components/MachineGate";
@@ -59,13 +59,17 @@ export function MachineSettings() {
   const connected = machine?.connection === "connected";
   const inspection = useInspection(machineIpc.details, installed ? request : null);
   const observation = useInspection(machineIpc.observation, connected ? request : null);
-  const checks = useInspection(machineIpc.checks, request);
+  const loadChecks = useCallback(
+    () => machineIpc.checks(diskGb(machine?.diskSize) ?? 20, machine?.memoryMb ?? 4096).then((report) => report.items),
+    [machine?.diskSize, machine?.memoryMb],
+  );
+  const checks = useInspection(loadChecks, request);
 
   if (!machine) return <div className="page" />;
 
   const busy = machine.busy != null;
   const running = machine.state === "running";
-  const blocking = checks?.value?.some((check) => !check.ok && !isOptionalCheck(check.id)) ?? false;
+  const blocking = checks?.value?.some((check) => !check.ok && !check.optional) ?? false;
   const tone = machine.error ? "bad" : connected && running ? "ok" : busy || running ? "warn" : "";
   const startFailed = start?.state === "failed";
   const recoveryNeeded = machine.error != null || startFailed;
@@ -96,7 +100,7 @@ export function MachineSettings() {
             {machine.guestVersion && <div className="text-xs text-faint">cabind {machine.guestVersion}{machine.os ? ` · ${machine.os}` : ""}</div>}
           </div>
           {!installed ? (
-            <Button leftSection={<IconDownload size={14} />} disabled={!busy && blocking} onClick={() => uiActions.navigate({ kind: "install" })}>
+            <Button leftSection={<IconDownload size={14} />} onClick={() => uiActions.navigate({ kind: "install" })}>
               {busy ? "Show progress" : "Install…"}
             </Button>
           ) : running ? (
@@ -123,7 +127,7 @@ export function MachineSettings() {
       ))}
       {connected && observation?.error && <p className="muted machine-note" role="status">Guest observation unavailable · {observation.error}</p>}
 
-      <Section title="Startup and diagnostics">
+      <Section title="Startup and diagnostics" action={<CopyDiagnosticsButton />}>
         {start ? (
           <details className="machine-expander" open={startFailed || start.state === "running" || undefined}>
             <summary>{startFailed ? "Start failed" : start.state === "running" ? "Start in progress" : `Last start · ${formatDuration(reportElapsed(start, Date.now()))}`}</summary>
@@ -131,17 +135,17 @@ export function MachineSettings() {
           </details>
         ) : <p className="muted machine-note">No startup report in this app session</p>}
         <details className="machine-expander" open={blocking || undefined}>
-          <summary>This Mac</summary>
+          <summary>This computer</summary>
           {checks?.value?.length ? <ul className="machine-findings">
             {checks.value.map((check) => <li key={check.id}>
-              <StateIcon tone={check.ok ? "ok" : isOptionalCheck(check.id) ? "skipped" : "bad"} />
+              <StateIcon tone={check.ok ? "ok" : check.optional ? "skipped" : "bad"} />
               <div><div>{check.label}</div><div className="muted fs-12">{check.detail}</div></div>
             </li>)}
-          </ul> : <p className="muted machine-note">{checks?.error ?? (checks ? "No checks available" : "Checking this Mac…")}</p>}
+          </ul> : <p className="muted machine-note">{checks?.error ?? (checks ? "No checks available" : "Checking this computer…")}</p>}
         </details>
       </Section>
 
-      {(installed || recoveryNeeded) && <Section title="Recovery mode" hint="These tools run on your Mac, even when the guest cannot connect." quiet>
+      {(installed || recoveryNeeded) && <Section title="Recovery mode" hint="These tools run on this computer, even when the guest cannot connect." quiet>
         {installed && <div className="mb-3 flex flex-wrap items-center gap-3">
           <div className="min-w-0 flex-1">
             <strong>Verify or repair installation</strong>

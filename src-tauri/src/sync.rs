@@ -73,6 +73,10 @@ fn shell_quote(text: &str) -> String {
 /// own long-lived connection. A local shell used by tests is left untouched.
 fn reuse_ssh(mut ssh: Vec<String>, dir: &Path) -> Vec<String> {
     use std::hash::{Hash, Hasher};
+    // Windows OpenSSH has no ControlMaster: plain connections are used.
+    if cfg!(windows) {
+        return ssh;
+    }
     let is_ssh = ssh
         .first()
         .and_then(|program| Path::new(program).file_name())
@@ -242,7 +246,9 @@ impl SyncManager {
         let host = host.to_string_lossy().into_owned();
         let project = {
             let mut projects = self.projects.locked();
-            let nested = |a: &str, b: &str| a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"));
+            // Compared by path component, so Windows backslashes and guest
+            // slashes both work.
+            let nested = |a: &str, b: &str| Path::new(a).starts_with(b) || Path::new(b).starts_with(a);
             if let Some(other) = projects.iter().find(|p| nested(&p.host_path, &host)) {
                 return Err(format!("{host} overlaps the synced folder of “{}”", other.name));
             }
@@ -896,6 +902,7 @@ mod tests {
         assert_eq!(std::fs::read(path).unwrap(), b"broken base");
     }
 
+    #[cfg(unix)]
     #[test]
     fn short_sync_commands_share_one_ssh_transport() {
         let dir = tempfile::tempdir().unwrap();
@@ -1005,6 +1012,7 @@ mod tests {
 
     /// The real cycle against the real `cabind sync`, with the SSH hop
     /// replaced by a local shell whose HOME holds the binary.
+    #[cfg(unix)]
     fn local_guest() -> Option<(tempfile::TempDir, Vec<String>)> {
         let binary = std::env::var_os("CABIND_TEST_BIN")
             .map(PathBuf::from)
@@ -1022,6 +1030,13 @@ mod tests {
         std::os::unix::fs::symlink(binary.canonicalize().unwrap(), &bin).unwrap();
         let ssh = vec!["env".into(), format!("HOME={}", home.path().display()), "sh".into(), "-c".into()];
         Some((home, ssh))
+    }
+
+    /// `cabind` runs in the Linux guest; its end-to-end tests need a Unix shell.
+    #[cfg(not(unix))]
+    fn local_guest() -> Option<(tempfile::TempDir, Vec<String>)> {
+        eprintln!("skipping: the end-to-end sync tests need a Unix shell");
+        None
     }
 
     fn write(root: &Path, rel: &str, body: &str, secs: u64) {

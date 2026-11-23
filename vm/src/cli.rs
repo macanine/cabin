@@ -1076,7 +1076,7 @@ pub fn cmd_doctor(args: &Args) -> Result<i32> {
     println!("preflight: ok");
     println!("home: {}", cfg.home.display());
     let version = capture(
-        &["qemu-system-aarch64".to_string(), "--version".to_string()],
+        &[crate::arch::GuestArch::current().qemu_system_binary().to_string(), "--version".to_string()],
         std::time::Duration::from_secs(5),
         None,
     );

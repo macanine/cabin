@@ -1,9 +1,10 @@
 //! Host network interfaces usable as an explicitly selected IPv4 egress.
 
 use std::collections::BTreeMap;
-use std::ffi::CStr;
 use std::net::Ipv4Addr;
 
+use netdev::Interface;
+use netdev::interface::types::InterfaceType;
 use serde::Serialize;
 
 use crate::{Error, Result};
@@ -17,29 +18,32 @@ pub struct NetworkInterface {
     pub ipv4: Vec<String>,
 }
 
-/// Parse `networksetup -listallhardwareports`, whose names, not BSD device
-/// prefixes, identify Wi-Fi, Ethernet, and other physical ports on macOS.
-#[cfg(any(target_os = "macos", test))]
-fn hardware_ports(text: &str) -> BTreeMap<String, String> {
-    let mut ports = BTreeMap::new();
-    let mut label = None;
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(value) = line.strip_prefix("Hardware Port: ") {
-            label = Some(value.trim().to_string());
-        } else if let Some(name) = line.strip_prefix("Device: ")
-            && let Some(label) = label.take()
-        {
-            ports.insert(name.trim().to_string(), label);
-        }
+/// The name interfaces are selected by: the adapter's friendly name on
+/// Windows (the numeric device name is a GUID), the BSD/Linux name elsewhere.
+fn key(interface: &Interface) -> String {
+    if cfg!(windows) {
+        interface.friendly_name.clone().unwrap_or_else(|| interface.name.clone())
+    } else {
+        interface.name.clone()
     }
-    ports
 }
 
-fn kind(name: &str, hardware: Option<&str>) -> &'static str {
-    if let Some(label) = hardware {
-        let label = label.to_ascii_lowercase();
-        if label.contains("wi-fi") || label.contains("wifi") || label.contains("airport") {
+fn kind(interface: &Interface) -> &'static str {
+    let name = interface.name.to_ascii_lowercase();
+    let label = interface.friendly_name.as_deref().unwrap_or_default().to_ascii_lowercase();
+    // Friendly names are localized, so the numeric type decides where it can.
+    let tunnel = matches!(
+        interface.if_type,
+        InterfaceType::Tunnel | InterfaceType::Ppp | InterfaceType::ProprietaryVirtual
+    );
+    if tunnel
+        || ["utun", "tun", "ppp", "ipsec", "wg"].iter().any(|prefix| name.starts_with(prefix))
+        || ["tap", "wireguard", "vpn", "tunnel"].iter().any(|word| label.contains(word))
+    {
+        return "vpn";
+    }
+    if !label.is_empty() {
+        if interface.if_type == InterfaceType::Wireless80211 {
             return "wifi";
         }
         if label.contains("ethernet") || label.contains("lan") {
@@ -47,121 +51,69 @@ fn kind(name: &str, hardware: Option<&str>) -> &'static str {
         }
         return "hardware";
     }
-    // BSD Ethernet-class devices remain identifiable without a port label.
-    #[cfg(target_os = "macos")]
-    if name.strip_prefix("en").is_some_and(|suffix| {
-        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
-    }) {
-        return "hardware";
-    }
-    #[cfg(target_os = "linux")]
+    // Ethernet-class device names remain identifiable without a port label.
     if ["eth", "en", "wl"].iter().any(|prefix| name.starts_with(prefix)) {
-        return "hardware";
-    }
-    if name.starts_with("utun")
-        || name.starts_with("tun")
-        || name.starts_with("ppp")
-        || name.starts_with("ipsec")
-        || name.starts_with("wg")
-    {
-        "vpn"
+        "hardware"
     } else {
         "other"
     }
 }
 
-#[derive(Default)]
-struct InterfaceAddresses {
-    flags: u32,
+/// One non-loopback interface's state, merged by selection name.
+struct Link {
+    index: u32,
+    usable_link: bool,
     ipv4: Vec<(Ipv4Addr, Option<Ipv4Addr>)>,
+    interface: Interface,
 }
 
-impl InterfaceAddresses {
+impl Link {
     fn usable(&self) -> bool {
-        let required = (libc::IFF_UP | libc::IFF_RUNNING) as u32;
-        self.flags & required == required && self.ipv4.iter().any(|(ip, _)| !ip.is_link_local())
+        self.usable_link && self.ipv4.iter().any(|(ip, _)| !ip.is_link_local())
+    }
+
+    fn label(&self, name: &str) -> String {
+        match self.interface.friendly_name.as_deref() {
+            Some(label) if label != name => format!("{label} ({name})"),
+            _ => name.to_string(),
+        }
     }
 }
 
-fn ipv4(address: *const libc::sockaddr) -> Option<Ipv4Addr> {
-    if address.is_null() || unsafe { (*address).sa_family as i32 } != libc::AF_INET {
-        return None;
+fn links() -> BTreeMap<String, Link> {
+    let mut found = BTreeMap::new();
+    for interface in netdev::get_interfaces().into_iter().filter(|item| !item.is_loopback()) {
+        let mut ipv4: Vec<_> = interface
+            .ipv4
+            .iter()
+            .map(|net| (net.addr(), Some(net.netmask())))
+            .filter(|(ip, _)| !ip.is_unspecified() && !ip.is_loopback())
+            .collect();
+        ipv4.sort_unstable();
+        ipv4.dedup();
+        found.insert(
+            key(&interface),
+            Link {
+                index: interface.index,
+                usable_link: interface.is_up() && interface.is_running(),
+                ipv4,
+                interface,
+            },
+        );
     }
-    let address = unsafe { &*address.cast::<libc::sockaddr_in>() };
-    Some(Ipv4Addr::from(address.sin_addr.s_addr.to_ne_bytes()))
-}
-
-fn addresses() -> Result<BTreeMap<String, InterfaceAddresses>> {
-    let mut raw = std::ptr::null_mut();
-    if unsafe { libc::getifaddrs(&mut raw) } != 0 {
-        return Err(Error::Message(format!(
-            "Cannot enumerate network interfaces: {}",
-            std::io::Error::last_os_error()
-        )));
-    }
-    struct Addresses(*mut libc::ifaddrs);
-    impl Drop for Addresses {
-        fn drop(&mut self) {
-            unsafe { libc::freeifaddrs(self.0) }
-        }
-    }
-    let addresses = Addresses(raw);
-    let mut found: BTreeMap<String, InterfaceAddresses> = BTreeMap::new();
-    let mut current = addresses.0;
-    while !current.is_null() {
-        let entry = unsafe { &*current };
-        if !entry.ifa_name.is_null() && entry.ifa_flags & libc::IFF_LOOPBACK as u32 == 0 {
-            let name = unsafe { CStr::from_ptr(entry.ifa_name) }
-                .to_string_lossy()
-                .into_owned();
-            let item = found.entry(name).or_default();
-            item.flags |= entry.ifa_flags;
-            if let Some(ip) = ipv4(entry.ifa_addr)
-                && !ip.is_unspecified() && !ip.is_loopback()
-            {
-                item.ipv4.push((ip, ipv4(entry.ifa_netmask)));
-            }
-        }
-        current = entry.ifa_next;
-    }
-    Ok(found)
+    found
 }
 
 /// Enumerate interfaces with their display labels and current IPv4 addresses.
 pub fn list() -> Result<Vec<NetworkInterface>> {
-    #[cfg(target_os = "macos")]
-    let ports = std::process::Command::new("/usr/sbin/networksetup")
-        .arg("-listallhardwareports")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| hardware_ports(&String::from_utf8_lossy(&output.stdout)))
-        .unwrap_or_default();
-    #[cfg(not(target_os = "macos"))]
-    let ports: BTreeMap<String, String> = BTreeMap::new();
-
-    let mut found = addresses()?;
-    for name in ports.keys() {
-        found.entry(name.clone()).or_default();
-    }
-    Ok(found
+    Ok(links()
         .into_iter()
-        .map(|(name, item)| {
-            let hardware = ports.get(&name);
-            let label = hardware
-                .map(|port| format!("{port} ({name})"))
-                .unwrap_or_else(|| name.clone());
-            let available = item.usable();
-            let mut ips: Vec<_> = item.ipv4.into_iter().map(|(ip, _)| ip).collect();
-            ips.sort_unstable();
-            ips.dedup();
-            NetworkInterface {
-                kind: kind(&name, hardware.map(String::as_str)).into(),
-                name,
-                label,
-                available,
-                ipv4: ips.into_iter().map(|ip| ip.to_string()).collect(),
-            }
+        .map(|(name, link)| NetworkInterface {
+            kind: kind(&link.interface).into(),
+            label: link.label(&name),
+            available: link.usable(),
+            ipv4: link.ipv4.iter().map(|(ip, _)| ip.to_string()).collect(),
+            name,
         })
         .collect())
 }
@@ -174,19 +126,14 @@ pub struct InterfacePath {
 
 /// A snapshot of usable links for detecting changes on adapters outside the default path.
 pub fn paths() -> Result<BTreeMap<String, InterfacePath>> {
-    let mut paths = BTreeMap::new();
-    for (name, mut item) in addresses()?.into_iter().filter(|(_, item)| item.usable()) {
-        let Ok(c_name) = std::ffi::CString::new(name.as_str()) else { continue };
-        let index = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
-        if index == 0 {
-            continue;
-        }
-        item.ipv4.retain(|(ip, _)| !ip.is_link_local());
-        item.ipv4.sort_unstable();
-        item.ipv4.dedup();
-        paths.insert(name, InterfacePath { index, ipv4: item.ipv4 });
-    }
-    Ok(paths)
+    Ok(links()
+        .into_iter()
+        .filter(|(_, link)| link.usable())
+        .map(|(name, mut link)| {
+            link.ipv4.retain(|(ip, _)| !ip.is_link_local());
+            (name, InterfacePath { index: link.index, ipv4: link.ipv4 })
+        })
+        .collect())
 }
 
 /// Refuse a missing or inactive interface instead of falling back to the OS route.
@@ -194,7 +141,7 @@ pub fn require_available(name: &str) -> Result<()> {
     if name.is_empty() || name.trim() != name || name.as_bytes().contains(&0) {
         return Err(Error::Message("Invalid network interface name".into()));
     }
-    if !addresses()?.get(name).is_some_and(InterfaceAddresses::usable) {
+    if !links().get(name).is_some_and(Link::usable) {
         return Err(Error::Message(format!(
             "Network interface {name} is unavailable or has no usable IPv4 address"
         )));
@@ -202,24 +149,46 @@ pub fn require_available(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The first IPv4 address of the named interface when it is usable, otherwise
+/// of the interface the OS routes through.
+pub fn host_ip(name: &str) -> Option<Ipv4Addr> {
+    let links = links();
+    let named = links.get(name).filter(|link| link.usable());
+    let routed = || {
+        let default = netdev::get_default_interface().ok()?;
+        links.get(&key(&default)).filter(|link| link.usable())
+    };
+    named.or_else(routed)?.ipv4.iter().map(|(ip, _)| *ip).find(|ip| !ip.is_link_local())
+}
+
+/// Whether an address belongs to one of this host's interfaces.
+pub fn is_host_address(ip: Ipv4Addr) -> bool {
+    netdev::get_interfaces().iter().any(|item| item.ipv4.iter().any(|net| net.addr() == ip))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn interface(name: &str, label: Option<&str>, if_type: InterfaceType) -> Interface {
+        let mut interface = Interface::dummy();
+        interface.name = name.into();
+        interface.friendly_name = label.map(Into::into);
+        interface.if_type = if_type;
+        interface
+    }
+
     #[test]
-    fn hardware_labels_classify_ports_without_guessing_en_numbers() {
-        let ports = hardware_ports(
-            "Hardware Port: Ethernet\nDevice: en0\nEthernet Address: aa\n\nHardware Port: Wi-Fi\nDevice: en8\n",
-        );
-        assert_eq!(
-            kind("en0", ports.get("en0").map(String::as_str)),
-            "ethernet"
-        );
-        assert_eq!(kind("en8", ports.get("en8").map(String::as_str)), "wifi");
-        assert_eq!(kind("en9", Some("USB adapter")), "hardware");
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        assert_eq!(kind("en9", None), "hardware");
-        assert_eq!(kind("utun3", None), "vpn");
+    fn kinds_come_from_type_label_and_name() {
+        let kind = |name, label, ty| super::kind(&interface(name, label, ty));
+        assert_eq!(kind("en0", Some("Ethernet"), InterfaceType::Ethernet), "ethernet");
+        assert_eq!(kind("en8", Some("Wi-Fi"), InterfaceType::Wireless80211), "wifi");
+        assert_eq!(kind("en9", Some("USB adapter"), InterfaceType::Ethernet), "hardware");
+        assert_eq!(kind("en9", None, InterfaceType::Ethernet), "hardware");
+        assert_eq!(kind("utun3", None, InterfaceType::Tunnel), "vpn");
+        assert_eq!(kind("{guid}", Some("WireGuard Tunnel"), InterfaceType::Ethernet), "vpn");
+        assert_eq!(kind("{guid}", Some("Dial-up"), InterfaceType::Ppp), "vpn");
+        assert_eq!(kind("awdl0", None, InterfaceType::PeerToPeerWireless), "other");
     }
 
     #[test]

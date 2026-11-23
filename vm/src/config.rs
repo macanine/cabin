@@ -18,8 +18,7 @@ use crate::py_json;
 use crate::util::{host_ip, message, now_millis, read_json, sha256_text, timestamp_millis};
 use crate::{Error, Result};
 
-pub const CHROME_URL: &str =
-    "https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb";
+pub const CHROME_URL: &str = crate::arch::GuestArch::current().chrome_deb_url();
 
 pub const NETWORK_MODES: [&str; 5] = [
     "user",
@@ -871,18 +870,23 @@ impl Config {
     }
 
     // ---- validation ----------------------------------------------------
-    pub fn validate(&self) -> Result<()> {
-        if !validation_regex(r"^[a-z][a-z0-9-]{1,30}$")?.is_match(&self.name) {
-            return message("--name must match ^[a-z][a-z0-9-]{1,30}$ (lowercase, 2-31 chars)");
-        }
+    pub(crate) fn validate_seed_identity(&self) -> Result<()> {
         if !validation_regex(r"^[a-z_][a-z0-9_-]{0,31}$")?.is_match(&self.username) {
             return message("--user must be a valid lowercase Linux username (max 32 chars)");
         }
-        if !valid_hostname(&self.hostname) {
+        if self.hostname.is_empty() || crate::machine::hostname_problem(&self.hostname).is_some() {
             return message(
                 "--hostname must be a valid RFC1123 hostname (lowercase, max 63 chars)",
             );
         }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if !validation_regex(r"^[a-z][a-z0-9-]{1,30}$")?.is_match(&self.name) {
+            return message("--name must match ^[a-z][a-z0-9-]{1,30}$ (lowercase, 2-31 chars)");
+        }
+        self.validate_seed_identity()?;
         if let Some(password) = &self.password
             && password.len() < 8
         {
@@ -1098,21 +1102,6 @@ impl Config {
         }
         crate::util::atomic_write_json(&self.instance_meta_path(), &meta, 0o600)
     }
-}
-
-fn valid_hostname(text: &str) -> bool {
-    if text.is_empty() || text.len() > 63 {
-        return false;
-    }
-    let bytes = text.as_bytes();
-    if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
-        return false;
-    }
-    if !bytes[bytes.len() - 1].is_ascii_lowercase() && !bytes[bytes.len() - 1].is_ascii_digit() {
-        return false;
-    }
-    text.chars()
-        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
 fn mac_for(name: &str, index: u32) -> String {

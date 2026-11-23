@@ -11,10 +11,10 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent_core::model::{
-    AppEvent, AppSnapshot, BrowserEnvironmentProbe, BrowserEnvironmentView, BrowserSettings, GuestConnection, GuestNetworkProbe, HostCheck,
+    AppEvent, AppSnapshot, BrowserEnvironmentProbe, BrowserEnvironmentView, BrowserSettings, GuestConnection, GuestNetworkProbe,
     HostSnapshot, InstallPlan, InstallStep, MachineInstallOptions, MachineState, MachineStatus,
     MirrorResult, NetworkCheckReport, NetworkConnectivity, NetworkGateMode,
     NetworkRoute, NetworkStatus, StartReport, StartState,
@@ -47,6 +47,34 @@ struct LinkFailure {
     reachable: bool,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct GuestBuild {
+    generation: u64,
+    pid: Option<u32>,
+    build: String,
+}
+
+#[derive(Default)]
+struct Deployment(Option<GuestBuild>);
+
+impl Deployment {
+    fn claim(&mut self, guest: &GuestBuild) -> bool {
+        if self.0.as_ref() == Some(guest) {
+            return false;
+        }
+        self.0 = Some(guest.clone());
+        true
+    }
+
+    fn ready(&mut self, guest: &GuestBuild) -> bool {
+        if self.0.as_ref() == Some(guest) {
+            self.0 = None;
+            return true;
+        }
+        false
+    }
+}
+
 pub struct Host {
     machine: Machine,
     /// Mac folders kept in step with folders in the machine.
@@ -56,6 +84,7 @@ pub struct Host {
     /// SHA-256 of the bundled cabind, keyed by its size and mtime so a
     /// rebuild during development is noticed. Hashed once, off the start path.
     agentd_build: Mutex<Option<(u64, std::time::SystemTime, String)>>,
+    deployment: Mutex<Deployment>,
     status: RwLock<MachineStatus>,
     sink: RwLock<Option<Sink>>,
     link: Mutex<Option<Link>>,
@@ -87,6 +116,7 @@ fn start_gateway(
     cfg: &vm_core::config::Config,
     route: Option<&NetworkRoute>,
 ) -> Result<(), AppError> {
+    vm_core::vm::validate_socket_paths(cfg).map_err(Host::vm_error)?;
     match route {
         Some(route) => network.start_with(&cfg.net_socket(), cfg.ssh_port, route)?,
         None => network.start(&cfg.net_socket(), cfg.ssh_port)?,
@@ -145,6 +175,7 @@ impl Host {
             network,
             agentd,
             agentd_build: Mutex::new(None),
+            deployment: Mutex::default(),
             status: RwLock::new(MachineStatus {
                 state: MachineState::NotInstalled,
                 connection: GuestConnection::Offline,
@@ -224,6 +255,9 @@ impl Host {
 
     fn claim_machine(&self, label: &str, connecting: bool) -> Result<MachineStatus, AppError> {
         let mut status = self.status.write().unwrap_or_else(|p| p.into_inner());
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(unavailable("Cabin is quitting"));
+        }
         if status.busy.is_some() {
             return Err(unavailable("A machine operation is already in progress"));
         }
@@ -245,6 +279,7 @@ impl Host {
                 return Err(unavailable("A machine operation is already in progress"));
             }
             let status = self.claim_machine("Starting the machine", true)?;
+            self.generation.fetch_add(1, Ordering::SeqCst);
             *startup = Some((attempt.clone(), report.clone()));
             status
         };
@@ -577,6 +612,9 @@ impl Host {
 
     fn start_machine(&self, attempt: &Arc<Attempt>) -> Result<(), AppError> {
         let result: Result<(), AppError> = (|| {
+            if self.stopping.load(Ordering::Acquire) {
+                return Err(unavailable("Cabin is quitting"));
+            }
             self.machine
                 .open_start_log(attempt)
                 .map_err(Self::vm_error)?;
@@ -877,35 +915,109 @@ impl Host {
         Ok(self.snapshot().machine)
     }
 
-    /// Mac-side prerequisites for running the VM.
-    pub fn checks(&self) -> Vec<HostCheck> {
-        let mut checks = Vec::new();
-        // The built-in QEMU is downloaded by the install itself.
-        let engine = vm_core::qemu_engine::installed(self.machine.home());
-        checks.push(HostCheck {
-            id: "qemu".into(),
-            label: "Built-in QEMU".into(),
-            ok: engine.is_some() || cfg!(target_os = "macos"),
-            detail: match &engine {
-                Some(engine) => engine.qemu.display().to_string(),
-                None if cfg!(target_os = "macos") => format!(
-                    "{} is downloaded during the install",
-                    vm_core::qemu_engine::RELEASE
-                ),
-                None => {
-                    "Install qemu-system-arm, qemu-utils and qemu-efi-aarch64 on this Linux host"
-                        .into()
-                }
+    /// Host readiness for an install of the given size.
+    pub fn checks(&self, disk_gb: u32, memory_mb: u32) -> vm_core::readiness::ReadinessReport {
+        let mut items = vm_core::readiness::host_readiness(self.machine.home(), disk_gb, memory_mb);
+        if let Some(position) = items.iter().position(|item| item.id == "disk") {
+            items.insert(position, vm_core::readiness::service_check(self.agentd.is_file()));
+        }
+        vm_core::readiness::ReadinessReport { items, host: vm_core::readiness::host_facts(self.machine.home()) }
+    }
+
+    fn install_result_path(&self) -> PathBuf {
+        vm_core::StatePaths::new(self.machine.home()).logs().join("last-install.json")
+    }
+
+    /// Keep the outcome even if setup stopped before the first step was logged.
+    pub fn record_install_result(&self, started_at: i64, result: &Result<MachineStatus, AppError>, username: Option<&str>) {
+        let failure = result.as_ref().err();
+        let state = match failure.map(|error| error.code.as_str()) {
+            None => "succeeded",
+            Some("cancelled") => "cancelled",
+            Some(_) => "failed",
+        };
+        let report = serde_json::json!({
+            "startedAt": started_at,
+            "finishedAt": vm_core::util::now_millis(),
+            "state": state,
+            "error": failure.map(|error| &error.message),
+            "username": username,
+        });
+        if let Err(error) = vm_core::util::atomic_write_json(&self.install_result_path(), &report, 0o600) {
+            eprintln!("cabin: could not record the install outcome: {error}");
+        }
+    }
+
+    /// Collect support information even when the guest is offline.
+    pub fn diagnostics(
+        &self,
+        disk_gb: u32,
+        memory_mb: u32,
+        steps: Vec<InstallStep>,
+        install_error: Option<String>,
+        install_user: Option<String>,
+    ) -> Result<String, AppError> {
+        use vm_core::readiness::{diagnostic_history, host_os_version, redact_diagnostics};
+
+        let home = self.machine.home();
+        let machine = self.status.read_lock().clone();
+        let start = self.startup.locked().as_ref().map(|(_, report)| report.clone());
+        let mut history = diagnostic_history(home);
+        let install = vm_core::util::read_json(&self.install_result_path()).unwrap_or_default();
+        let mut recorded_events = history["lastInstall"].take();
+        if let Some(started_at) = install["startedAt"].as_i64()
+            && recorded_events[0]["ts"].as_i64().is_some_and(|ts| ts < started_at)
+        {
+            recorded_events = serde_json::json!([]);
+        }
+        let mut readiness = self.checks(disk_gb, memory_mb);
+        let host_user = readiness.host.username.take();
+        let platform = &readiness.host.platform;
+        let vendor = vm_core::vendor::bundled_manifest().map(|vendor| vendor.manifest);
+        let mut report = serde_json::json!({
+            "versions": {
+                "cabin": env!("CARGO_PKG_VERSION"),
+                "bundledCabind": self.agentd.is_file().then_some(env!("CARGO_PKG_VERSION")),
+                "runningCabind": machine.guest_version,
+                "ubuntu": machine.os,
+                "qemu": vendor.as_ref().map(|manifest| &manifest.qemu.version)
+                    .map(String::as_str).or_else(|| (platform == "macos" && vm_core::qemu_engine::installed(home).is_some()).then_some(vm_core::qemu_engine::RELEASE)),
+                "openSsh": vendor.as_ref().and_then(|manifest| manifest.ssh.as_ref()).map(|ssh| &ssh.version),
             },
+            "host": {
+                "facts": readiness.host,
+                "osVersion": host_os_version(platform),
+                "architecture": vm_core::platform::native_arch(),
+            },
+            "readiness": readiness.items,
+            "lastInstall": {
+                "steps": steps,
+                "state": install["state"],
+                "startedAt": install["startedAt"],
+                "finishedAt": install["finishedAt"],
+                "error": install_error.map(serde_json::Value::String).unwrap_or_else(|| install["error"].clone()),
+                "recordedEvents": recorded_events,
+            },
+            "lastStart": start.as_ref().map(|report| serde_json::json!(report)).unwrap_or_else(|| history["lastStart"].take()),
+            "logTails": history["logTails"].take(),
         });
 
-        checks.push(HostCheck {
-            id: "agentd".into(),
-            label: "cabind for the VM".into(),
-            ok: self.agentd.is_file(),
-            detail: self.agentd.display().to_string(),
-        });
-        checks
+        let profile = std::env::home_dir();
+        let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+        let users: Vec<_> = [host_user.as_deref(), machine.username.as_deref(), install_user.as_deref(), install["username"].as_str()]
+            .into_iter().flatten().collect();
+        let roots: Vec<_> = [Some(home), profile.as_deref(), appdata.as_deref()].into_iter().flatten().collect();
+        redact_diagnostics(&mut report, &roots, &users);
+        serde_json::to_string_pretty(&report).map_err(|error| AppError::internal(error.to_string()))
+    }
+
+    /// Carry out a readiness fix.
+    pub fn fix(&self, fix: vm_core::readiness::Fix) -> Result<vm_core::readiness::FixOutcome, AppError> {
+        vm_core::readiness::apply_fix(&fix).map_err(|error| AppError {
+            code: "fixFailed".into(),
+            message: error.to_string(),
+            details: None,
+        })
     }
 
     // ------------------------------------------------------- guest link
@@ -1346,6 +1458,9 @@ impl Host {
         network_health::install_power_watch(move |sleeping| {
             if let Some(host) = host.upgrade() {
                 host.network.system_sleep_changed(sleeping);
+                if !sleeping {
+                    host.wake();
+                }
             }
         });
     }
@@ -1828,11 +1943,14 @@ impl Host {
         let stderr = attempt
             .and_then(|attempt| attempt.log_file())
             .map_or_else(Stdio::null, Stdio::from);
-        let mut child = Command::new(&argv[0])
+        let mut command = Command::new(&argv[0]);
+        command
             .args(&argv[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(stderr)
+            .stderr(stderr);
+        vm_core::util::no_window(&mut command);
+        let mut child = command
             .spawn()
             .map_err(|e| unreachable(format!("could not run {}: {e}", argv[0])))?;
         let stdout = child.stdout.take().expect("piped stdout");
@@ -1842,7 +1960,9 @@ impl Host {
             let mut lines = BufReader::new(stdout).lines();
             let _ = hello_tx.send((lines.next(), lines));
         });
-        let hello = match hello_rx.recv_timeout(Duration::from_secs(20)) {
+        let timeout = Duration::from_secs(20) * vm_core::platform::slowdown();
+        let deadline = Instant::now() + timeout;
+        let hello = match hello_rx.recv_timeout(timeout) {
             Err(_) => Err(unreachable(
                 "Timed out waiting for the cabind handshake".into(),
             )),
@@ -1857,14 +1977,14 @@ impl Host {
             // could not be reached; any other code means the guest answered
             // but no (working) daemon did.
             Ok(_) => {
-                let code = child.wait().ok().and_then(|status| status.code());
-                Err(if code == Some(255) {
-                    unreachable("Could not reach the guest over SSH".into())
-                } else {
-                    LinkFailure {
+                let code = wait_for_ssh_exit(&mut child, deadline);
+                Err(match code {
+                    Some(255) => unreachable("Could not reach the guest over SSH".into()),
+                    None => unreachable("SSH closed the handshake without exiting".into()),
+                    _ => LinkFailure {
                         reason: "cabind did not answer".into(),
                         reachable: true,
-                    }
+                    },
                 })
             }
         };
@@ -1885,10 +2005,15 @@ impl Host {
     /// (another build, an older daemon without fingerprints, or no daemon at
     /// all) deploys the bundled binary once and reconnects.
     fn session(self: &Arc<Self>, attempt: Option<Arc<Attempt>>) -> Result<(), String> {
-        use agent_core::rpc::{Handshake, check_hello, short_build};
+        use agent_core::hello::{Handshake, check_hello, short_build};
         let generation = self.generation.load(Ordering::SeqCst);
         let runtime = self.machine.runtime().map_err(|error| error.to_string())?;
-        let expected = self.bundled_build()?;
+        let guest = GuestBuild {
+            generation,
+            pid: runtime.pid(),
+            build: self.bundled_build()?,
+        };
+        let expected = &guest.build;
         let note = |text: &str| {
             if let Some(attempt) = &attempt {
                 attempt.note(text);
@@ -1898,12 +2023,14 @@ impl Host {
             generation != self.generation.load(Ordering::SeqCst)
                 || self.stopping.load(Ordering::Relaxed)
         };
-        let mut deployed = false;
         let (mut child, stdin, lines, version) = loop {
+            if changed() {
+                return Err("The environment changed while connecting".into());
+            }
             note("Connecting to cabind");
             let outcome = self.open_link(&runtime, attempt.as_ref());
             let reason = match outcome {
-                Ok((mut child, stdin, lines, hello)) => match check_hello(&hello, &expected) {
+                Ok((mut child, stdin, lines, hello)) => match check_hello(&hello, expected) {
                     Handshake::Ready(version) => break (child, stdin, lines, version),
                     Handshake::Outdated(reason) => {
                         let _ = child.kill();
@@ -1914,25 +2041,29 @@ impl Host {
                 Err(LinkFailure { reason, reachable: false }) => return Err(reason),
                 Err(LinkFailure { reason, .. }) => reason,
             };
-            if deployed {
-                return Err(format!(
-                    "cabind still does not match this app after an update: {reason}"
-                ));
-            }
             if changed() {
                 return Err("The environment changed while connecting".into());
+            }
+            if !self.deployment.locked().claim(&guest) {
+                let error = format!(
+                    "cabind still does not match this app after an update was attempted: {reason}"
+                );
+                if let Some(attempt) = &attempt {
+                    self.finish_start(attempt, Some(error.clone()));
+                }
+                return Err(error);
             }
             self.update(|status| status.connection = GuestConnection::Updating);
             note(&format!(
                 "{reason}; installing build {}",
-                short_build(&expected)
+                short_build(expected)
             ));
             vm_core::agentd::deploy(&runtime, &self.agentd).map_err(|error| error.to_string())?;
-            deployed = true;
         };
+        let deployed = self.deployment.locked().ready(&guest);
         let daemon = format!(
             "cabind {version} · build {}{}",
-            short_build(&expected),
+            short_build(expected),
             if deployed { " · updated" } else { "" }
         );
         note(&daemon);
@@ -2091,7 +2222,8 @@ impl Host {
                                 || attempt.phase_running(Phase::Network);
                             if stopped
                                 || initializing
-                                || attempt.phase_elapsed(Phase::Daemon) >= Duration::from_secs(90)
+                                || attempt.phase_elapsed(Phase::Daemon)
+                                    >= Duration::from_secs(90) * vm_core::platform::slowdown()
                             {
                                 me.finish_start(
                                     attempt,
@@ -2114,17 +2246,90 @@ impl Host {
             .expect("spawn guest link thread");
     }
 
-    pub fn shutdown(&self) {
-        self.stopping.store(true, Ordering::Relaxed);
+    pub fn prepare_quit(&self, stop_machine: bool) -> Result<(), AppError> {
+        self.quit(stop_machine, Duration::from_secs(12))
+    }
+
+    fn quit(&self, stop_machine: bool, timeout: Duration) -> Result<(), AppError> {
+        self.stopping.store(true, Ordering::Release);
+        self.machine.begin_quit();
+        let busy = self.status.read_lock().busy.is_some();
+        let start = self.active_start();
+        let busy = busy || start.is_some();
+        if let Some(attempt) = start {
+            self.finish_start(&attempt, Some("Cabin is quitting".into()));
+        }
+        self.generation.fetch_add(1, Ordering::SeqCst);
         self.wake();
         self.disconnect();
+        self.sync.disconnect();
+        self.fail_pending("Cabin is quitting");
+        let stopped = if stop_machine || busy {
+            self.machine.shutdown(timeout).map_err(Self::vm_error)
+        } else {
+            Ok(())
+        };
         self.network.stop();
+        stopped
+    }
+
+    pub fn shutdown(&self) {
+        // The normal quit command already completed its cleanup. A native
+        // exit (including the Windows end-session notification) takes this path.
+        if !self.stopping.load(Ordering::Acquire)
+            && let Err(error) = self.quit(true, Duration::from_secs(4))
+        {
+            eprintln!("cabin: {}", error.message);
+        }
+    }
+}
+
+fn wait_for_ssh_exit(child: &mut Child, deadline: Instant) -> Option<i32> {
+    loop {
+        if let Some(status) = child.try_wait().ok()? {
+            return status.code();
+        }
+        let remain = deadline.saturating_duration_since(Instant::now());
+        if remain.is_zero() {
+            return None;
+        }
+        std::thread::sleep(remain.min(Duration::from_millis(20)));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_does_not_repeat_a_deploy_until_a_match_or_a_new_start() {
+        let mut deployment = Deployment::default();
+        let mut guest = GuestBuild {
+            generation: 1,
+            pid: Some(2),
+            build: "new".into(),
+        };
+        assert!(deployment.claim(&guest));
+        for _ in 0..3 {
+            assert!(!deployment.claim(&guest));
+        }
+        guest.generation += 1;
+        assert!(deployment.claim(&guest));
+        assert!(!deployment.claim(&guest));
+        assert!(deployment.ready(&guest));
+        assert!(deployment.claim(&guest));
+    }
+
+    #[test]
+    fn quit_with_a_pending_start_rejects_new_machine_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let machine = Machine::new(dir.path(), vm_core::paths::default_project_root());
+        let host = Host::new(machine, dir.path().join("cabind")).unwrap();
+        let _attempt = host.begin_start().unwrap();
+        host.prepare_quit(false).unwrap();
+        let result = host.claim_machine("Starting", true);
+        assert_eq!(result.unwrap_err().message, "Cabin is quitting");
+    }
 
     #[test]
     fn network_apply_defers_only_interface_changes_without_live_verification() {
@@ -2166,7 +2371,7 @@ mod tests {
         let machine = Machine::new(home.path(), concat!(env!("CARGO_MANIFEST_DIR"), "/../vm"));
         let host = Host::new(machine, PathBuf::from("/missing/agentd")).unwrap();
         let route = NetworkRoute::default();
-        host.network.start(&home.path().join("test-gateway.sock"), 0).unwrap();
+        host.network.start(&home.path().join("gateway.sock"), 0).unwrap();
         host.network.begin_check(route_revision(&route), false).unwrap();
         assert_eq!(host.network.status(true).unwrap().gate, NetworkGateMode::Checking);
         host.sync_environment_revision();

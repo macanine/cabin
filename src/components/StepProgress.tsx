@@ -18,7 +18,7 @@ export interface ProgressStepItem {
   extra?: ReactNode;
   /** One-line explanation under the title. */
   detail?: ReactNode;
-  /** Full log file on the Mac, when worth pointing to. */
+  /** Full log file on this computer, when worth pointing to. */
   logPath?: string | null;
 }
 

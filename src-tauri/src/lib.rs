@@ -33,6 +33,8 @@ macro_rules! with_commands {
             app_background,
             guest_invoke,
             machine_checks,
+            machine_diagnostics,
+            host_fix,
             machine_details,
             storage_status,
             storage_clean,
@@ -89,34 +91,47 @@ macro_rules! names {
     };
 }
 
-/// Mutable state for the Mac app (the VM, its disk, logs).
+/// Mutable state for the desktop app (the VM, its disk, logs).
 fn data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("CABIN_HOME") {
         return PathBuf::from(dir);
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| "/tmp".into());
-    if cfg!(target_os = "macos") {
-        home.join("Library/Application Support/cabin")
-    } else {
-        home.join(".local/share/cabin-host")
-    }
+    // Application Support on macOS, %APPDATA% on Windows, ~/.local/share on Linux.
+    let base = dirs::data_dir().unwrap_or_else(std::env::temp_dir);
+    base.join(if cfg!(target_os = "linux") { "cabin-host" } else { "cabin" })
 }
 
-/// The aarch64 Linux `cabind` copied into the VM.
+/// The bundled QEMU and OpenSSH: the app's `vendor/` resource folder, or
+/// `build/vendor/<platform>/` when running from the repository.
+fn vendor_dir(resources: Option<&std::path::Path>) -> Option<PathBuf> {
+    let platform = if cfg!(target_os = "windows") {
+        "windows-x64"
+    } else {
+        "macos-arm64"
+    };
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../build/vendor")
+        .join(platform);
+    resources
+        .map(|dir| dir.join("vendor"))
+        .into_iter()
+        .chain([dev])
+        .find(|dir| dir.join("manifest.json").is_file())
+}
+
+/// The native Linux `cabind` copied into the VM.
 fn agentd_binary(resources: Option<PathBuf>) -> PathBuf {
     if let Some(path) = std::env::var_os("CABIND_BIN") {
         return PathBuf::from(path);
     }
     let core = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/target");
+    let guest = vm_core::arch::GuestArch::current().rust_musl_triple();
     let mut candidates: Vec<PathBuf> = resources
         .into_iter()
         .map(|dir| dir.join("cabind"))
         .collect();
     // A static musl build runs on any Ubuntu release regardless of glibc.
-    candidates.push(core.join("aarch64-unknown-linux-musl/release/cabind"));
-    candidates.push(core.join("aarch64-unknown-linux-gnu/release/cabind"));
+    candidates.push(core.join(format!("{guest}/release/cabind")));
     candidates
         .iter()
         .find(|path| path.is_file())
@@ -143,6 +158,9 @@ pub fn run() {
                 .filter(|dir| dir.join("config").is_dir())
             {
                 vm_core::paths::set_project_root(dir);
+            }
+            if let Some(dir) = vendor_dir(resources.as_deref()) {
+                vm_core::vendor::set_vendor_dir(dir);
             }
             let agentd = agentd_binary(resources);
             let machine = vm_core::machine::Machine::new(
@@ -197,7 +215,7 @@ mod tests {
             Ok(serde_json::from_str(&std::fs::read_to_string(root.join(path))?)?)
         };
         let app = env!("CARGO_PKG_VERSION");
-        assert_eq!(agent_core::rpc::VERSION, app, "core/Cargo.toml");
+        assert_eq!(agent_core::hello::VERSION, app, "core/Cargo.toml");
         assert_eq!(read("package.json")?["version"], app, "package.json");
         assert_eq!(read("src-tauri/tauri.conf.json")?["version"], app, "tauri.conf.json");
         Ok(())
@@ -223,6 +241,11 @@ mod tests {
             DeviceFinding::decl(&config),
             DeviceDetails::decl(&config),
             MachineDetails::decl(&config),
+            vm_core::readiness::Fix::decl(&config),
+            vm_core::readiness::Readiness::decl(&config),
+            vm_core::readiness::HostFacts::decl(&config),
+            vm_core::readiness::ReadinessReport::decl(&config),
+            vm_core::readiness::FixOutcome::decl(&config),
             vm_core::storage::StorageKind::decl(&config),
             vm_core::storage::StorageEntry::decl(&config),
             vm_core::storage::StorageVolume::decl(&config),
@@ -247,8 +270,11 @@ mod tests {
         if std::env::var("CABIN_UPDATE_IPC_BINDINGS").as_deref() == Ok("1") {
             std::fs::write(path, &generated)?;
         }
+        // Checkouts may carry CRLF line endings; compare content only.
         assert_eq!(
-            std::fs::read_to_string(path).unwrap_or_default(),
+            std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .replace('\r', ""),
             generated,
             "IPC bindings are stale; run CABIN_UPDATE_IPC_BINDINGS=1 cargo test ipc_bindings"
         );

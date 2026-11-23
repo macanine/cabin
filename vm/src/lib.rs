@@ -19,7 +19,9 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+pub mod accel;
 pub mod agentd;
+pub mod arch;
 pub mod browser;
 pub mod chrome_feature;
 pub mod chrome_viewer;
@@ -32,6 +34,7 @@ pub mod display;
 pub mod download;
 pub mod guest_dns;
 pub mod ipv4;
+pub mod iso;
 pub mod journal;
 pub mod lock;
 pub mod machine;
@@ -49,14 +52,18 @@ pub mod preview_forward;
 pub mod proxy;
 pub mod py_json;
 pub mod qemu_engine;
+pub mod readiness;
 pub mod qmp;
 pub mod runner;
 pub mod shell;
 pub mod shoes;
+pub mod sockets;
 pub mod startup;
 pub mod storage;
 pub mod steps;
+pub mod transport;
 pub mod util;
+pub mod vendor;
 pub mod vm;
 pub mod workspace;
 

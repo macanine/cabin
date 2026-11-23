@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::download::{HttpOptions, http_error, is_html, request};
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MirrorResult {
@@ -28,30 +30,36 @@ struct Fetch {
     bytes_per_sec: Option<f64>,
 }
 
-/// GET `url`; `None` when no HTTP response arrived (DNS, connect, timeout).
-fn fetch(url: &str, max_secs: u64, read_body: bool) -> Option<Fetch> {
-    let agent = ureq::AgentBuilder::new()
-        .resolver(crate::ipv4::resolve)
-        .timeout_connect(Duration::from_secs(8))
-        .timeout(Duration::from_secs(max_secs))
-        .try_proxy_from_env(true)
-        .build();
+/// GET the release or index using the installer's host proxy rules.
+fn fetch(url: &str, max_secs: u64, read_body: bool) -> Result<Fetch, String> {
     let started = Instant::now();
-    let response = match agent.get(url).call() {
+    let response = match request(
+        "GET",
+        url,
+        None,
+        &HttpOptions {
+            read_timeout: Duration::from_secs(8),
+            timeout: Some(Duration::from_secs(max_secs)),
+        },
+    ) {
         Ok(response) => response,
         Err(ureq::Error::Status(_, response)) => response,
-        Err(_) => return None,
+        Err(error) => return Err(http_error(&error)),
     };
+    if response.status() == 200 && is_html(&response) {
+        return Err("download received an HTML page instead of the package index; check for a captive portal".into());
+    }
     let first_byte_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
     let status = response.status();
     let mut bytes_per_sec = None;
     if read_body && status == 200 {
         let body_started = Instant::now();
-        let read = std::io::copy(&mut response.into_reader(), &mut std::io::sink()).ok()?;
+        let read = std::io::copy(&mut response.into_reader(), &mut std::io::sink())
+            .map_err(|error| format!("could not download the package index: {error}"))?;
         let secs = body_started.elapsed().as_secs_f64().max(0.001);
         bytes_per_sec = Some(read as f64 / secs);
     }
-    Some(Fetch {
+    Ok(Fetch {
         status,
         first_byte_ms,
         bytes_per_sec,
@@ -74,8 +82,9 @@ pub fn test_one(os: &crate::os::Os, uri: &str) -> MirrorResult {
             speed_kbps: speed,
             detail,
         };
-    let Some(release) = fetch(&format!("{uri}/dists/{}/Release", os.codename), 15, false) else {
-        return result("unreachable", None, None, "Could not connect".into());
+    let release = match fetch(&format!("{uri}/dists/{}/Release", os.codename), 15, false) {
+        Ok(release) => release,
+        Err(detail) => return result("unreachable", None, None, detail),
     };
     let latency = Some(release.first_byte_ms);
     match release.status {
@@ -90,12 +99,14 @@ pub fn test_one(os: &crate::os::Os, uri: &str) -> MirrorResult {
         }
         other => return result("unreachable", latency, None, format!("HTTP {other}")),
     }
+    let guest = crate::arch::GuestArch::current();
+    let arch = guest.debian();
     let index = format!(
-        "{uri}/dists/{}/main/binary-arm64/Packages.gz",
+        "{uri}/dists/{}/main/binary-{arch}/Packages.gz",
         os.mirror_index_suite()
     );
     match fetch(&index, 30, true) {
-        Some(index) if index.status == 200 => {
+        Ok(index) if index.status == 200 => {
             let speed = index
                 .bytes_per_sec
                 .map(|bytes| (bytes / 1024.0).round() as u32);
@@ -104,23 +115,19 @@ pub fn test_one(os: &crate::os::Os, uri: &str) -> MirrorResult {
                 latency,
                 speed,
                 format!(
-                    "ARM64 packages available{}",
+                    "{} packages available{}",
+                    guest.label(),
                     speed.map(|s| format!(", {s} KB/s")).unwrap_or_default()
                 ),
             )
         }
-        Some(index) => result(
+        Ok(index) => result(
             "noArm64",
             latency,
             None,
-            format!("Release found but no arm64 index (HTTP {})", index.status),
+            format!("Release found but no {arch} index (HTTP {})", index.status),
         ),
-        None => result(
-            "unreachable",
-            latency,
-            None,
-            "Package index download timed out".into(),
-        ),
+        Err(detail) => result("unreachable", latency, None, detail),
     }
 }
 
@@ -155,6 +162,39 @@ mod tests {
         let result = test_one(&crate::os::RELEASES[0], "http://127.0.0.1:1/ubuntu-ports");
         assert_eq!(result.status, "unreachable");
         assert_eq!(result.host, "127.0.0.1");
+    }
+
+    #[test]
+    fn captive_portal_is_not_ranked_as_a_package_mirror() {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for mut stream in listener.incoming().take(2).map(Result::unwrap) {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut first = String::new();
+                reader.read_line(&mut first).unwrap();
+                let content_type = if first.contains("/Release ") {
+                    "text/plain"
+                } else {
+                    "text/html"
+                };
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() <= 2 {
+                        break;
+                    }
+                }
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            }
+        });
+        let result = test_one(&crate::os::RELEASES[0], &format!("http://{address}"));
+        server.join().unwrap();
+        assert_eq!(result.status, "unreachable");
+        assert!(result.detail.contains("captive portal"), "{result:?}");
     }
 
     #[test]

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": [
+      "nsis"
+    ],
+    "resources": {
+      "../core/target/x86_64-unknown-linux-musl/release/cabind": "cabind",
+      "../vm/config/": "vm/config/",
+      "../vm/assets/": "vm/assets/",
+      "../build/vendor/windows-x64/": "vendor/"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      }
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Cabin",
+        "width": 1240,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 560
+      }
+    ]
+  }
+}
