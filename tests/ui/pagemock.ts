@@ -5,6 +5,21 @@ import { initialState } from "../../src/state/reducer";
 // Plausible guest/host replies for page work. Anything unknown answers null.
 export function mockIpc(networkMode?: string | null, windows = false) {
   const now = Date.now();
+  // ?limitHistory: earlier readings of the mocked plan windows, so the burn
+  // charts draw a real line (keys match limitHistory.historyKey).
+  if (new URLSearchParams(location.search).has("limitHistory")) {
+    const H = 3600e3;
+    const series = (resetsAt: number, span: number, points: [number, number][]) =>
+      ({ resetsAt, samples: points.map(([hoursAgo, used]) => ({ t: now - hoursAgo * H, used })) });
+    const key = (scope: string, label: string, resetsAt: number) => `${scope}|${label}|${Math.round(resetsAt / 60_000)}`;
+    const claudeReset = now + H, fiveReset = now + 1.5 * H, weekReset = now + 4 * 86400e3;
+    localStorage.setItem("cabin.limitHistory.v1", JSON.stringify({
+      [key("claude:claude-team", "5 hours", claudeReset)]: series(claudeReset, 5 * H, [[3.6, 4], [3.1, 9], [2.6, 11], [2.1, 19], [1.6, 26], [1.1, 28], [0.6, 33]]),
+      [key("claude:claude-team", "Current week (all models)", now + 5 * 86400e3)]: series(now + 5 * 86400e3, 168 * H, [[40, 6], [30, 12], [18, 15], [8, 19]]),
+      [key("codex:primary", "5 hours", fiveReset)]: series(fiveReset, 5 * H, [[3, 7], [2.4, 15], [1.8, 18], [1.2, 27], [0.5, 33]]),
+      [key("codex:primary", "Weekly", weekReset)]: series(weekReset, 168 * H, [[60, 14], [48, 23], [36, 38], [24, 45], [12, 57], [4, 61]]),
+    }));
+  }
   const kinds = ["claude", "codex", "opencode", "pi", "antigravity"];
   const folder = windows ? String.raw`C:\Users\dev\Documents\site` : "/Users/dev/Documents/site";
   let allowed = windows;

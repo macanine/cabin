@@ -64,7 +64,7 @@ function subscriptionDate(value: string | null): string | null {
   return formatDate(timestamp);
 }
 
-function QuotaPanel({ quota }: { quota: CodexQuota }) {
+function QuotaPanel({ quota, scope }: { quota: CodexQuota; scope: string }) {
   const credits = quota.credits;
   return (
     <div className="codex-quota">
@@ -102,7 +102,7 @@ function QuotaPanel({ quota }: { quota: CodexQuota }) {
       {quota.windows.length > 0 && (
         <Stack gap="sm" mt="md">
           {quota.windows.map((window) => (
-            <AccountLimit key={`${window.kind}-${window.windowMinutes}`} label={window.label} used={window.usedPercent} resetsAt={window.resetsAt} windowMinutes={window.windowMinutes} />
+            <AccountLimit key={`${window.kind}-${window.windowMinutes}`} scope={scope} label={window.label} used={window.usedPercent} resetsAt={window.resetsAt} windowMinutes={window.windowMinutes} />
           ))}
         </Stack>
       )}
@@ -410,7 +410,7 @@ export function CodexAccountsPanel({ status }: { status: AgentStatus }) {
       {data?.quota ? (
         <>
           <Divider my="lg" />
-          <QuotaPanel quota={data.quota} />
+          <QuotaPanel quota={data.quota} scope={`codex:${data.activeAccountId ?? "default"}`} />
           {availableCards.length > 0 && (
             <div className="codex-reset">
               <Text size="sm" fw={600} mb={6}>

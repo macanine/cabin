@@ -235,7 +235,9 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   compact limit meters, direct actions, and inline Setup. Providers shows each CLI's native
   account and limit controls. Every plan window renders through `PaceMeter` with
   `forecastLimit` from `src/lib/agentLimits.ts`: used share, the pace-projected share at
-  reset, and a tick for the time passed. Word forecasts as pace estimates and withhold them
+  reset, and a tick for the time passed; where the window's length and reset are known,
+  `BurnChart` draws it as a line through the readings kept by `src/lib/limitHistory.ts`
+  (per account and window) with the pace dotted on. Word forecasts as pace estimates and withhold them
   early in a window or without a reset time. Usage leads with filters,
   figures, and trend, followed by tables. The sidebar includes today's spend,
   the network status, and the CPU, RAM, swap, and load-per-core rings. Poll the busiest

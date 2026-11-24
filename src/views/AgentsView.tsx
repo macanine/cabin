@@ -11,6 +11,7 @@ import { NewWorkspaceModal } from "../components/NewWorkspaceModal";
 import { ViewHeader } from "../components/TitleBar";
 import { forecastLimit, formatSpan, shortLimitLabel, type LimitForecast, type LimitWindow } from "../lib/agentLimits";
 import { PaceMeter } from "../components/PaceMeter";
+import { BurnChart, burnable } from "../components/BurnChart";
 import { useMinute } from "../lib/useNow";
 import { agentState, attentionCount, currentClaudeAccount, defaultSection, nodeProblem, type AgentSection, type AgentState } from "../lib/agentsHub";
 import { attempt, runOperation } from "../lib/operations";
@@ -65,7 +66,8 @@ function useAgentSetup() {
 type Setup = ReturnType<typeof useAgentSetup>;
 
 type Window = LimitWindow & { windowMinutes?: number | null };
-type Limits = { windows: Window[]; plan: string | null };
+/** `scope` names the agent and account, so recorded history never mixes accounts. */
+type Limits = { windows: Window[]; plan: string | null; scope: string };
 
 function useAgentLimits(agents: AgentStatus[], enabled: boolean): Partial<Record<AgentKind, Limits | null>> {
   const claude = currentClaudeAccount(agents.find((agent) => agent.kind === "claude" && agent.installed));
@@ -74,12 +76,12 @@ function useAgentLimits(agents: AgentStatus[], enabled: boolean): Partial<Record
   const [codex, setCodex] = useState<Limits | null>(null);
 
   useAutoRefresh(async (isCurrent) => {
-    const { quota } = await agentsIpc.codexAccounts();
-    if (isCurrent()) setCodex(quota && !quota.error ? { windows: quota.windows, plan: quota.planType } : null);
+    const { quota, activeAccountId } = await agentsIpc.codexAccounts();
+    if (isCurrent()) setCodex(quota && !quota.error ? { windows: quota.windows, plan: quota.planType, scope: `codex:${activeAccountId ?? "default"}` } : null);
   }, { enabled: enabled && codexReady, minGap: 60_000, interval: 180_000 });
 
   return {
-    claude: claude ? { windows: usage?.windows ?? [], plan: claude.plan } : null,
+    claude: claude ? { windows: usage?.windows ?? [], plan: claude.plan, scope: `claude:${claude.id ?? "default"}` } : null,
     codex: codexReady ? codex : null,
   };
 }
@@ -185,19 +187,23 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
   );
 }
 
-type Reading = { kind: AgentKind; window: Window; forecast: LimitForecast };
+type Reading = { kind: AgentKind; scope: string; window: Window; forecast: LimitForecast };
 
 /** Every plan window the agents report, with its pace forecast, tightest first per agent. */
-function useReadings(limits: Partial<Record<AgentKind, Limits | null>>): Reading[] {
+function useReadings(limits: Partial<Record<AgentKind, Limits | null>>): { now: number; readings: Reading[] } {
   const now = useMinute();
-  return AGENT_KINDS.flatMap((kind) => (limits[kind]?.windows ?? []).map((window) => ({ kind, window, forecast: forecastLimit(window, now) })));
+  const readings = AGENT_KINDS.flatMap((kind) => {
+    const entry = limits[kind];
+    return entry ? entry.windows.map((window) => ({ kind, scope: entry.scope, window, forecast: forecastLimit(window, now) })) : [];
+  });
+  return { now, readings };
 }
 
 const LEFT = (forecast: LimitForecast) => Math.max(0, Math.round(100 - forecast.used));
 
 /** Plan limits across agents: what is left, when it resets, and where the pace lands. */
 function LimitsOverview({ limits }: { limits: Partial<Record<AgentKind, Limits | null>> }) {
-  const readings = useReadings(limits);
+  const { now, readings } = useReadings(limits);
   if (readings.length === 0) return null;
   return (
     <section className="ag-limits" aria-label="Plan limits">
@@ -206,7 +212,7 @@ function LimitsOverview({ limits }: { limits: Partial<Record<AgentKind, Limits |
         <span>Forecasts assume the pace since each window opened</span>
       </header>
       <div className="ag-limit-tiles stagger">
-        {readings.map(({ kind, window, forecast }) => {
+        {readings.map(({ kind, scope, window, forecast }) => {
           const name = `${AGENT_NAMES[kind]} · ${shortLimitLabel(window.label)}`;
           return (
             <button key={`${kind}-${window.label}`} type="button" className="ag-tile" data-tone={forecast.tone}
@@ -217,7 +223,9 @@ function LimitsOverview({ limits }: { limits: Partial<Record<AgentKind, Limits |
                 <span>left</span>
                 {forecast.resetsIn != null && <span className="ag-tile-reset">resets in {formatSpan(forecast.resetsIn)}</span>}
               </span>
-              <PaceMeter forecast={forecast} label={name} />
+              {burnable(window, now)
+                ? <BurnChart window={window} forecast={forecast} scope={scope} now={now} height={54} />
+                : <PaceMeter forecast={forecast} label={name} />}
               <span className="ag-tile-forecast">{forecast.text}</span>
             </button>
           );

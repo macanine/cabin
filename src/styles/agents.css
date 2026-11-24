@@ -51,6 +51,48 @@
 }
 .pace[data-size="sm"] .pace-tick { inset-block: -2px; }
 
+/* ---- burn chart: the window's line so far, dotted on at the same pace */
+
+.burn { --burn-color: var(--ok); display: grid; gap: 5px; min-width: 0; }
+.burn[data-tone="warn"] { --burn-color: var(--warn); }
+.burn[data-tone="bad"] { --burn-color: var(--bad); }
+.burn-plot { position: relative; min-width: 0; }
+.burn-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.burn-line, .burn-projection, .burn-ceiling, .burn-now { fill: none; vector-effect: non-scaling-stroke; }
+.burn-line { stroke: var(--burn-color); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.burn-projection { stroke: var(--burn-color); stroke-width: 2.4; stroke-dasharray: 0 5; stroke-linecap: round; opacity: 0.75; }
+.burn-ceiling { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; }
+.burn-now { stroke: color-mix(in srgb, var(--text) 16%, transparent); stroke-width: 1; }
+.burn-dot, .burn-exhaust {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.burn-dot {
+  background: var(--burn-color);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px color-mix(in srgb, var(--burn-color) 22%, transparent);
+  animation: burn-pulse 2.4s var(--ease-out) infinite;
+}
+.burn-exhaust { border: 2px solid var(--bad); background: var(--surface); }
+@keyframes burn-pulse {
+  0% { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px color-mix(in srgb, var(--burn-color) 40%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 2px var(--surface), 0 0 0 9px transparent; }
+}
+.burn-axis {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  color: var(--faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.burn-axis-now { position: absolute; top: 0; translate: -50% 0; }
+@media (prefers-reduced-motion: reduce) { .burn-dot { animation: none; } }
+:root[data-perf="lite"] .burn-dot { animation: none; }
+
 /* ---- plan limits overview */
 
 .ag-limits { display: grid; gap: 10px; margin-bottom: 18px; }

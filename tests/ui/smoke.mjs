@@ -1,6 +1,7 @@
 // UI smoke tests: real Chromium, real mouse/keyboard events, mocked Tauri IPC.
 // Run: npm run test:ui   (needs a Chromium/Chrome binary; set CHROME=… to choose one)
 import { spawn } from "node:child_process";
+import { rmSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const PORT = Number(process.env.UI_TEST_PORT ?? 1599);
@@ -9,9 +10,14 @@ const base = `http://127.0.0.1:${PORT}/tests/ui`;
 const vite = spawn("npx", ["vite", "--port", String(PORT), "--strictPort", "--host", "127.0.0.1"], { stdio: "ignore" });
 for (let i = 0; i < 60; i++) { try { await fetch(`${base}/harness8.html`); break; } catch { await sleep(300); } }
 
+// Every profile this run made; swept again at exit in case Chrome was still writing.
+const profiles = [];
 async function page(url, { reducedMotion = false, mac = false, windows = false } = {}) {
   const port = 9700 + Math.floor(Math.random() * 200);
-  const chrome = spawn(CHROME, ["--headless=new", "--no-sandbox", "--disable-gpu", `--remote-debugging-port=${port}`, `--user-data-dir=/tmp/ui-${port}`, "about:blank"], { stdio: "ignore" });
+  // A throwaway profile per page, removed on close so runs do not fill /tmp.
+  const profile = `/tmp/ui-${port}-${process.pid}`;
+  profiles.push(profile);
+  const chrome = spawn(CHROME, ["--headless=new", "--no-sandbox", "--disable-gpu", `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, "about:blank"], { stdio: "ignore" });
   let list;
   for (let i = 0; i < 50; i++) { try { list = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); if (list.length) break; } catch {} await sleep(200); }
   const ws = new WebSocket(list.find((t) => t.type === "page").webSocketDebuggerUrl);
@@ -68,7 +74,11 @@ async function page(url, { reducedMotion = false, mac = false, windows = false }
     await send("Input.dispatchKeyEvent", { ...event, type: "keyUp" });
     await sleep(250);
   }
-  const close = () => { ws.close(); chrome.kill(); };
+  const close = async () => {
+    ws.close();
+    await new Promise((done) => { chrome.once("exit", done); chrome.kill(); setTimeout(done, 2000); });
+    rmSync(profile, { recursive: true, force: true });
+  };
   return { text, click, type, replaceText, escape, errors, close, resize, eval: evalPage };
 }
 
@@ -94,7 +104,7 @@ async function test(name, url, run, options) {
     const runtimeError = p.errors[0] ? ` (${p.errors[0].slice(0, 200)})` : "";
     console.log(`FAIL ${name}: ${e.message}${runtimeError}`);
   }
-  p.close();
+  await p.close();
 }
 
 await test("start page leads with status, composer and lists", `${base}/harness8.html?v=new`, async (_, has) => {
@@ -180,15 +190,17 @@ await test("Claude account and limits follow the active seat", `${base}/harness8
   const text = await p.text();
   if (text.includes("37% used") || text.includes("Example Studio")) throw new Error("A previous Claude seat is still visible");
 });
-await test("Plan limits forecast each window and rows share aligned columns", `${base}/harness8.html?v=agents&codexSaved&agy=installed`, async (p, has) => {
+await test("Plan limits draw burn lines with forecasts and rows share aligned columns", `${base}/harness8.html?v=agents&codexSaved&agy=installed&limitHistory`, async (p, has) => {
   await has("Claude Code · 5-hour", "Codex · Weekly", "~46% used by reset", "Runs out in ~40h 30m");
   const view = await p.eval(`(() => {
     const tiles = [...document.querySelectorAll('.ag-tile')];
     const lefts = new Set([...document.querySelectorAll('.ag-provider')].map((e) => Math.round(e.getBoundingClientRect().left)));
     return { overview: !!document.querySelector('section[aria-label="Plan limits"]'), tiles: tiles.length, bad: tiles.filter((t) => t.dataset.tone === 'bad').length,
-      ticks: document.querySelectorAll('.ag-tile .pace-tick').length, aligned: lefts.size === 1 };
+      charts: document.querySelectorAll('.ag-tile .burn').length,
+      points: [...document.querySelectorAll('.ag-tile .burn-line')].map((l) => l.getAttribute('d').split('L').length),
+      exhaust: document.querySelectorAll('.ag-tile .burn-exhaust').length, aligned: lefts.size === 1 };
   })()`);
-  if (!view.overview || view.tiles !== 4 || view.bad !== 1 || view.ticks !== 4 || !view.aligned) throw new Error(`Plan limits: ${JSON.stringify(view)}`);
+  if (!view.overview || view.tiles !== 4 || view.bad !== 1 || view.charts !== 4 || view.points.some((n) => n < 4) || view.exhaust !== 1 || !view.aligned) throw new Error(`Plan limits: ${JSON.stringify(view)}`);
   await p.click(".ag-tile", "Codex · Weekly");
   await has("Saved accounts", "64% used");
   await p.resize(560, 800);
@@ -316,4 +328,5 @@ await test("machine start animates its entrance and shows only begun steps", `${
 
 vite.kill();
 console.log(failed ? `${failed} UI test(s) failed` : "all UI tests passed");
+for (const profile of profiles) rmSync(profile, { recursive: true, force: true });
 process.exit(failed ? 1 : 0);

@@ -52,7 +52,7 @@ export function ClaudeAccount({ status }: { status: AgentStatus }) {
       {error && <Alert color="yellow" mt="sm">{error}</Alert>}
       {loading && <p className="row agents-hint" role="status"><Loader size={12} /> Reading account limits…</p>}
       {usage && <>
-        {usage.windows.length > 0 && <div className="account-limits-grid">{usage.windows.map((window) => <AccountLimit key={window.label} label={window.label} used={window.usedPercent} resetsAt={window.resetsAt} resetText={window.resetText} />)}</div>}
+        {usage.windows.length > 0 && <div className="account-limits-grid">{usage.windows.map((window) => <AccountLimit key={window.label} scope={`claude:${account?.id ?? "default"}`} label={window.label} used={window.usedPercent} resetsAt={window.resetsAt} resetText={window.resetText} />)}</div>}
         {usage.noLimits && usage.windows.length === 0 && <p className="agents-hint">Claude Code reports no usage meters for this plan.</p>}
         <p className="agents-hint">Last checked {formatGuestDateTime(usage.refreshedAt)} · Reported by Claude Code</p>
       </>}
