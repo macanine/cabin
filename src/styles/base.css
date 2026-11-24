@@ -220,6 +220,18 @@ input, textarea { caret-color: var(--accent); }
 .flag { display: inline-block; flex-shrink: 0; vertical-align: -0.12em; border-radius: 2px; overflow: hidden; background: var(--hover); box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--text) 22%, transparent); }
 .flag img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .flag-fallback { flex-shrink: 0; color: var(--faint); }
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-perf="lite"]) .flag[data-pending] {
+    transform-origin: left center;
+    animation: flag-pending-wave 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes flag-pending-wave {
+  50% { transform: skewY(-5deg) scaleX(0.96); }
+}
+
 }
 
 /* macOS: the window is transparent with the system "sidebar" vibrancy behind it

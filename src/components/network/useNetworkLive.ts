@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ProxyNode, RouteCheck } from "../../services/ipc/generated/core";
 import { routeCheckKey, type NetworkRoute } from "../../lib/networkRoute";
 import { toIpcError } from "../../services/ipc/common";
-import { checkChain, locate, useExitMonitor, useNetworkMonitor, type Lookup } from "../../state/networkMonitor";
+import { checkChain, locate, useNetworkMonitor, type Lookup } from "../../state/networkMonitor";
 
 export { REFRESH_CHOICES, type Lookup } from "../../state/networkMonitor";
 
@@ -35,6 +35,3 @@ export function useNetworkLive(route: NetworkRoute, byId: ReadonlyMap<string, Pr
 
   return { ...live, check, recheck };
 }
-
-/** The last observed exit for views outside the dashboard. */
-export const useExitLookup = useExitMonitor;

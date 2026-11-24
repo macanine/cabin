@@ -17,7 +17,7 @@ use agent_core::util::{now_millis, sha256_text};
 use browser::browser_revision_material;
 
 pub use browser::{browser_needs_follow, live_matches};
-pub use exit::{region_follow_zone, same_exit};
+pub use exit::region_follow_zone;
 pub use report::{CheckInputs, evaluate_report};
 
 pub const GRANT_TTL_MS: i64 = 5 * 60 * 1000;

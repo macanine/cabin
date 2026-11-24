@@ -11,7 +11,7 @@ use agent_core::model::{
 use agent_core::proxy::{self, subscription::Node};
 use agent_core::store::StoredSource;
 use agent_core::util::now_millis;
-use cabin_ip_detection::{Detector, IpInfo, Service, public_ip};
+use cabin_ip_detection::{Detector, DetectorBuilder, IpInfo, Service, public_ip};
 use vm_core::netgw::Gateway;
 
 use super::{GlobalNetwork, Runtime, error};
@@ -42,6 +42,7 @@ fn geo(info: IpInfo) -> GeoInfo {
         ip_type: info.ip_type.map(ip_type),
         ip: info.ip.to_string(),
         country_code: info.country_code,
+        continent_code: info.continent_code,
         country: info.country,
         region: info.region,
         city: info.city,
@@ -54,11 +55,15 @@ fn geo(info: IpInfo) -> GeoInfo {
     }
 }
 
-fn detector(proxy_url: Option<&str>) -> Result<Detector, AppError> {
-    let builder = Detector::builder()
+fn detector_builder() -> DetectorBuilder {
+    Detector::builder()
         .ipv4_only()
         .timeout(Duration::from_secs(6))
-        .retries(0);
+        .retries(0)
+}
+
+fn detector(proxy_url: Option<&str>) -> Result<Detector, AppError> {
+    let builder = detector_builder();
     match proxy_url {
         Some(url) => builder.proxy_url(url),
         None => builder.direct(),
@@ -443,6 +448,15 @@ impl GlobalNetwork {
         })
     }
 
+    /// Resolve the guest's exact trace address when a rotating route's other probes saw different IPs.
+    pub fn locate_guest_exit(&self, ip: std::net::Ipv4Addr) -> Result<GeoInfo, AppError> {
+        let url = Self::proxy_endpoint(&self.runtime())?;
+        detector_builder()
+            .services([Service::GeoJs, Service::IpWhoIs])
+            .proxy_url(&url).build().map_err(|failure| error(failure.to_string()))?
+            .lookup(ip.into()).map(geo).map_err(|failure| error(failure.to_string()))
+    }
+
     pub fn gateway_connected(&self) -> bool {
         self.runtime()
             .gateway
@@ -561,6 +575,7 @@ mod tests {
             enabled: true,
             chain: catalog.nodes.iter().map(|n| n.id.clone()).collect(),
             bind_interface: None,
+            ..NetworkRoute::default()
         };
         match network.upstream(&route).unwrap() {
             Upstream::Chain(hops) => assert_eq!(hops.len(), 2),
@@ -586,7 +601,7 @@ mod tests {
         // Nothing listens on these ports, so the entry already fails.
         let catalog = network.import("test", None, Some(TWO)).unwrap();
         let chain: Vec<String> = catalog.nodes.iter().map(|n| n.id.clone()).collect();
-        let check = network.check(&NetworkRoute { enabled: true, chain, bind_interface: None }).unwrap();
+        let check = network.check(&NetworkRoute { enabled: true, chain, ..NetworkRoute::default() }).unwrap();
         assert_eq!(check.broken_at, Some(0));
         assert_eq!(
             check.hops.len(),
@@ -652,6 +667,7 @@ mod tests {
             enabled: true,
             chain: vec![catalog.nodes[0].id.clone()],
             bind_interface: None,
+            ..NetworkRoute::default()
         };
         network.save(&route).unwrap();
         network.start(&dir.join("gateway.sock"), 0).unwrap();
@@ -678,6 +694,7 @@ mod tests {
             enabled: true,
             chain: vec![catalog.nodes[0].id.clone()],
             bind_interface: None,
+            ..NetworkRoute::default()
         };
         network.save(&route).unwrap();
         let old_nodes = network.nodes(&route.chain).unwrap();

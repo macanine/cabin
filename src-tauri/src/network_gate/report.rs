@@ -5,7 +5,7 @@ use agent_core::model::{
 use agent_core::util::{new_id, now_millis};
 
 use super::browser::browser_checks;
-use super::exit::{normalized_zone, same_exit_network};
+use super::exit::normalized_zone;
 use super::revision_for;
 
 pub struct CheckInputs<'a> {
@@ -18,6 +18,7 @@ pub struct CheckInputs<'a> {
     pub require_closed_boundary: bool,
     pub browser: Option<&'a BrowserEnvironmentProbe>,
     pub exits: &'a [Result<GeoInfo, String>],
+    pub exit_policy_error: Option<&'a str>,
 }
 
 pub(super) fn evidence(
@@ -279,7 +280,8 @@ pub fn evaluate_report(inputs: CheckInputs<'_>, started_at: i64) -> NetworkCheck
         .iter()
         .filter_map(|(_, geo)| geo.timezone.as_deref())
         .collect();
-    let same_ip = successful.len() >= 2 && ips.windows(2).all(|pair| same_exit_network(pair[0], pair[1]));
+    let dynamic = inputs.route.exit_policy == agent_core::model::ExitPolicy::DynamicResidential;
+    let same_ip = ips.windows(2).all(|pair| pair[0] == pair[1]);
     let same_country = countries.len() >= 2
         && countries
             .windows(2)
@@ -288,16 +290,18 @@ pub fn evaluate_report(inputs: CheckInputs<'_>, started_at: i64) -> NetworkCheck
         && zones
             .windows(2)
             .all(|pair| normalized_zone(pair[0]) == normalized_zone(pair[1]));
-    let guest_matches = guest
+    let guest_ip_matches = guest
         .public_ip
         .as_deref()
-        .is_some_and(|ip| ips.iter().all(|sample| same_exit_network(sample, ip)))
-        && guest
+        .is_some_and(|ip| ips.iter().all(|sample| *sample == ip));
+    let guest_country_matches = guest
             .trace_location
             .as_deref()
             .zip(countries.first().copied())
             .is_some_and(|(trace, country)| trace.eq_ignore_ascii_case(country));
-    let exit_ok = same_ip && same_country && same_zone && guest_matches;
+    let address_mismatch = !dynamic && (!same_ip || !guest_ip_matches);
+    let exit_ok = successful.len() >= 2 && guest.public_ip.is_some() && same_country && same_zone
+        && guest_country_matches && (dynamic || (same_ip && guest_ip_matches));
     let mut exit_evidence: Vec<NetworkEvidence> = successful
         .iter()
         .map(|(_, geo)| {
@@ -340,24 +344,32 @@ pub fn evaluate_report(inputs: CheckInputs<'_>, started_at: i64) -> NetworkCheck
     ));
     checks.push(item(
         "exit",
-        "Exit consistency",
+        if guest.public_ip.is_some() && successful.len() >= 2 && address_mismatch {
+            "Public IP addresses differ"
+        } else {
+            "Public exit IP and location"
+        },
         NetworkCheckCategory::Exit,
-        if exit_ok {
+        if exit_ok && inputs.exit_policy_error.is_none() {
             NetworkCheckStatus::Pass
         } else {
             NetworkCheckStatus::Unknown
         },
         true,
         if exit_ok {
-            "Two independent samples, the machine observation, country and time zone agree"
-        } else if successful.len() < 2 {
-            "At least two independent exit samples are required"
-        } else if !same_ip || !guest_matches {
-            "The observed addresses or countries do not agree"
-        } else if !same_country || !same_zone {
-            "Location providers disagree on country or time zone"
+            inputs.exit_policy_error.unwrap_or("The public exit matches this route’s policy")
+        } else if guest.public_ip.is_none() || successful.len() < 2 {
+            "Cabin could not confirm the public exit. Check the connection and try again."
+        } else if address_mismatch {
+            "Cabin saw different public IPs. Static IP mode requires every check to see the same address."
+        } else if countries.len() < 2 || guest.trace_location.is_none() {
+            "Cabin could not confirm the exit country. Try the check again."
+        } else if !same_country || !guest_country_matches {
+            "The checks saw different countries. Select an exit that stays in one country."
+        } else if zones.len() < 2 {
+            "Cabin could not confirm the exit time zone. Try the check again."
         } else {
-            "The exit location is incomplete"
+            "The location services reported different time zones for this exit."
         },
         exit_evidence,
     ));
@@ -514,6 +526,7 @@ mod tests {
                 require_closed_boundary: true,
                 browser: None,
                 exits: &samples,
+                exit_policy_error: None,
             },
             1,
         );
@@ -531,6 +544,7 @@ mod tests {
                 require_closed_boundary: true,
                 browser: None,
                 exits: &samples[..1],
+                exit_policy_error: None,
             },
             1,
         );

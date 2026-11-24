@@ -372,13 +372,18 @@ export type NetworkRoute = { enabled: boolean, chain: Array<string>,
 /**
  * Host interface for direct traffic or the first proxy hop; None uses the system route.
  */
-bindInterface: string | null, };
+bindInterface: string | null, exitPolicy: ExitPolicy, };
+export type ExitPolicy = "static" | "dynamicResidential";
 export type NetworkStatus = { available: boolean, route: NetworkRoute, running: boolean, error: string | null,
 /**
  * The latest gate transition or verification failure. Kept separate from
  * `error`, which describes the gateway process itself.
  */
-gateError: string | null, gate: NetworkGateMode, connectivity: NetworkConnectivity, failedChecks: number, connectivityError: string | null, gatewaySession: number | null, paused: boolean, autoRecover: boolean,
+gateError: string | null,
+/**
+ * A confirmed violation of the saved exit policy.
+ */
+exitPolicyError: string | null, gate: NetworkGateMode, connectivity: NetworkConnectivity, failedChecks: number, connectivityError: string | null, gatewaySession: number | null, paused: boolean, autoRecover: boolean,
 /**
  * When a check fails only because the machine's time zone differs from
  * the verified exit, the Mac sets the machine to the exit's zone and
@@ -435,7 +440,7 @@ liveMatches: boolean | null,
  * Unix milliseconds of `probe`.
  */
 checkedAt: number | null, };
-export type GeoInfo = { ip: string, countryCode: string | null, country: string | null, region: string | null, city: string | null,
+export type GeoInfo = { ip: string, countryCode: string | null, continentCode: string | null, country: string | null, region: string | null, city: string | null,
 /**
  * Provider (ISP or organisation), as the service names it.
  */

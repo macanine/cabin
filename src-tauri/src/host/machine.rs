@@ -683,6 +683,7 @@ mod tests {
                 enabled: true,
                 chain: vec![catalog.nodes[0].id.clone()],
                 bind_interface: None,
+            ..NetworkRoute::default()
             })
             .unwrap();
         std::fs::create_dir_all(home.join("images")).unwrap();

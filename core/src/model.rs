@@ -1301,6 +1301,17 @@ pub struct NetworkRoute {
     /// Host interface for direct traffic or the first proxy hop; None uses the system route.
     #[serde(default)]
     pub bind_interface: Option<String>,
+    #[serde(default)]
+    pub exit_policy: ExitPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum ExitPolicy {
+    #[default]
+    Static,
+    DynamicResidential,
 }
 
 /// How traffic from the machine is handled right now. `checking` is a short,
@@ -1440,6 +1451,8 @@ pub struct NetworkStatus {
     /// The latest gate transition or verification failure. Kept separate from
     /// `error`, which describes the gateway process itself.
     pub gate_error: Option<String>,
+    /// A confirmed violation of the saved exit policy.
+    pub exit_policy_error: Option<String>,
     pub gate: NetworkGateMode,
     #[serde(default)]
     pub connectivity: NetworkConnectivity,
@@ -1483,6 +1496,7 @@ impl Default for NetworkStatus {
             running: false,
             error: None,
             gate_error: None,
+            exit_policy_error: None,
             gate: NetworkGateMode::Closed,
             connectivity: NetworkConnectivity::Normal,
             failed_checks: 0,
@@ -1645,6 +1659,7 @@ pub struct IpClassification {
 pub struct GeoInfo {
     pub ip: String,
     pub country_code: Option<String>,
+    pub continent_code: Option<String>,
     pub country: Option<String>,
     pub region: Option<String>,
     pub city: Option<String>,

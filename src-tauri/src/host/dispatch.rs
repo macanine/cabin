@@ -1,6 +1,7 @@
 //! `Host::call`: host-owned `network_*` and `proxy_*` methods are answered
 //! on the Mac; everything else is forwarded to the guest.
 
+use super::network_check::VerificationKind;
 use agent_core::util::LockExt;
 
 use agent_core::model::NetworkRoute;
@@ -53,16 +54,23 @@ impl Host {
             "network_traffic" => return to_value(serde_json::to_value(self.network.traffic())),
             "network_history" => {
                 let before = params.get("beforeId").and_then(Value::as_i64);
-                let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(40).clamp(1, 100) as u32;
+                let max = u64::from(agent_core::store::NETWORK_HISTORY_LIMIT);
+                let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(max).clamp(1, max) as u32;
                 return to_value(serde_json::to_value(self.network.history(before, limit)?));
             }
             "network_apply" => {
-                let route: NetworkRoute = serde_json::from_value(params.get("route").cloned().unwrap_or(Value::Null))
+                let mut route: NetworkRoute = serde_json::from_value(params.get("route").cloned().unwrap_or(Value::Null))
                     .map_err(|e| unavailable(format!("Invalid route: {e}")))?;
+                route.bind_interface = None;
                 return to_value(serde_json::to_value(self.apply_network_route(&route)?));
             }
             "network_verify" => {
-                let status = self.verify_route(&self.network.route()?, false, "manualCheck")?;
+                let rebind = params.get("acceptExit").and_then(Value::as_bool) == Some(true);
+                if rebind && self.network.status(true)?.exit_policy_error.is_none() {
+                    return Err(unavailable("There is no blocked exit to replace"));
+                }
+                let kind = if rebind { VerificationKind::ReplaceExit } else { VerificationKind::Manual };
+                let status = self.verify_route(&self.network.route()?, kind)?;
                 return to_value(serde_json::to_value(status));
             }
             "network_pause" => {
@@ -103,12 +111,13 @@ impl Host {
                 return to_value(serde_json::to_value(self.network.status(true)?));
             }
             "network_check" => {
-                let route: NetworkRoute = if let Some(value) = params.get("route") {
+                let mut route: NetworkRoute = if let Some(value) = params.get("route") {
                     serde_json::from_value(value.clone()).map_err(|e| unavailable(format!("Invalid route: {e}")))?
                 } else {
                     // Older clients sent only the candidate chain.
-                    NetworkRoute { enabled: true, chain: ids("chain")?, bind_interface: self.network.route()?.bind_interface }
+                    NetworkRoute { enabled: true, chain: ids("chain")?, ..self.network.route()? }
                 };
+                route.bind_interface = None;
                 return to_value(serde_json::to_value(self.network.check(&route)?));
             }
             "network_exit" => {
@@ -133,13 +142,11 @@ impl Host {
             "proxy_node_test" => {
                 let kind = serde_json::from_value(params.get("kind").cloned().unwrap_or(Value::Null))
                     .map_err(|_| unavailable("Choose a latency or download test"))?;
-                let interface: Option<String> = serde_json::from_value(params.get("bindInterface").cloned().unwrap_or(Value::Null))
-                    .map_err(|_| unavailable("Invalid network interface"))?;
                 return to_value(serde_json::to_value(self.network.test_node(
                     required("nodeId")?,
                     required("configRevision")?,
                     kind,
-                    interface.as_deref(),
+                    None,
                 )?));
             }
             "proxy_group_save" => serde_json::to_value(self.network.save_node_group(

@@ -11,7 +11,7 @@ export interface NetworkInterface {
 }
 
 export function normalizeRoute(route: GeneratedNetworkRoute): NetworkRoute {
-  return { ...route, bindInterface: (route as Partial<NetworkRoute>).bindInterface ?? null };
+  return { ...route, bindInterface: route.bindInterface ?? null, exitPolicy: route.exitPolicy ?? "static" };
 }
 
 export function interfaceOptions(interfaces: readonly NetworkInterface[], selected: string | null) {
@@ -27,7 +27,7 @@ export function interfaceOptions(interfaces: readonly NetworkInterface[], select
 }
 
 export function routeCheckKey(route: NetworkRoute, revisions: ReadonlyMap<string, string | undefined>): string {
-  return JSON.stringify([route.enabled, route.bindInterface ?? null, route.chain.map((id) => [id, revisions.get(id)])]);
+  return JSON.stringify([route.enabled, route.bindInterface ?? null, route.exitPolicy ?? "static", route.chain.map((id) => [id, revisions.get(id)])]);
 }
 
 export function nodeTestKey(node: Pick<ProxyNode, "id" | "configRevision">, kind: ProxyTestKind, bindInterface: string | null): string {

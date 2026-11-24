@@ -60,7 +60,7 @@ export function SettingsView({ tab = "general" }: { tab?: SettingsTab }) {
 
   return (
     <div className="flex min-h-0 flex-1 max-[760px]:flex-col">
-      <nav className="flex w-52 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-line/70 px-2.5 py-6 max-[760px]:w-auto max-[760px]:flex-row max-[760px]:overflow-x-auto max-[760px]:border-r-0 max-[760px]:border-b max-[760px]:py-2.5" aria-label="Settings">
+      <nav className="flex w-52 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-line/70 px-2.5 py-6 max-[760px]:w-auto max-[760px]:flex-row max-[760px]:flex-wrap max-[760px]:border-r-0 max-[760px]:border-b max-[760px]:py-2.5" aria-label="Settings">
         <h1 className="mx-2.5 mb-2.5 text-[13px] font-semibold text-muted max-[760px]:hidden">Settings</h1>
         {SETTINGS_TABS.map((key) => {
           const { label, icon: Icon } = TABS[key];
@@ -79,7 +79,7 @@ export function SettingsView({ tab = "general" }: { tab?: SettingsTab }) {
           );
         })}
       </nav>
-      <div key={tab} className="view-enter flex min-w-0 flex-1 flex-col">
+      <div key={tab} className="view-enter flex min-h-0 min-w-0 flex-1 flex-col [container-type:inline-size]">
         {guest ? <MachineGate>{content}</MachineGate> : content}
       </div>
     </div>
@@ -94,7 +94,7 @@ export function SettingsPage({ title, subtitle, actions, children }: {
   children: ReactNode;
 }) {
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-8 pt-7 pb-12 max-sm:px-4">
+    <div className="min-h-0 flex-1 overflow-y-auto px-[clamp(16px,4cqi,32px)] pt-7 pb-8 [scrollbar-gutter:stable_both-edges]">
       <div className="mx-auto w-full max-w-[760px]">
         <header className="mb-5 flex items-start justify-between gap-4">
           <div className="min-w-0">

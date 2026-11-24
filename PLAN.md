@@ -39,28 +39,21 @@ credentials, request payloads, and complete command arguments.
 
 ### Traffic paths
 
-The VM's only network interface connects to the Mac gateway. The route selects direct
-transport or a chain of proxy nodes, entry first. Separately, it selects macOS routing or a
-physical interface. In bound mode the selected adapter carries direct sockets, the chain's
-first hop, and bootstrap DNS. Outbound verification and diagnostic requests use the
-candidate or saved route they describe. Guest UDP DNS travels through that route using DNS
-over HTTPS. The gateway forwards public IPv4 traffic, drops private destinations and IPv6
-traffic, and returns no IPv6 address records for guest DNS. The guest keeps IPv6 loopback.
+The VM's only network interface connects to the host gateway. The macOS and Windows apps use
+the host system route for direct transport and the first hop of a proxy chain. The desktop
+converts legacy adapter bindings to the system route on startup. Outbound verification and
+diagnostic requests use the candidate or saved route they describe. Guest UDP DNS travels
+through that route using DNS over HTTPS. The gateway forwards public IPv4 traffic, drops
+private destinations and IPv6 traffic, and returns no IPv6 address records for guest DNS.
+The guest keeps IPv6 loopback.
 
 ### Route changes
 
 The saved route is the VM's preference. A UI draft can be inspected before applying it. A
 live candidate starts in verification mode and becomes the saved route when all required
 checks pass. If the candidate fails, the prior route can regain its grant only while its
-gateway session and network path still match. Interface-only changes can be saved while
-guest verification is unavailable. Proxy chain changes use the live check.
-
-When the selected adapter is absent at boot, the management relay can start by itself. When
-an active adapter changes or disconnects, the gateway drops its old upstream, keeps SSH
-available, and closes internet access. Adapter snapshots cover non-default interfaces. On
-return, automatic recovery builds a fresh upstream and checks it before admitting ordinary
-traffic. The policy keeps a bound route closed during outages, including outages where a
-system route is available.
+gateway session and network path still match. Route changes require a connected VM and
+resumed internet access.
 
 ### Authorization
 
@@ -72,25 +65,23 @@ independent samples from the same route. The check also covers the traffic bound
 zone, language, and browser profile. A Chrome page observed live must match the managed
 configuration. The installed profile is the durable input to the gate revision.
 
-Exit samples agree when they share the same address or, for IPv4, the same /24: carrier and
-campus NAT pools hand consecutive connections neighbouring addresses. The time zone check
-stays required. When a check fails only because the VM's time zone differs from a verified
-exit (and only browser checks that follow the VM's zone fail with it), the Mac sets the guest
-to the exit's zone through `environment_apply` and evaluates the same attempt again. The
+Static exit policy requires the same public IPv4 address. Dynamic residential policy allows
+address rotation within the approved country and continent, with location evidence for the
+exact address observed by the guest. The time zone check stays required. When a check fails
+only because the VM's time zone differs from a verified exit (and only browser checks that
+follow the VM's zone fail with it), the Mac sets the guest to the exit's zone through
+`environment_apply` and evaluates the same attempt again. If the exit observation changes,
+the new observation must still verify against the same address or region baseline. The
 Region section's "Follow exit" switch (on by default, `network_region_follow`) turns this
 off. Environment operations run in their own operation lane, so a time zone or language change
 never waits behind an apt operation that needs the network. New machines install `locales`
 and generate `en_US.UTF-8` during provisioning; other supported locales are generated
 offline when applied.
 
-`network_system_route` reports whether macOS sends internet traffic through a tunnel (a VPN
-or a TUN proxy such as Clash, recognized by a fake-IP gateway in 198.18.0.0/15). The
-interface picker then offers to bind the physical adapter, which bypasses the tunnel.
-
-The Mac can briefly hold guest TCP while it confirms reachability and the verified public
-exit. A third failed recheck or a 45-second hold closes internet access. Bound interface
-changes, sleep, and stale path revisions revoke the grant. Automatic recovery retries closed
-routes with backoff. Checks retain their evidence and history for the Network Check UI.
+The host can briefly hold guest TCP while it confirms reachability and the verified public
+exit. A third failed recheck or a 45-second hold closes internet access. Sleep and stale path
+revisions revoke the grant. Automatic recovery retries closed routes with backoff. Checks
+retain their evidence and history for the Network Check UI.
 
 ## Project sync design
 

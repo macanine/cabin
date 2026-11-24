@@ -8,7 +8,7 @@ import { MirrorPicker } from "../../components/MirrorPicker";
 import { Note } from "../../components/Boot";
 import { DisclosureChevron, Reveal } from "../../components/motion";
 import { ReadinessPanel } from "./ReadinessPanel";
-import { gb, MachineCard } from "./MachineCard";
+import { gb, MachineCard, type MachineSpec } from "./MachineCard";
 import { explainFailure } from "../../lib/wizard";
 import {
   chosenOs, diskGb, formProblem, hostnameProblem, matchingPreset, mirrorHost,
@@ -77,8 +77,9 @@ function SizeCard({ preset, selected, fits, host, onSelect }: {
  * and holds Install. The fastest mirror is measured in the background and
  * used unless one is chosen.
  */
-export function InstallSetup({ options, set, plan, choices, readiness, host, planError, checking, onInstall, onRecheck }: {
+export function InstallSetup({ options, spec, set, plan, choices, readiness, host, planError, checking, onInstall, onRecheck }: {
   options: MachineInstallOptions;
+  spec: MachineSpec;
   set: (patch: Partial<MachineInstallOptions>) => void;
   plan: InstallPlan | null;
   choices: OsChoice[];
@@ -124,7 +125,6 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
     ? `${mirrorHost(options.aptMirror)}${mirrorAuto && mirrorAuto.uri === options.aptMirror ? " · fastest" : ""}`
     : mirrorAuto?.default ? `${mirrorAuto.host} · fastest` : "Ubuntu's archive";
   const osChoices = choices.length ? choices : [{ id: "ubuntu-24.04", name: "Ubuntu 24.04 LTS", testing: false, mirrors: [] }];
-  const osName = os?.name ?? plan?.osName ?? "Ubuntu";
 
   // Sliders stop at what this computer can give (leaving 2 GB for itself).
   const cpuMax = Math.max(1, Math.min(64, host?.cpus || 16));
@@ -272,14 +272,7 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
             host={host}
             badge={cardBadge}
             caption={preset ? `${preset.label} size` : "Custom size"}
-            spec={{
-              osName,
-              cpus: options.cpus,
-              memoryMb: options.memoryMb,
-              diskGb: diskGb(options.diskSize),
-              username: options.username || plan?.username || "dev",
-              hostname: options.hostname || plan?.hostname || "dev-vm",
-            }}
+            spec={spec}
           >
             {(problem || planHelp) && (
               <Note tone="bad" role="alert">

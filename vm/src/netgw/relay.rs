@@ -165,6 +165,7 @@ impl GuestEgress {
 }
 
 pub(super) struct Shared {
+    pub(super) down_wake: (std::net::UdpSocket, std::net::UdpSocket),
     pub(super) dns: Vec<Ipv4Addr>,
     pub(super) guest: Mutex<Option<Arc<UnixStream>>>,
     pub(super) egress: Mutex<GuestEgress>,
@@ -272,13 +273,17 @@ impl Shared {
             for lane in lanes {
                 ready.watch(lane as usize, &self.paths[lane as usize].host, true, false)?;
             }
+            ready.watch(lanes.len(), &self.down_wake.1, true, false)?;
             let mut packet = vec![0u8; 65_536];
             while !self.stop.load(Ordering::Relaxed) {
-                let Ok(events) = ready.wait(Some(Duration::from_millis(500))) else {
+                let Ok(events) = ready.wait(None) else {
                     // A persistent poller error can return immediately on every wait.
                     std::thread::sleep(Duration::from_millis(100));
                     continue;
                 };
+                if self.stop.load(Ordering::Relaxed) {
+                    break;
+                }
                 for lane in lanes {
                     if events.iter().any(|event| event.key == lane as usize && event.readable) {
                         self.receive_ip(lane, &mut packet);

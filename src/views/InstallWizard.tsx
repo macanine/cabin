@@ -110,15 +110,7 @@ export function InstallWizard() {
   if (!machine) return <div className="page" />;
 
   const osName = chosenOs(options, choices)?.name ?? plan?.osName ?? "Ubuntu";
-  // An installed machine describes itself; a new one is the draft.
-  const spec = installed ? {
-    osName,
-    cpus: machine.cpus,
-    memoryMb: machine.memoryMb,
-    diskGb: diskGb(machine.diskSize),
-    username: machine.username ?? "dev",
-    hostname: machine.hostname ?? "dev-vm",
-  } : {
+  const draftSpec = {
     osName,
     cpus: options.cpus,
     memoryMb: options.memoryMb,
@@ -126,6 +118,14 @@ export function InstallWizard() {
     username: options.username || plan?.username || "dev",
     hostname: options.hostname || plan?.hostname || "dev-vm",
   };
+  const progressSpec = installed ? {
+    osName,
+    cpus: machine.cpus,
+    memoryMb: machine.memoryMb,
+    diskGb: diskGb(machine.diskSize),
+    username: machine.username ?? "dev",
+    hostname: machine.hostname ?? "dev-vm",
+  } : draftSpec;
 
   return (
     <div className="install-wizard" ref={scroll}>
@@ -138,8 +138,7 @@ export function InstallWizard() {
             error={error}
             installOptions={{ diskSize: options.diskSize, memoryMb: options.memoryMb, username: options.username ?? plan?.username ?? null }}
             cancelled={cancelled}
-            osName={osName}
-            spec={spec}
+            spec={progressSpec}
             host={host}
             onRetry={install}
             onEdit={() => setEditing(true)}
@@ -147,6 +146,7 @@ export function InstallWizard() {
         ) : (
           <InstallSetup
             options={options}
+            spec={draftSpec}
             set={(patch) => setOptions((value) => ({ ...value, ...patch }))}
             plan={plan}
             choices={choices}

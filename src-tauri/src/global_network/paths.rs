@@ -132,7 +132,7 @@ mod tests {
         // hard_block_revision; path_revision must still invalidate the grant.
         network.path_changed();
         assert_eq!(network.runtime().hard_block_revision, hard_block_revision);
-        assert!(!network.finish_check(&attempt, passing_report(&revision), None, &[], None).unwrap());
+        assert!(!network.finish_check(&attempt, passing_report(&revision), None, &[], None, None).unwrap());
         // Model switching the upstream back without depending on a real en0.
         network.runtime().active_route = Some(bound);
         network.restore_gate(rollback);
@@ -150,7 +150,7 @@ mod tests {
         let attempt = network.begin_check(revision.clone(), true).unwrap();
         // The bound adapter appears with a new address.
         assert!(network.path_changed_with(test_path(7)));
-        assert!(!network.finish_check(&attempt, passing_report(&revision), None, &[], None).unwrap());
+        assert!(!network.finish_check(&attempt, passing_report(&revision), None, &[], None, None).unwrap());
         network.restore_gate(rollback);
         assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Closed);
         network.stop();

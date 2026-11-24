@@ -69,7 +69,7 @@ function DownloadBar({ download }: { download: DownloadProgress }) {
  * and let users retry failures or resume an incomplete installation.
  */
 export function InstallProgress({
-  machine, steps, startedAt, error, installOptions, cancelled, osName, spec, host, onRetry, onEdit,
+  machine, steps, startedAt, error, installOptions, cancelled, spec, host, onRetry, onEdit,
 }: {
   machine: MachineStatus;
   spec: MachineSpec;
@@ -79,7 +79,6 @@ export function InstallProgress({
   error: string | null;
   installOptions: Pick<MachineInstallOptions, "diskSize" | "memoryMb" | "username">;
   cancelled: string | null;
-  osName: string;
   onRetry: () => void;
   onEdit: () => void;
 }) {
@@ -143,12 +142,12 @@ export function InstallProgress({
   const starting = startedAt != null && installed && !installing && !connected && !failed && machine.state === "running";
   const title = justInstalled ? "Your machine is ready"
     : starting ? "Starting your machine"
-    : installing ? machine.busy === "Cancelling the install" ? "Cancelling…" : `Installing ${osName}`
+    : installing ? machine.busy === "Cancelling the install" ? "Cancelling…" : `Installing ${spec.osName}`
       : cancelled ? "Install cancelled"
         : failed ? "The install stopped"
           : installed ? "Installation" : "Install";
   const subtitle = justInstalled
-    ? `${osName} is running and Cabin ${machine.guestVersion ?? ""} is connected.`
+    ? `${spec.osName} is running and Cabin ${machine.guestVersion ?? ""} is connected.`
     : starting ? "Almost done: connecting to Cabin's service in the machine."
     : installing ? WIZARD_STEPS[current].title
       : cancelled ?? (failed ? help?.title : installed ? "Every step is recorded and can be verified and resumed." : undefined);

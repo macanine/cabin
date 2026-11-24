@@ -168,6 +168,7 @@ mod bindings {
             ProxyTestKind::decl(&config),
             ProxyTestResult::decl(&config),
             NetworkRoute::decl(&config),
+            ExitPolicy::decl(&config),
             NetworkStatus::decl(&config),
             NetworkGateMode::decl(&config),
             NetworkConnectivity::decl(&config),

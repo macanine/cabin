@@ -224,6 +224,7 @@ mod tests {
                 require_closed_boundary: true,
                 browser: Some(browser),
                 exits: &samples,
+                exit_policy_error: None,
             },
             1,
         )

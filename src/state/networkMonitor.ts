@@ -4,6 +4,7 @@ import { toIpcError } from "../services/ipc/common";
 import { networkIpc, proxyIpc } from "../services/ipc/network";
 import { normalizeRoute, type NetworkRoute } from "../lib/networkRoute";
 import { appStore } from "./store";
+import { uiActions } from "./ui";
 import { appendTraffic } from "../lib/trafficHistory";
 
 export interface Lookup<T> {
@@ -63,6 +64,8 @@ let observedRunning = false;
 let catalogNodes: readonly ProxyNode[] | null = null;
 let nodeRevisions = new Map<string, string>();
 const listeners = new Set<() => void>();
+const trafficListeners = new Set<() => void>();
+let trafficTimer: number | undefined;
 const placeTried = new Map<string, number>();
 
 function subscribe(listener: () => void) {
@@ -79,15 +82,30 @@ function setTraffic(sample: NetworkTraffic | null) {
   const next = sample ? appendTraffic(traffic, sample) : NO_TRAFFIC;
   if (next === traffic) return;
   traffic = next;
-  listeners.forEach((listener) => listener());
+  trafficListeners.forEach((listener) => listener());
 }
 
 export function useNetworkMonitor(): NetworkLive {
   return useSyncExternalStore(subscribe, () => state);
 }
 
+function subscribeTraffic(listener: () => void) {
+  trafficListeners.add(listener);
+  if (trafficListeners.size === 1) {
+    void sampleTraffic();
+    trafficTimer = window.setInterval(() => void sampleTraffic(), TRAFFIC_SAMPLE_MS);
+  }
+  return () => {
+    trafficListeners.delete(listener);
+    if (trafficListeners.size === 0) {
+      window.clearInterval(trafficTimer);
+      setTraffic(null);
+    }
+  };
+}
+
 export function useGatewayTraffic(): readonly NetworkTraffic[] {
-  return useSyncExternalStore(subscribe, () => traffic);
+  return useSyncExternalStore(subscribeTraffic, () => traffic);
 }
 
 export function useExitType(): Lookup<IpClassification> {
@@ -130,7 +148,22 @@ export async function refreshExit(refreshType = false): Promise<void> {
     return;
   }
   if (epoch !== exitEpoch) return;
-  const previousType = observed.ip === state.exit.value?.ip ? state.exitType.value : null;
+  const previous = state.exit.value;
+  const sameAddress = previous?.ip === observed.ip;
+  const previousType = sameAddress ? state.exitType.value : null;
+  if (sameAddress && observed.countryCode == null && observed.country == null) {
+    observed = {
+      ...observed,
+      countryCode: previous.countryCode,
+      continentCode: observed.continentCode ?? previous.continentCode,
+      country: previous.country,
+      region: observed.region ?? previous.region,
+      city: observed.city ?? previous.city,
+      latitude: observed.latitude ?? previous.latitude,
+      longitude: observed.longitude ?? previous.longitude,
+      timezone: observed.timezone ?? previous.timezone,
+    };
+  }
   set({ exit: { value: observed, error: null, loading: false, at: Date.now() }, exitType: { value: previousType, error: null, loading: true, at: null } });
   try {
     const value = await networkIpc.exitType(observed.ip, refreshType);
@@ -142,11 +175,11 @@ export async function refreshExit(refreshType = false): Promise<void> {
 
 async function sampleTraffic() {
   const current = scope;
-  if (!current || document.hidden || trafficRequest === current) return;
+  if (!current || trafficListeners.size === 0 || document.hidden || trafficRequest === current) return;
   trafficRequest = current;
   try {
     const sample = await networkIpc.traffic();
-    if (current === scope && !document.hidden) setTraffic(sample?.gatewaySession === current.session ? sample : null);
+    if (current === scope && trafficListeners.size > 0 && !document.hidden) setTraffic(sample?.gatewaySession === current.session ? sample : null);
   } catch {
     if (current === scope) setTraffic(null);
   } finally {
@@ -239,7 +272,11 @@ function syncGateway() {
   const { gatewaySession, route } = network;
   const running = machine?.state === "running" && network.available && network.running && gatewaySession != null;
   if (observedNetwork === network && observedRunning === running && catalogNodes === proxy.nodes) return;
+  const previousExitError = observedNetwork?.exitPolicyError;
   observedNetwork = network;
+  if (network.exitPolicyError && network.exitPolicyError !== previousExitError) {
+    uiActions.toast(network.exitPolicyError, "error");
+  }
   observedRunning = running;
   syncCatalog(proxy.nodes);
   const chain = route.enabled ? route.chain : [];
@@ -255,7 +292,11 @@ function syncGateway() {
   }
   exitPhase = phase;
   exitEpoch++;
-  set({ exit: EMPTY, exitType: EMPTY });
+  if (changedScope) {
+    set({ exit: EMPTY, exitType: EMPTY });
+  } else {
+    set({ exit: { ...state.exit, error: null, loading: phase === "checking" }, exitType: { ...state.exitType, loading: false } });
+  }
   void refreshExit();
   if (scope && changedScope) {
     void sampleTraffic();
@@ -270,7 +311,6 @@ export function startNetworkMonitor() {
   appStore.subscribe(syncGateway);
   syncGateway();
   scheduleExit();
-  window.setInterval(() => void sampleTraffic(), TRAFFIC_SAMPLE_MS);
   window.setInterval(() => void refreshSubscription(), 60_000);
   window.addEventListener("focus", refreshVisibleNetwork);
   refreshVisibleNetwork();

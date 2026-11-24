@@ -31,6 +31,8 @@ use crate::network_health::{Connectivity, HoldCheck, traffic_sample};
 
 mod catalog;
 mod gate;
+mod exit_policy;
+pub(crate) use exit_policy::ExitBaseline;
 mod health;
 mod paths;
 #[cfg(test)]
@@ -68,6 +70,7 @@ struct Runtime {
     path_revision: u64,
     hard_block_revision: u64,
     verified_exit: Option<Ipv4Addr>,
+    exit_policy_error: Option<(String, String)>,
     verified_samples: Vec<Option<GeoInfo>>,
     exit_observation: Option<(PathIdentity, IpAddr)>,
     traffic: Option<NetworkTraffic>,
@@ -408,27 +411,6 @@ impl GlobalNetwork {
         Ok(())
     }
 
-    /// Save only the adapter preference while full guest verification is deferred.
-    pub fn save_interface(&self, route: &NetworkRoute) -> Result<(), AppError> {
-        let mut runtime = self.runtime();
-        let saved = self.route()?;
-        if runtime.installing || route.enabled != saved.enabled || route.chain != saved.chain {
-            return Err(error("Start the machine and resume internet access to apply proxy route changes"));
-        }
-        if let Some(interface) = route.bind_interface.as_deref() {
-            network_interfaces::require_available(interface).map_err(|e| error(e.to_string()))?;
-        }
-        self.save(route)?;
-        runtime.clear_upstream();
-        runtime.connectivity.clear();
-        runtime.grant.set_revision(route_revision(route));
-        let reason = "The network interface was saved and needs a check before internet access opens";
-        runtime.grant.invalidate(reason);
-        runtime.apply_policy();
-        self.journal(&runtime, "interfaceSaved", reason, None);
-        Ok(())
-    }
-
     pub fn save(&self, route: &NetworkRoute) -> Result<(), AppError> {
         self.with_store(|store| store.set_setting(ROUTE, route))?;
         Ok(())
@@ -499,12 +481,17 @@ impl GlobalNetwork {
         } else {
             NetworkGateMode::Closed
         };
+        let exit_policy_error = runtime.exit_policy_error.as_ref()
+            .filter(|(revision, _)| *revision == route_revision(&route))
+            .map(|(_, reason)| reason.clone());
+        let next_retry_at = if exit_policy_error.is_some() { None } else { grant.next_retry_at };
         Ok(NetworkStatus {
             available,
             running,
             route,
             error,
             gate_error: grant.error.clone(),
+            exit_policy_error,
             gate,
             connectivity: runtime.connectivity.mode,
             failed_checks: runtime.connectivity.failed_checks,
@@ -521,7 +508,7 @@ impl GlobalNetwork {
             generation: grant.generation,
             checked_at: grant.checked_at,
             expires_at: grant.expires_at,
-            next_retry_at: grant.next_retry_at,
+            next_retry_at,
             retry_attempt: grant.retry_attempt,
             report: grant.report.clone(),
         })
@@ -568,7 +555,7 @@ mod tests {
         let network = GlobalNetwork::open(&dir).unwrap();
         let catalog = network.import("test", None, Some(TWO)).unwrap();
         for enabled in [false, true] {
-            let route = NetworkRoute { enabled, chain: vec![catalog.nodes[0].id.clone()], bind_interface: Some("cabin-nonexistent-interface".into()) };
+            let route = NetworkRoute { enabled, chain: vec![catalog.nodes[0].id.clone()], bind_interface: Some("cabin-nonexistent-interface".into()), ..NetworkRoute::default() };
             assert!(network.upstream(&route).unwrap_err().message.contains("unavailable"));
             assert!(network.check(&route).is_err());
         }
@@ -609,11 +596,13 @@ mod tests {
             enabled: true,
             chain: vec![],
             bind_interface: None,
+            ..NetworkRoute::default()
         };
         let missing = NetworkRoute {
             enabled: true,
             chain: vec!["gone::n1".into()],
             bind_interface: None,
+            ..NetworkRoute::default()
         };
         assert!(network.upstream(&empty).is_err());
         assert!(network.upstream(&missing).is_err());
@@ -621,6 +610,7 @@ mod tests {
             enabled: false,
             chain: vec!["gone::n1".into()],
             bind_interface: None,
+            ..NetworkRoute::default()
         };
         assert!(matches!(network.upstream(&off).unwrap(), Upstream::Direct));
         drop(network);
@@ -637,6 +627,7 @@ mod tests {
             enabled: true,
             chain: vec!["missing::n1".into()],
             bind_interface: None,
+            ..NetworkRoute::default()
         };
         assert!(network.apply(&invalid).is_err());
         assert_eq!(network.route().unwrap(), NetworkRoute::default());
@@ -666,6 +657,7 @@ mod tests {
                 enabled: true,
                 chain: vec![catalog.nodes[0].id.clone()],
                 bind_interface: None,
+            ..NetworkRoute::default()
             })
             .unwrap();
         network.suspend_store().unwrap();

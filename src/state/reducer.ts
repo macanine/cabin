@@ -52,10 +52,11 @@ export function initialState(): AppState {
     proxy: { sources: [], nodes: [], groups: [] },
     network: {
       available: false,
-      route: { enabled: false, chain: [], bindInterface: null } as NetworkRoute,
+      route: { enabled: false, chain: [], bindInterface: null, exitPolicy: "static" } as NetworkRoute,
       running: false,
       error: null,
       gateError: null,
+      exitPolicyError: null,
       gate: "closed",
       paused: false,
       autoRecover: true,

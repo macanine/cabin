@@ -17,6 +17,8 @@ use crate::model::{
 };
 use crate::util::now_millis;
 
+pub const NETWORK_HISTORY_LIMIT: u32 = 500;
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
@@ -1093,9 +1095,9 @@ impl Store {
         )?;
         transaction.execute(
             "DELETE FROM network_history WHERE id <= (
-                SELECT id FROM network_history ORDER BY id DESC LIMIT 1 OFFSET 499
+                SELECT id FROM network_history ORDER BY id DESC LIMIT 1 OFFSET ?1
             ) - 1",
-            [],
+            [NETWORK_HISTORY_LIMIT - 1],
         )?;
         transaction.commit()?;
         Ok(())
@@ -1107,7 +1109,7 @@ impl Store {
             "SELECT id, at, kind, message, failed_checks, report FROM network_history
              WHERE id < ?1 ORDER BY id DESC LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![before.unwrap_or(i64::MAX), limit.clamp(1, 100)], |row| {
+        let rows = statement.query_map(params![before.unwrap_or(i64::MAX), limit.clamp(1, NETWORK_HISTORY_LIMIT)], |row| {
             let report: Option<String> = row.get(5)?;
             Ok(NetworkHistoryEntry {
                 id: row.get(0)?,
@@ -1611,7 +1613,8 @@ mod tests {
         .flatten()
         .map(|entry| entry.id)
         .collect();
-        assert_eq!(all_ids.len(), 500);
+        assert_eq!(store.network_history(None, NETWORK_HISTORY_LIMIT)?.len(), all_ids.len());
+        assert_eq!(all_ids.len(), NETWORK_HISTORY_LIMIT as usize);
         assert_eq!(*all_ids.last().unwrap(), 6);
         Ok(())
     }

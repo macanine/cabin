@@ -138,6 +138,7 @@ impl GlobalNetwork {
         public_ip: Option<Ipv4Addr>,
         samples: &[Result<GeoInfo, String>],
         candidate: Option<&NetworkRoute>,
+        baseline: Option<&super::ExitBaseline>,
     ) -> Result<bool, AppError> {
         let mut runtime = self.runtime();
         self.refresh_interface_paths(&mut runtime);
@@ -170,11 +171,13 @@ impl GlobalNetwork {
             }
             return Ok(false);
         }
-        if attempt.refresh && matches!((runtime.verified_exit, public_ip), (Some(old), Some(new)) if !crate::network_gate::same_exit(old, new)) {
-            return Err(error("The public exit no longer matches the verified route"));
-        }
         if attempt.held && public_ip.zip(runtime.verified_exit).is_none() {
             return Err(error("Could not confirm the verified public exit"));
+        }
+        if report.can_open && let (Some(route), Some(baseline)) = (runtime.active_route.as_ref(), baseline) {
+            if self.exit_baseline(route)?.as_ref() != Some(baseline) {
+                self.save_exit_baseline(route, baseline)?;
+            }
         }
         if let Some(route) = candidate.filter(|_| report.can_open) {
             self.save(route)?;
@@ -184,6 +187,7 @@ impl GlobalNetwork {
             runtime.connectivity.clear();
             runtime.hold_timeout_pending = false;
             runtime.verified_exit = public_ip;
+            runtime.exit_policy_error = None;
             runtime.verified_samples = samples
                 .iter()
                 .map(|sample| sample.as_ref().ok().cloned())
@@ -361,7 +365,9 @@ impl GlobalNetwork {
         let expired = self.expire(&mut runtime);
         let drifted = runtime.grant.mode == NetworkGateMode::Open
             && self.revoke_drifted_route(&mut runtime, self.route().ok().as_ref());
-        let due = !runtime.sleeping && runtime.connectivity.mode == NetworkConnectivity::Normal
+        let exit_blocked = runtime.exit_policy_error.as_ref().is_some_and(|(revision, _)|
+            self.route().is_ok_and(|route| super::route_revision(&route) == *revision));
+        let due = !exit_blocked && !runtime.sleeping && runtime.connectivity.mode == NetworkConnectivity::Normal
             && runtime
                 .gateway
                 .as_ref()
@@ -387,7 +393,7 @@ mod tests {
         open_gate(&network, &route);
         let check = network.begin_check(revision.clone(), true).unwrap();
         network.save(&NetworkRoute { bind_interface: Some("en-test".into()), ..route.clone() }).unwrap();
-        assert!(!network.finish_check(&check, passing_report(&revision), None, &[], None).unwrap());
+        assert!(!network.finish_check(&check, passing_report(&revision), None, &[], None, None).unwrap());
         assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Closed);
         network.stop();
         drop(network);

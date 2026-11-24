@@ -118,7 +118,9 @@ impl Gateway {
         let resolver = upstream.map(Resolver::start).transpose()?.map(Arc::new);
         let dns_gate = RelayGate::default();
         dns_gate.suspend(|| {});
+        let down_wake = crate::transport::wake_pair()?;
         let shared = Arc::new(Shared {
+            down_wake,
             dns: if dns.is_empty() {
                 DEFAULT_DNS.to_vec()
             } else {
@@ -388,6 +390,7 @@ impl Drop for Gateway {
             self.shared.stop.store(true, Ordering::Relaxed);
             self.shared.held_ready.notify_one();
         }
+        let _ = self.shared.down_wake.0.send(&[0]);
         self.set_egress_mode(EgressMode::Closed);
         *self
             .shared

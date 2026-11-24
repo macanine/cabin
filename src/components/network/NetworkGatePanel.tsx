@@ -1,55 +1,20 @@
-import { Button, Loader, Switch } from "@mantine/core";
-import {
-  IconAlertTriangle, IconArrowRight, IconCheck, IconChevronRight, IconCloudOff, IconHelpCircle,
-  IconPlayerPause, IconShieldCheck,
-} from "@tabler/icons-react";
-import { useState } from "react";
+import { Button, Switch } from "@mantine/core";
+import { IconAlertTriangle, IconArrowRight, IconCheck, IconChevronRight, IconHelpCircle } from "@tabler/icons-react";
+import { useState, type ReactNode } from "react";
 import { attempt } from "../../lib/operations";
-import { checkFix, selectNetworkSummary, splitChecks, type FixTarget, type NetTone } from "../../lib/networkSummary";
+import { blockingReason, checkFix, selectNetworkSummary, splitChecks, type FixTarget } from "../../lib/networkSummary";
 import type { NetworkCheckItem, NetworkCheckReport, NetworkCheckStatus, NetworkStatus } from "../../services/ipc/generated/core";
+import { confirmAction } from "../../services/ipc/dialogs";
 import { networkIpc } from "../../services/ipc/network";
 import { useApp } from "../../state/store";
 import { uiActions } from "../../state/ui";
 import { RecoveryPanel } from "../Recovery";
 import { DisclosureChevron, Reveal } from "../motion";
 
-const time = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" });
-
-const TONE_STYLE: Record<NetTone, string> = {
-  ok: "bg-ok/13 text-ok",
-  busy: "bg-accent/12 text-accent",
-  warn: "bg-warn/13 text-warn",
-  bad: "bg-bad/13 text-bad",
-  off: "bg-hover text-muted",
-};
-
-export function AccessMark({ tone, size = 18 }: { tone: NetTone; size?: number }) {
+export function NetworkCheckButton() {
   return (
-    <span className={`grid shrink-0 place-items-center rounded-xl ${TONE_STYLE[tone]}`} style={{ width: size * 1.8, height: size * 1.8 }} aria-hidden="true">
-      <span key={tone} className={`grid place-items-center ${tone === "busy" ? "" : "animate-fade"}`}>
-        {tone === "ok" ? <IconShieldCheck size={size} />
-          : tone === "busy" ? <Loader size={size - 2} />
-            : tone === "warn" ? <IconPlayerPause size={size} />
-              : <IconCloudOff size={size} />}
-      </span>
-    </span>
-  );
-}
-
-/** One line in the network page; opens the Network Check. */
-export function NetworkGateSummary({ status }: { status: NetworkStatus }) {
-  const summary = useApp(selectNetworkSummary);
-  const report = status.report?.revision === status.revision ? status.report : null;
-  const problems = report ? report.totalRequired - report.passedRequired : 0;
-  return (
-    <button type="button" className="glass press flex w-full cursor-pointer items-center gap-3 rounded-xl p-3 text-left text-fg hover:border-accent/40" aria-haspopup="dialog" onClick={uiActions.openNetworkCheck}>
-      <AccessMark tone={summary.tone} size={16} />
-      <span className="grid min-w-0 flex-1">
-        <strong className="text-md">{summary.title}</strong>
-        <span className="truncate text-sm text-muted">{summary.detail}</span>
-      </span>
-      {report && problems > 0 && <span className="shrink-0 rounded-full bg-bad/12 px-2 py-0.5 text-xs font-medium text-bad">{problems} to fix</span>}
-      <IconChevronRight size={15} className="text-faint" aria-hidden="true" />
+    <button type="button" className="press inline-flex cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent py-1 text-sm font-medium text-muted hover:text-fg" aria-haspopup="dialog" onClick={uiActions.openNetworkCheck}>
+      Network check <IconChevronRight size={14} aria-hidden />
     </button>
   );
 }
@@ -143,65 +108,88 @@ export function NetworkCheckReportView({ report, onFix }: { report: NetworkCheck
   );
 }
 
-/**
- * Internet access for the machine: verification and recovery follow the gateway state,
- * the problems if any, and two switches. Nothing else.
- */
-export function NetworkGatePanel({ status, onRemediate }: {
+export function NetworkGatePanel({ status, onRemediate, history }: {
   status: NetworkStatus;
   onRemediate: CheckAction;
+  history: ReactNode;
 }) {
   const summary = useApp(selectNetworkSummary);
-  const machineRunning = useApp((state) => state.machine?.state === "running");
-  const loadError = useApp((state) => state.networkLoadError);
-  const [busy, setBusy] = useState<"verify" | "pause" | "recover" | null>(null);
+  const machine = useApp((state) => state.machine);
+  const [busy, setBusy] = useState<"verify" | "accept" | "pause" | "recover" | null>(null);
   const report = status.report?.revision === status.revision ? status.report : null;
-  const canChange = machineRunning && status.available && status.running && busy == null;
+  const connected = machine?.state === "running" && machine.connection === "connected";
+  const canChange = connected && status.available && status.running && busy == null;
   const canVerify = canChange && !status.paused && status.gate !== "checking";
-  const checking = busy === "verify" || status.gate === "checking";
+  const checking = busy === "verify" || busy === "accept" || summary.tone === "busy";
+  const exitProblem = summary.blocker?.id === "exit";
+  const fix = summary.blocker && checkFix(summary.blocker);
 
-  async function run(action: "verify" | "pause" | "recover") {
+  async function run(action: "verify" | "accept" | "pause" | "recover") {
+    if (action === "accept" && !await confirmAction(
+      "Replace this route’s approved exit if the current exit passes a full network check? Only continue if you expected the change.",
+      "Approve and check", "Approve new exit",
+    )) return;
     setBusy(action);
-    if (action === "verify") await attempt(networkIpc.verify());
-    else if (action === "pause") await attempt(networkIpc.setPaused(!status.paused));
-    else await attempt(networkIpc.setAutoRecover(!status.autoRecover));
-    setBusy(null);
+    try {
+      if (action === "verify" || action === "accept") await attempt(networkIpc.verify(action === "accept"));
+      else if (action === "pause") await attempt(networkIpc.setPaused(!status.paused));
+      else await attempt(networkIpc.setAutoRecover(!status.autoRecover));
+    } finally {
+      setBusy(null);
+    }
   }
 
-  const when = summary.tone === "ok" && status.expiresAt != null
-    ? `Verified until ${time.format(status.expiresAt)}`
-    : status.nextRetryAt != null && status.autoRecover && !status.paused && summary.tone !== "ok"
-      ? `Next try ${time.format(status.nextRetryAt)}`
-      : report ? `Checked ${time.format(report.finishedAt)}` : null;
+  if (!connected) {
+    return (
+      <p className="m-0 py-2 text-sm text-muted" role="status">{machine?.state === "running" ? "Waiting for the machine to connect." : "Start the machine to check internet access."}</p>
+    );
+  }
+
+  const title = checking ? "Checking the connection…"
+    : status.paused ? "Internet access paused"
+      : summary.tone === "ok" ? "Internet access verified"
+        : summary.tone === "off" ? "No managed gateway"
+          : status.exitPolicyError ? "Internet blocked: the approved exit changed"
+            : status.error || !status.running ? "Network gateway unavailable"
+              : exitProblem && summary.blocker?.title === "Public IP addresses differ" ? "Internet blocked: the static exit didn’t match"
+                : summary.blocker ? `Internet blocked: ${blockingReason(summary.blocker)}`
+                  : "Internet access couldn’t be verified";
 
   return (
-    <section className="grid gap-3.5" aria-label="Network check">
-      <div className={`glass flex items-center gap-3.5 rounded-2xl p-3.5 ${summary.tone === "bad" ? "border-bad/30" : summary.tone === "warn" ? "border-warn/30" : summary.tone === "ok" ? "border-ok/30" : ""}`}>
-        <AccessMark tone={checking ? "busy" : summary.tone} size={22} />
-        <div className="grid min-w-0 flex-1 gap-px" role="status">
-          <strong className="text-lg">{checking && summary.tone !== "ok" ? "Checking…" : summary.title}</strong>
-          <span className="text-sm text-muted [overflow-wrap:anywhere]">{summary.detail}</span>
-          {when && <small className="text-xs text-faint">{when}</small>}
+    <section className="grid gap-4" aria-label="Network check">
+      <div className="grid gap-3">
+        <div role="status">
+          <h2 className="m-0 text-lg leading-tight font-semibold">{title}</h2>
         </div>
-        {!loadError && !status.autoRecover && status.gate === "closed" && !status.paused && (
-          <Button size="xs" disabled={!canVerify} onClick={() => void run("verify")}>Verify internet access</Button>
+        {!checking && status.available && (status.running || status.paused) && (
+          <div className="flex flex-wrap items-center gap-2">
+            {status.paused ? <Button size="sm" disabled={!canChange} onClick={() => void run("pause")}>Resume internet</Button>
+              : status.exitPolicyError ? <>
+                <Button size="sm" onClick={() => onRemediate("route")}>Review route</Button>
+                <Button size="sm" variant="default" disabled={!canVerify} onClick={() => void run("accept")}>Approve new exit</Button>
+              </> : <>
+                {fix && <Button size="sm" onClick={() => onRemediate(fix.target)}>{exitProblem ? "Review IP settings" : fix.label}</Button>}
+                <Button size="sm" variant={fix || summary.tone === "ok" ? "subtle" : "filled"} disabled={!canVerify} onClick={() => void run("verify")}>Check again</Button>
+                {summary.tone === "ok" && <Button size="sm" variant="subtle" disabled={!canChange} onClick={() => void run("pause")}>Pause internet</Button>}
+              </>}
+          </div>
         )}
       </div>
 
-      {machineRunning && status.error && <RecoveryPanel compact message={`The network gateway is not running. ${status.error}`} />}
-
-      {report ? (
-        <NetworkCheckReportView key={report.id} report={report} onFix={onRemediate} />
-      ) : (
-        <div className="px-3 py-6 text-center text-sm text-faint">
-          {!machineRunning ? "Start the machine to check internet access." : checking ? "Running the full check…" : "No check for this route yet."}
+      <details className="group border-t border-line pt-2.5">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-md px-0.5 py-1 text-sm font-medium text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
+          Diagnostics and settings <IconChevronRight size={15} className="group-open:rotate-90" />
+        </summary>
+        <div className="mt-3 grid gap-3">
+          {status.error && <RecoveryPanel compact message={status.error} />}
+          {report && <NetworkCheckReportView key={report.id} report={report} onFix={onRemediate} />}
+          {history}
+          {status.available && <div className="flex flex-wrap gap-x-5 gap-y-3 pt-1">
+            {!status.paused && summary.tone !== "ok" && <Switch size="xs" label="Pause internet" checked={status.paused} disabled={!canChange} onChange={() => void run("pause")} />}
+            <Switch size="xs" label="Automatically retry" checked={status.autoRecover} disabled={!canChange} onChange={() => void run("recover")} />
+          </div>}
         </div>
-      )}
-
-      <div className="flex flex-wrap gap-5 pt-1">
-        <Switch size="xs" label="Pause internet" checked={status.paused} disabled={!canChange} onChange={() => void run("pause")} />
-        <Switch size="xs" label="Retry on its own" checked={status.autoRecover} disabled={!canChange} onChange={() => void run("recover")} />
-      </div>
+      </details>
     </section>
   );
 }

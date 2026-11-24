@@ -1,97 +1,113 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { guestNow } from "../../lib/clock";
-import type { ProxyNode, ProxyTestKind, ProxyTestResult } from "../../services/ipc/generated/core";
+import type { ProxyNode, ProxyTestResult } from "../../services/ipc/generated/core";
 import { toIpcError } from "../../services/ipc/common";
 import { proxyIpc } from "../../services/ipc/network";
 import { appStore } from "../../state/store";
 import { nodeKey } from "./nodeCatalog";
-import { nodeTestKey } from "../../lib/networkRoute";
 
-export interface NodeTestState {
-  results: ReadonlyMap<string, ProxyTestResult>;
-  pending: ReadonlySet<string>;
-}
+type TestState = { pending: boolean; result?: ProxyTestResult };
+type Listener = () => void;
 
-const listeners = new Set<() => void>();
-let state: NodeTestState = { results: new Map(), pending: new Set() };
-type TestJob = { node: ProxyNode; bindInterface: string | null };
-const queues: Record<ProxyTestKind, TestJob[]> = { latency: [], download: [] };
-const running = { latency: 0, download: 0 };
-const limits = { latency: 4, download: 1 };
-let catalog = appStore.get().proxy;
-let currentKeys = new Set(catalog.nodes.map(nodeKey));
+const IDLE: TestState = { pending: false };
+const CONCURRENCY = 4;
+const tests = new Map<string, TestState>();
+const nodeListeners = new Map<string, Set<Listener>>();
+const queueListeners = new Set<Listener>();
+const queue: ProxyNode[] = [];
+let nextJob = 0;
+let running = 0;
+let nodes = appStore.get().proxy.nodes;
+let currentKeys = new Set(nodes.map(nodeKey));
 
-export const testKey = nodeTestKey;
-
-function publish(next: NodeTestState) {
-  state = next;
-  listeners.forEach((listener) => listener());
-}
-
-function syncCatalog() {
-  const next = appStore.get().proxy;
-  if (catalog === next) return;
-  catalog = next;
-  currentKeys = new Set(catalog.nodes.map(nodeKey));
-  const results = new Map([...state.results].filter(([, value]) => currentKeys.has(nodeKey({ id: value.nodeId, configRevision: value.configRevision }))));
-  if (results.size !== state.results.size) publish({ ...state, results });
-}
-
-appStore.subscribe(syncCatalog);
-
-function subscribe(listener: () => void) {
+function subscribe(listeners: Set<Listener>, listener: Listener) {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }
 
-export function useNodeTests(): NodeTestState {
-  return useSyncExternalStore(subscribe, () => state);
+function setTest(key: string, value?: TestState) {
+  if (value) tests.set(key, value);
+  else tests.delete(key);
+  nodeListeners.get(key)?.forEach((listener) => listener());
 }
 
-function finish({ node, bindInterface }: TestJob, kind: ProxyTestKind, result?: ProxyTestResult) {
-  const key = testKey(node, kind, bindInterface);
-  const pending = new Set(state.pending);
-  pending.delete(key);
-  const valid = result?.nodeId === node.id && result.configRevision === node.configRevision
-    && result.kind === kind && currentKeys.has(nodeKey(node));
-  const results = valid ? new Map(state.results).set(key, result) : state.results;
-  publish({ results, pending });
+appStore.subscribe(() => {
+  const next = appStore.get().proxy.nodes;
+  if (nodes === next) return;
+  nodes = next;
+  currentKeys = new Set(nodes.map(nodeKey));
+  for (const [key, value] of tests) {
+    if (!currentKeys.has(key)) setTest(key, value.pending ? { pending: true } : undefined);
+  }
+  queueListeners.forEach((listener) => listener());
+});
+
+export function useNodeTest(node: ProxyNode | undefined): TestState {
+  const key = node ? nodeKey(node) : null;
+  const listen = useCallback((listener: Listener) => {
+    if (key == null) return () => {};
+    const listeners = nodeListeners.get(key) ?? new Set<Listener>();
+    nodeListeners.set(key, listeners);
+    const unsubscribe = subscribe(listeners, listener);
+    return () => {
+      unsubscribe();
+      if (listeners.size === 0) nodeListeners.delete(key);
+    };
+  }, [key]);
+  return useSyncExternalStore(listen, () => key == null ? IDLE : tests.get(key) ?? IDLE);
 }
 
-async function run(job: TestJob, kind: ProxyTestKind) {
-  const { node, bindInterface } = job;
+function subscribeQueue(listener: Listener) {
+  return subscribe(queueListeners, listener);
+}
+
+export function useCanTestNodes(candidates: readonly ProxyNode[]): boolean {
+  return useSyncExternalStore(subscribeQueue, () => candidates.some((node) => !tests.get(nodeKey(node))?.pending));
+}
+
+async function run(node: ProxyNode, key: string) {
   let result: ProxyTestResult;
   try {
-    result = await proxyIpc.testNode(node.id, node.configRevision, kind, bindInterface);
+    result = await proxyIpc.testNode(node.id, node.configRevision, "latency");
   } catch (error) {
-    result = { nodeId: node.id, configRevision: node.configRevision, kind, testedAt: guestNow(), ok: false, latencyMs: null, bytes: null, elapsedMs: null, detail: toIpcError(error).message };
+    result = { nodeId: node.id, configRevision: node.configRevision, kind: "latency", testedAt: guestNow(), ok: false, latencyMs: null, bytes: null, elapsedMs: null, detail: toIpcError(error).message };
   }
-  running[kind]--;
-  finish(job, kind, result);
-  dispatch(kind);
+  running--;
+  if (currentKeys.has(key)) {
+    const valid = result.nodeId === node.id && result.configRevision === node.configRevision && result.kind === "latency";
+    setTest(key, { pending: false, result: valid ? result : tests.get(key)?.result });
+    queueListeners.forEach((listener) => listener());
+  } else {
+    setTest(key);
+  }
+  dispatch();
 }
 
-function dispatch(kind: ProxyTestKind) {
-  const queue = queues[kind];
-  while (running[kind] < limits[kind] && queue.length > 0) {
-    const job = queue.shift()!;
-    if (!currentKeys.has(nodeKey(job.node))) {
-      finish(job, kind);
+function dispatch() {
+  while (running < CONCURRENCY && nextJob < queue.length) {
+    const node = queue[nextJob++];
+    const key = nodeKey(node);
+    if (!currentKeys.has(key)) {
+      setTest(key);
       continue;
     }
-    running[kind]++;
-    void run(job, kind);
+    running++;
+    void run(node, key);
+  }
+  if (nextJob === queue.length) {
+    nextJob = 0;
+    queue.length = 0;
   }
 }
 
-export function queueNodeTests(nodes: readonly ProxyNode[], kind: ProxyTestKind, bindInterface: string | null) {
-  const pending = new Set(state.pending);
-  for (const node of nodes) {
-    const key = testKey(node, kind, bindInterface);
-    if (pending.has(key) || !currentKeys.has(nodeKey(node))) continue;
-    pending.add(key);
-    queues[kind].push({ node, bindInterface });
+export function queueNodeTests(candidates: readonly ProxyNode[]) {
+  for (const node of candidates) {
+    const key = nodeKey(node);
+    const previous = tests.get(key);
+    if (previous?.pending || !currentKeys.has(key)) continue;
+    queue.push(node);
+    setTest(key, { pending: true, result: previous?.result });
   }
-  if (pending.size !== state.pending.size) publish({ ...state, pending });
-  dispatch(kind);
+  queueListeners.forEach((listener) => listener());
+  dispatch();
 }

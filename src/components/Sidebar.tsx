@@ -25,7 +25,7 @@ import { openTerminal } from "../lib/terminal";
 import { shortAge, TASK_LIST_MODES, taskSections, type TaskListMode, lastActivity } from "../lib/taskList";
 import { sessionKindName } from "./common";
 import { PerformancePanel } from "./MonitorPanel";
-import { InternetStatus } from "./network/InternetStatus";
+import { InternetMark, InternetStatus } from "./network/InternetStatus";
 import { NewWorkspaceModal } from "./NewWorkspaceModal";
 import { machineLabel } from "./MachineGate";
 import { useOperationSummary } from "./OperationCenter";
@@ -500,8 +500,8 @@ function AccountBar({ collapsed }: { collapsed: boolean }) {
   const connected = machine?.connection === "connected";
   const tone = connected ? "ok" : machine?.busy || machine?.state === "running" ? "warn" : machine?.error ? "bad" : "";
   return (
-    <div className={`flex h-12 shrink-0 items-center gap-2 border-t border-line/70 px-4 ${collapsed ? "flex-col justify-center" : ""}`}>
-      {collapsed ? <span className={`dot ${tone}`} aria-label={machineLabel(machine)} title={`${user}@${host} · ${machineLabel(machine)}`} /> : (
+    <div className={`flex shrink-0 items-center border-t border-line/70 ${collapsed ? "flex-col justify-center gap-1 py-2" : "h-12 gap-2 px-4"}`}>
+      {collapsed ? (machine?.state === "running" && connected && <InternetMark />) : (
         <span className="flex min-w-0 items-center gap-2.5 truncate text-[13px] font-medium" title={`${user}@${host} · ${machineLabel(machine)}`}>
           <span className="grid size-5 shrink-0 place-items-center"><span className={`dot ${tone}`} aria-label={machineLabel(machine)} /></span>
           <span className="truncate">{user}@{host}</span>
@@ -563,6 +563,7 @@ const NAV_ORDER: NavKind[] = ["new", "chrome", "agents", "usage", "mcp", "skills
 export function Sidebar() {
   const collapsed = useUi((ui) => ui.sidebarCollapsed);
   const view = useUi((ui) => ui.view.kind);
+  const connected = useApp((state) => state.machine?.state === "running" && state.machine.connection === "connected");
   const agentAttention = useApp((state) => attentionCount(state.agents));
   const today = todayLabel(useUsage().todayCost);
   const go = (kind: NavKind) => () => uiActions.navigate({ kind });
@@ -583,9 +584,9 @@ export function Sidebar() {
         <NavButton {...nav} icon={<IconSparkles size={18} stroke={1.7} />} label="Skills" active={view === "skills"} onClick={go("skills")} />
       </div>
       {collapsed ? <div className="flex-1" /> : <TaskList />}
-      {collapsed ? <InternetStatus collapsed /> : (
+      {connected && !collapsed && (
         <div className="glass mx-2 my-1 grid min-w-0 shrink-0 rounded-[var(--card-radius)]">
-          <InternetStatus collapsed={false} />
+          <InternetStatus />
           <PerformancePanel />
         </div>
       )}

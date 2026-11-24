@@ -26,26 +26,6 @@ pub fn region_follow_zone(
         .filter(|zone| !zone.trim().is_empty())
 }
 
-/// Two observations of one exit. Carrier-grade and campus NAT hand
-/// consecutive connections addresses from a pool (`…120.14` then `…120.142`),
-/// so IPv4 addresses in one /24 count as the same exit. Anything else must
-/// match exactly.
-pub(super) fn same_exit_network(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
-    match (a.parse::<std::net::Ipv4Addr>(), b.parse::<std::net::Ipv4Addr>()) {
-        (Ok(a), Ok(b)) => same_exit(a, b),
-        _ => false,
-    }
-}
-
-/// [`same_exit_network`] for parsed addresses; the health monitor and the
-/// grant refresh use it so every comparison of the verified exit agrees.
-pub fn same_exit(a: std::net::Ipv4Addr, b: std::net::Ipv4Addr) -> bool {
-    a.octets()[..3] == b.octets()[..3]
-}
-
 pub(super) fn normalized_zone(value: &str) -> &str {
     match value {
         "Etc/GMT" | "Etc/UTC" | "Etc/GMT+0" | "Etc/GMT-0" | "Etc/GMT0" | "Etc/UCT"
@@ -84,13 +64,13 @@ mod tests {
     }
 
     #[test]
-    fn a_nat_pool_is_one_exit_but_another_network_is_not() {
+    fn static_exit_rejects_even_an_address_in_the_same_pool() {
         let guest = probe("222.205.120.14", "Asia/Shanghai");
         let pool = vec![
             Ok(geo("one", "222.205.120.142", "Asia/Shanghai")),
             Ok(geo("two", "222.205.120.14", "Asia/Shanghai")),
         ];
-        assert!(exit_report(&guest, &pool).can_open);
+        assert!(!exit_report(&guest, &pool).can_open);
         let elsewhere = vec![
             Ok(geo("one", "222.205.121.14", "Asia/Shanghai")),
             Ok(geo("two", "222.205.120.14", "Asia/Shanghai")),

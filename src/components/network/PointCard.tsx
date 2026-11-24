@@ -1,4 +1,4 @@
-import { Loader, Tooltip } from "@mantine/core";
+import { Tooltip } from "@mantine/core";
 import {
   IconAlertTriangle, IconCheck, IconCopy, IconEye, IconEyeOff, IconMoon, IconSun,
 } from "@tabler/icons-react";
@@ -122,7 +122,8 @@ export function PointCard({ info }: { info: PointInfo }) {
   return (
     <div className={`net-point${failed ? " failed" : ""}`}>
       <div className="flex min-w-0 items-center gap-3">
-        <span className="net-flag" aria-hidden><Flag code={info.flag} size={16} /></span>
+        <span className="net-flag" aria-hidden><Flag code={info.flag} size={16} pending={info.loading} /></span>
+        {info.loading && <span className="sr-only" role="status">Refreshing location</span>}
         <div className="min-w-0 flex-1">
           <div className="net-point-title">{info.title}</div>
           <div className="truncate text-xs text-muted">{info.sub}</div>
@@ -133,19 +134,17 @@ export function PointCard({ info }: { info: PointInfo }) {
           </Tooltip>
         )}
       </div>
-      {info.error && (
+      {info.error && !info.loading && (
         <div className="net-exit-error" role="alert">
           <IconAlertTriangle size={13} />
           <span>{info.error}</span>
         </div>
       )}
-      {(info.ip || info.loading || info.isp || info.place) && (
+      {(info.ip || info.isp || info.place) && (
         <dl className="net-point-facts">
           {info.ip ? (
             <Fact label="Address"><Address key={info.ip} ip={info.ip} privacy={info.privacy} /></Fact>
-          ) : info.loading && (
-            <Fact label="Address"><span className="flex items-center gap-1.5 text-faint"><Loader size={12} />Looking it up…</span></Fact>
-          )}
+          ) : null}
           {info.isp && (
             <Fact label="Network">
               <span className="flex min-w-0 items-center gap-2">

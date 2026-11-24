@@ -88,6 +88,10 @@ impl Host {
     pub fn new(machine: Machine, agentd: PathBuf) -> Result<Arc<Self>, AppError> {
         let (kick, kick_rx) = mpsc::channel();
         let network = GlobalNetwork::open(&machine.home().join("network"))?;
+        let mut route = network.route()?;
+        if route.bind_interface.take().is_some() {
+            network.save(&route)?;
+        }
         let sync = crate::sync::SyncManager::open(machine.home().join("sync"));
         let host = Arc::new(Self {
             sync,

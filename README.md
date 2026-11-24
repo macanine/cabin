@@ -91,19 +91,22 @@ CLI. The home page and sidebar share today's usage totals.
 
 ## Network and desktop
 
-Use **Settings → Network** to choose the Mac's system route or bind the VM gateway to a
-physical interface. The optional proxy chain uses that interface for its first hop. You can
-apply an interface beside its picker, save it while the VM is stopped or disconnected, or
-save it while internet access is paused. A live change becomes active after Network Check
-passes. If the selected interface disconnects, the gateway keeps SSH available and closes
-internet access while it waits for a fresh check. **System route** follows macOS routing,
-including its active VPN. [Network architecture](PLAN.md#network-routing-and-recovery)
+On macOS and Windows the VM gateway follows the host system route, including an active VPN
+or TUN proxy. Add an optional proxy chain in **Settings → Network**. Apply route changes
+while the VM is connected and internet access is resumed. The route becomes active after
+Network Check passes. Open **Nodes** to test a node’s latency or test all visible nodes.
+Manage subscriptions from the link icon.
+[Network architecture](PLAN.md#network-routing-and-recovery)
 
-The sidebar shows the gate state, observed exit, and traffic. Open **Network Check** to see
-the current blockers, their fixes, and verification history. Guest DNS goes through the
-selected route over HTTPS. With a selected adapter, bootstrap DNS for proxy and resolver
-names uses UDP on that adapter and needs access to public DNS. Use **Region** to set the
-VM's time zone and language.
+The sidebar shows network and machine metrics while the VM is connected. **Network Check**
+explains the next action and keeps raw observations and history in expandable sections.
+Choose **Static IP** (the default) to require a single public IPv4 address. Choose **Dynamic
+residential IP** if the route rotates addresses within a verified country and continent. A
+confirmed violation closes the gateway. A normal check retains the approved exit, and
+**Approve new exit** replaces it only after a successful full check. Baselines persist per
+exit and policy across restarts. Monitoring samples the route periodically.
+Guest DNS goes through the selected route over HTTPS. Use **Region** to set the VM's time
+zone and language.
 
 Install **Chrome** to open a Sway desktop inside the app. **Apps** launches each installed
 GUI app in its own Sway workspace. **Environment** sets Chrome's region and identity. Region

@@ -1,4 +1,4 @@
-import { IconWorld } from "@tabler/icons-react";
+import { IconFlag, IconWorld } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 
 /**
@@ -19,32 +19,35 @@ function toUrl(svg: string) {
 }
 
 /** `code`: ISO 3166-1 alpha-2 ("JP"). Unknown codes show a globe. */
-export function Flag({ code, size = 14, title }: { code: string | null | undefined; size?: number; title?: string }) {
+export function Flag({ code, size = 14, title, pending = false }: {
+  code: string | null | undefined;
+  size?: number;
+  title?: string;
+  pending?: boolean;
+}) {
   const upper = code?.toUpperCase() ?? null;
-  const [url, setUrl] = useState<string | null>(() => (upper ? cache.get(upper) ?? null : null));
   const load = upper ? source(upper) : undefined;
+  const [asset, setAsset] = useState<{ code: string; url: string } | null>(null);
+  const url = upper ? cache.get(upper) ?? (asset?.code === upper ? asset.url : null) : null;
 
   useEffect(() => {
-    if (!upper || !load) return setUrl(null);
-    const hit = cache.get(upper);
-    if (hit) return setUrl(hit);
+    if (!upper || !load || cache.has(upper)) return;
     let alive = true;
     void load().then((svg) => {
-      const next = toUrl(svg);
-      cache.set(upper, next);
-      if (alive) setUrl(next);
+      const url = toUrl(svg);
+      cache.set(upper, url);
+      if (alive) setAsset({ code: upper, url });
     }).catch(() => {});
     return () => { alive = false; };
   }, [upper, load]);
 
   const height = size;
-  const width = Math.round(size * 1.5);
-  if (!upper || !load) {
-    return <IconWorld size={size} className="flag-fallback" aria-hidden={title ? undefined : true} aria-label={title} />;
-  }
+  const width = load || pending ? Math.round(size * 1.5) : size;
+  const Placeholder = pending ? IconFlag : IconWorld;
   return (
-    <span className="flag" style={{ width, height }} role={title ? "img" : undefined} aria-label={title} aria-hidden={title ? undefined : true}>
-      {url && <img src={url} alt="" width={width} height={height} draggable={false} />}
+    <span className="flag" style={{ width, height }} data-pending={pending || undefined} role={title ? "img" : undefined} aria-label={title} aria-hidden={title ? undefined : true}>
+      {url ? <img src={url} alt="" width={width} height={height} draggable={false} />
+        : <Placeholder size={size} className="flag-fallback" />}
     </span>
   );
 }

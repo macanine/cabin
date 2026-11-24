@@ -77,7 +77,7 @@ impl Connectivity {
 
 /// A trace confirms the exit address. The independent 204 check can still
 /// establish reachability when neither trace endpoint answers.
-pub fn probe(proxy_url: &str) -> Result<Option<Ipv4Addr>, String> {
+pub fn probe(proxy_url: &str) -> Result<Option<(Ipv4Addr, Option<String>)>, String> {
     let proxy = ureq::Proxy::new(proxy_url).map_err(|_| "Invalid gateway listener address")?;
     let agent = ureq::AgentBuilder::new()
         .resolver(agent_core::ipv4::resolve)
@@ -87,35 +87,39 @@ pub fn probe(proxy_url: &str) -> Result<Option<Ipv4Addr>, String> {
         .timeout(REQUEST_TIMEOUT)
         .timeout_connect(REQUEST_TIMEOUT)
         .build();
+    if let Some(exit) = trace_exit(&agent, HTTPS_URL) {
+        return Ok(Some(exit));
+    }
     std::thread::scope(|scope| {
-        let fallback = scope.spawn(|| trace_exit(&agent, ALTERNATE_HTTPS_URL));
         let reachable = scope.spawn(|| {
-            agent.get("https://www.gstatic.com/generate_204").call().is_ok_and(|response| response.status() == 204)
+            agent
+                .get("https://www.gstatic.com/generate_204")
+                .call()
+                .is_ok_and(|response| response.status() == 204)
         });
-        let address = trace_exit(&agent, HTTPS_URL).or_else(|| fallback.join().ok().flatten());
-        if address.is_some() {
-            return Ok(address);
-        }
-        if reachable.join().unwrap_or(false) {
-            Ok(None)
+        let exit = trace_exit(&agent, ALTERNATE_HTTPS_URL);
+        if exit.is_some() || reachable.join().unwrap_or(false) {
+            Ok(exit)
         } else {
             Err("No HTTPS connectivity target responded through the current route".into())
         }
     })
 }
 
-fn trace_exit(agent: &ureq::Agent, url: &str) -> Option<Ipv4Addr> {
+fn trace_exit(agent: &ureq::Agent, url: &str) -> Option<(Ipv4Addr, Option<String>)> {
     let response = agent.get(url).call().ok()?;
     if response.status() != 200 {
         return None;
     }
-    let mut text = String::new();
-    response.into_reader().take(8192).read_to_string(&mut text).ok()?;
-    text.lines()
-        .find_map(|line| line.strip_prefix("ip="))?
-        .trim()
-        .parse()
-        .ok()
+    let mut body = Vec::new();
+    response.into_reader().take(8192).read_to_end(&mut body).ok()?;
+    let trace = cabin_ip_detection::parse_cloudflare_trace(&body).ok()?;
+    if let std::net::IpAddr::V4(ip) = trace.ip
+        && cabin_ip_detection::public_ip(trace.ip)
+    {
+        return Some((ip, trace.country_code));
+    }
+    None
 }
 
 pub fn traffic_sample(

@@ -11,9 +11,8 @@ import { Section } from "../../components/common";
 import { SettingsPage } from "../SettingsView";
 import { syncClock } from "../../state/clockSync";
 import { NetworkDashboard } from "../../components/network/NetworkDashboard";
-import { useExitLookup } from "../../components/network/useNetworkLive";
-import { baseLocale, environmentMatch, placeLabel } from "../../lib/geo";
-import { Flag } from "../../components/Flag";
+import { useExitMonitor } from "../../state/networkMonitor";
+import { baseLocale, environmentMatch } from "../../lib/geo";
 
 const localeLabel = (locale: string | null | undefined) => locale?.split(".")[0].replace("_", "-") ?? "unknown";
 
@@ -60,7 +59,7 @@ function Region() {
   const running = useApp((state) =>
     state.operations.some((op) => op.kind === "environment.apply" && (op.state === "running" || op.state === "pending")),
   );
-  const exit = useExitLookup().value;
+  const exit = useExitMonitor().value;
   const [edits, setEdits] = useState<Partial<EnvironmentSpec>>({});
   const [review, setReview] = useState<EnvironmentReview | null>(null);
   const [toggling, setToggling] = useState(false);
@@ -114,9 +113,6 @@ function Region() {
   return (
     <Section
       title="Region"
-      hint={exit ? (
-        <span className="inline-flex items-center gap-1.5">Exit in <Flag code={exit.countryCode} size={12} /> {placeLabel(exit)}</span>
-      ) : "Waiting for the exit"}
       action={(
         <Switch
           size="sm"
@@ -128,7 +124,7 @@ function Region() {
         />
       )}
     >
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
         <RegionTile
           label="Time zone"
           matches={match.zoneMatches}
@@ -218,7 +214,7 @@ export function NetworkSettings() {
   return (
     <SettingsPage title="Network" subtitle="Route VM traffic through proxy nodes.">
       <NetworkDashboard />
-      <section id="network-region" className="network-region" tabIndex={-1} aria-label="Region">
+      <section id="network-region" className="mt-4 scroll-mt-4 outline-none" tabIndex={-1} aria-label="Region">
         {regionReady ? <Region /> : (
           <Section title="Region" hint="Available when the machine is connected.">{null}</Section>
         )}

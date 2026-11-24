@@ -45,7 +45,7 @@ pub(super) fn open_gate(network: &GlobalNetwork, route: &NetworkRoute) {
     let token = network.begin_check(revision.clone(), false).unwrap();
     assert!(
         network
-            .finish_check(&token, passing_report(&revision), None, &[], None)
+            .finish_check(&token, passing_report(&revision), None, &[], None, None)
             .unwrap()
     );
 }

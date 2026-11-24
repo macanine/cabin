@@ -205,16 +205,6 @@ button.list-row:hover {
   color: var(--faint);
 }
 
-.apply-bar {
-  position: sticky;
-  bottom: -48px;
-  margin: 8px -36px -48px;
-  padding: 14px 36px;
-  background: var(--bg);
-  border-top: 1px solid var(--border);
-  z-index: 2;
-}
-
 .changes {
   margin: 0;
   padding-left: 18px;
@@ -244,10 +234,6 @@ button.list-row:hover {
 @media (max-width: 720px) {
   .page {
     padding: 20px 16px 40px;
-  }
-  .apply-bar {
-    margin: 8px -16px -40px;
-    padding: 12px 16px;
   }
 }
 

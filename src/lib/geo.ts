@@ -104,14 +104,14 @@ export function stripFlags(name: string): string {
 }
 
 /** "Incheon, South Korea": city (else region) and country, without repeats. */
-export function placeLabel(geo: Pick<GeoInfo, "city" | "region" | "country" | "countryCode"> | null | undefined): string {
-  if (!geo) return "Unknown location";
+export function placeLabel(geo: Pick<GeoInfo, "city" | "region" | "country" | "countryCode"> | null | undefined, fallback = "Unknown location"): string {
+  if (!geo) return fallback;
   const parts: string[] = [];
   for (const part of [geo.city, geo.city ? null : geo.region, geo.country ?? geo.countryCode]) {
     const value = part?.trim();
     if (value && !parts.some((seen) => seen.toLowerCase() === value.toLowerCase())) parts.push(value);
   }
-  return parts.join(", ") || "Unknown location";
+  return parts.join(", ") || fallback;
 }
 
 /** The usual system locale of a country, for comparing with the VM's. */
@@ -219,6 +219,7 @@ export function insertAt<T>(list: readonly T[], index: number, item: T): T[] {
 
 export function sameRoute(a: NetworkRoute, b: NetworkRoute): boolean {
   return a.enabled === b.enabled
+    && (a.exitPolicy ?? "static") === (b.exitPolicy ?? "static")
     && ((a as Partial<import("./networkRoute").NetworkRoute>).bindInterface ?? null) === ((b as Partial<import("./networkRoute").NetworkRoute>).bindInterface ?? null)
     && a.chain.length === b.chain.length && a.chain.every((id, i) => id === b.chain[i]);
 }

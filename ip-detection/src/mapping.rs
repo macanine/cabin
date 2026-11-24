@@ -80,6 +80,9 @@ pub(crate) fn parse(service: Service, data: &Value) -> Result<IpInfo, String> {
     let mut info = IpInfo {
         ip,
         country_code: country_code(text(data, &["country_code"])),
+        continent_code: text(data, &["continent_code"])
+            .map(|code| code.trim().to_ascii_uppercase())
+            .filter(|code| matches!(code.as_str(), "AF" | "AN" | "AS" | "EU" | "NA" | "OC" | "SA")),
         country: text(data, &["country"]),
         region: text(data, &["region"]),
         city: text(data, &["city"]),

@@ -1,13 +1,14 @@
-import { Popover, Tooltip } from "@mantine/core";
 import { IconArrowDown, IconArrowUp, IconPlayerPause, IconWorld, IconWorldOff } from "@tabler/icons-react";
 import { formatRate } from "../../lib/format";
-import { flag, placeLabel } from "../../lib/geo";
-import { exitIpTypeLabel, selectNetworkSummary, type NetTone } from "../../lib/networkSummary";
-import { useExitMonitor, useExitType, useGatewayTraffic } from "../../state/networkMonitor";
+import { flag } from "../../lib/geo";
+import { selectNetworkSummary } from "../../lib/networkSummary";
+import { useExitMonitor, useGatewayTraffic } from "../../state/networkMonitor";
 import { useApp } from "../../state/store";
-import { uiActions } from "../../state/ui";
+import { uiActions, useUi } from "../../state/ui";
 import { Flag } from "../Flag";
-import { PointCard } from "./PointCard";
+
+const ICON = { ok: IconWorld, warn: IconPlayerPause, bad: IconWorldOff, off: IconWorldOff, busy: IconWorld } as const;
+const TONE = { ok: "text-muted", busy: "text-muted", warn: "text-warn", bad: "text-bad", off: "text-faint" } as const;
 
 function Rates() {
   const history = useGatewayTraffic();
@@ -21,68 +22,47 @@ function Rates() {
   );
 }
 
-const ICON = { ok: IconWorld, warn: IconPlayerPause, bad: IconWorldOff, off: IconWorldOff, busy: IconWorld } as const;
-const TONE: Record<NetTone, string> = { ok: "text-muted", busy: "animate-breathe text-muted", warn: "text-warn", bad: "text-bad", off: "text-faint" };
+function useInternetDisplay() {
+  const { tone, title } = useApp(selectNetworkSummary);
+  const { value, loading } = useExitMonitor();
+  // The Network page already shows the observation in its exit card.
+  const showExit = useUi(({ view }) => view.kind !== "settings" || view.tab !== "network");
+  const countryCode = showExit ? flag(value?.countryCode) : null;
+  const country = showExit ? value?.country || countryCode : null;
+  const label = country ? `${title} · ${country}` : title;
+  return { tone, title, countryCode, country, pending: showExit && loading, label };
+}
 
-function SideMark({ tone, country }: { tone: NetTone; country: string | null }) {
+type InternetDisplay = ReturnType<typeof useInternetDisplay>;
+
+function StatusMark({ display, compact = false }: { display: InternetDisplay; compact?: boolean }) {
+  const { tone, countryCode, pending, label } = display;
   const Icon = ICON[tone];
   return (
-    <span className={`grid size-5 shrink-0 place-items-center ${TONE[tone]}`} aria-hidden>
-      {country ? <Flag code={country} size={12} /> : <Icon size={16} stroke={1.7} />}
+    <span className={`grid size-5 shrink-0 place-items-center ${TONE[tone]}`} role={compact ? "img" : undefined} aria-label={compact ? label : undefined} aria-hidden={compact ? undefined : true} title={compact ? label : undefined}>
+      {countryCode || (tone === "busy" && pending)
+        ? <Flag code={countryCode} size={12} pending={pending} />
+        : <Icon size={16} stroke={1.7} aria-hidden />}
     </span>
   );
 }
 
-export function InternetStatus({ collapsed }: { collapsed: boolean }) {
-  const summary = useApp(selectNetworkSummary);
-  const exit = useExitMonitor();
-  const type = useExitType();
-  const place = exit.value ? placeLabel(exit.value) : null;
-  const country = flag(exit.value?.countryCode);
-  const ipType = type.loading && !type.value ? "Checking type…" : exitIpTypeLabel(type.value?.ipType ?? null, type.value?.inferred);
-  const detail = [summary.detail, place, exit.value ? ipType : null].filter(Boolean).join(" · ");
-  const label = `Network Check. ${summary.title}. ${detail}`;
-  const mark = <SideMark tone={summary.tone} country={country} />;
+export function InternetMark() {
+  return <StatusMark display={useInternetDisplay()} compact />;
+}
 
-  if (collapsed) {
-    return (
-      <Tooltip label={`${summary.title} · ${detail}`} position="right" multiline maw={260} events={{ hover: true, focus: true, touch: false }}>
-        <button type="button" className="press mx-auto mt-1 grid size-8 cursor-pointer place-items-center rounded-lg border-0 bg-transparent p-0 hover:bg-hover" onClick={uiActions.openNetworkCheck} aria-label={label} aria-haspopup="dialog">
-          {mark}
-        </button>
-      </Tooltip>
-    );
-  }
-
+export function InternetStatus() {
+  const display = useInternetDisplay();
+  const { tone, title, country, label } = display;
   return (
-    <div className="relative min-w-0">
-      <button type="button" className="press grid w-full cursor-pointer grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-2.5 rounded-t-[var(--card-radius)] border-0 bg-transparent py-1.5 pr-2 pl-[7px] text-left text-fg hover:bg-hover"
-        onClick={uiActions.openNetworkCheck} aria-label={label} aria-haspopup="dialog" title={detail}>
-        {exit.value ? <span aria-hidden /> : mark}
-        <span className="grid min-w-0">
-          <span className={`truncate text-sm font-medium ${summary.tone === "bad" ? "text-bad" : ""}`}>{summary.tone === "ok" && place ? place : summary.title}</span>
-          <span className="truncate text-xs text-muted">{summary.detail}</span>
-        </span>
-        <Rates />
+    <div className="grid h-9 min-w-0 grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-2.5 pr-2 pl-[7px]">
+      <StatusMark display={display} />
+      <button type="button" className="press -ml-1 flex h-7 min-w-0 cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent px-1 py-0 text-left text-sm font-medium hover:bg-hover"
+        onClick={uiActions.openNetworkCheck} aria-label={`Network check: ${label}`} aria-haspopup="dialog">
+        <span className={`shrink-0 ${TONE[tone]}`}>{tone === "ok" ? "Internet" : title}</span>
+        {country && <span className="truncate text-muted">· {country}</span>}
       </button>
-      {exit.value && (
-        <Popover position="right" width={286} withinPortal trapFocus returnFocus>
-          <Popover.Target>
-            <button type="button" className="press absolute top-1/2 left-[7px] grid size-5 -translate-y-1/2 cursor-pointer place-items-center rounded border-0 bg-transparent p-0 hover:bg-sel"
-              aria-label={`Exit IP details, ${place ?? "unknown location"}, ${ipType}`}>
-              {mark}
-            </button>
-          </Popover.Target>
-          <Popover.Dropdown>
-            <PointCard info={{
-              title: place ?? "Exit IP", sub: `Observed exit · ${exit.value.source}`, flag: country,
-              ip: exit.value.ip, privacy: true, isp: type.value?.organization ?? exit.value.isp,
-              asn: type.value?.asn ?? exit.value.asn, loading: exit.loading, error: exit.error, place: null,
-              classification: { label: ipType, detail: type.value?.source ?? type.error },
-            }} />
-          </Popover.Dropdown>
-        </Popover>
-      )}
+      {tone === "ok" && <Rates />}
     </div>
   );
 }

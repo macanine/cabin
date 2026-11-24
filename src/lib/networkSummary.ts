@@ -77,7 +77,7 @@ export function checkFix(check: NetworkCheckItem): { label: string; target: FixT
   if (check.id === "browser" || check.id === "browserLive") {
     return { label: "Open browser environment", target: "browser" };
   }
-  if (check.id === "route") return { label: "Show route", target: "route" };
+  if (check.id === "route" || check.id === "exit") return { label: "Open route settings", target: "route" };
   return null;
 }
 
@@ -93,13 +93,16 @@ export function networkSummary(status: NetworkStatus | null, machineRunning: boo
   if (!status) {
     return loadError
       ? { tone: "bad", title: "Status unavailable", detail: loadError, ...none }
-      : { tone: "busy", title: "Loading network", detail: "Reading the Mac's network status", ...none };
+      : { tone: "busy", title: "Loading network", detail: "Reading the machine’s network status", ...none };
   }
   if (!status.available) {
     return { tone: "off", title: "Unmanaged", detail: "This machine has no gateway", ...none };
   }
   if (status.paused) {
     return { tone: "warn", title: "Blocked", detail: "Internet access is paused", ...none };
+  }
+  if (status.exitPolicyError) {
+    return { tone: "bad", title: "Blocked", detail: status.exitPolicyError, ...none };
   }
   if (status.connectivity === "rechecking") {
     const attempt = Math.min(status.failedChecks + 1, RECHECK_LIMIT);

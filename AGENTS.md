@@ -71,18 +71,16 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 
 ## Networking and desktop
 
-- `GlobalNetwork` owns the saved `NetworkRoute`, proxy catalog, gateway, and grant. Keep
-  `bind_interface` independent of the proxy chain's `enabled` flag. Scope route checks, node
-  test keys, bootstrap DNS, and the first outbound hop to the selected adapter.
+- `GlobalNetwork` owns the saved `NetworkRoute`, proxy catalog, gateway, and grant. The
+  desktop uses system routing on macOS and Windows, clears saved adapter bindings on startup,
+  and ignores binding inputs in route and node checks. The VM library retains adapter support.
   [Routing behavior and recovery](PLAN.md#network-routing-and-recovery)
 - `network_gate::region_follow_zone` decides when a failed check may set the guest's time
   zone to the verified exit's; `Host::follow_exit_region` applies it and re-probes within the
   same attempt. Never relax a required check to work around an environment mismatch.
-- `Host::apply_network_route` saves interface-only changes when live verification is
-  unavailable. `finish_check` commits a verified candidate, and `restore_gate` uses a
-  rollback point tied to the gateway session and path revision. `poll_interface_paths`
-  invalidates stale adapter bindings and triggers recovery while the SSH relay remains
-  available.
+- `Host::apply_network_route` requires live verification. `finish_check` commits a verified
+  candidate, and `restore_gate` uses a rollback point tied to the gateway session and path
+  revision.
 - `vm/src/network_interfaces.rs` uses `netdev` on every host for index, link state, IPv4
   addresses, and display labels. Compare interface index and usable IPv4 addresses
   independently of default-path events. Keep the probe and packet allowlist aligned through

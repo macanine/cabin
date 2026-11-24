@@ -1,51 +1,33 @@
+import { IconChevronRight } from "@tabler/icons-react";
 import { Loader, Modal } from "@mantine/core";
 import { useMemo, useRef, useState } from "react";
 import { useAutoRefresh } from "../../lib/useAutoRefresh";
 import { networkTimeline } from "../../lib/networkTimeline";
 import { formatDateTime, isoTimestamp } from "../../lib/time";
-import { toIpcError } from "../../services/ipc/common";
 import type { NetworkHistoryEntry } from "../../services/ipc/generated/core";
 import { networkIpc } from "../../services/ipc/network";
 import { useApp } from "../../state/store";
 import { uiActions, useUi } from "../../state/ui";
 import { NetworkGatePanel } from "./NetworkGatePanel";
 
-const PAGE_SIZE = 100;
-const HISTORY_LIMIT = 500;
-
 function NetworkChangeTimeline({ reportId }: { reportId: string | undefined }) {
   const [entries, setEntries] = useState<NetworkHistoryEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useAutoRefresh(async (isCurrent) => {
     try {
-      const latest: NetworkHistoryEntry[] = [];
-      const previous = entries ?? [];
-      let beforeId: number | null = null;
-      while (latest.length < HISTORY_LIMIT) {
-        const page = await networkIpc.history(beforeId, PAGE_SIZE);
-        if (!isCurrent()) return;
-        latest.push(...page);
-        if (page.length < PAGE_SIZE) break;
-        beforeId = page[page.length - 1].id;
-        const overlap = previous.findIndex((entry) => entry.id === beforeId);
-        if (overlap >= 0) {
-          const remaining = HISTORY_LIMIT - latest.length;
-          latest.push(...previous.slice(overlap + 1, overlap + 1 + remaining));
-          break;
-        }
-      }
+      const latest = await networkIpc.history();
+      if (!isCurrent()) return;
       setEntries(latest);
       setError(null);
-    } catch (error) {
-      if (isCurrent()) setError(toIpcError(error).message);
+    } catch {
+      if (isCurrent()) setError("Connection history is temporarily unavailable.");
     }
   }, { interval: 30_000, refreshKey: reportId });
 
   const timeline = useMemo(() => entries ? networkTimeline(entries) : [], [entries]);
   const feedback = "flex items-center gap-2 text-sm text-faint";
   return (
-    <section aria-labelledby="network-change-heading" className="mt-3 grid gap-2 border-t border-line/70 pt-3">
-      <h3 id="network-change-heading" className="m-0 text-sm font-medium">IP and environment changes</h3>
+    <section aria-label="IP and environment changes" className="mt-2 grid gap-2 border-l border-line pl-3">
       {error && <div className={feedback} role="alert">{error}</div>}
       {!error && !entries && <div className={feedback} role="status"><Loader size={14} /> Loading changes</div>}
       {!error && entries && timeline.length === 0 && <div className={feedback}>No changes recorded.</div>}
@@ -72,28 +54,37 @@ function NetworkChangeTimeline({ reportId }: { reportId: string | undefined }) {
 export function NetworkCheckModal() {
   const opened = useUi((state) => state.networkCheckOpen);
   const status = useApp((state) => state.network);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const destination = useRef<"route" | "region" | "browser" | null>(null);
 
   return (
     <Modal
       opened={opened}
-      onClose={uiActions.closeNetworkCheck}
+      onClose={() => { setHistoryOpen(false); uiActions.closeNetworkCheck(); }}
       onExitTransitionEnd={() => {
         const target = destination.current;
         destination.current = null;
         if (target === "browser") uiActions.openBrowserEnvironment();
         else if (target) uiActions.focusNetworkSettings(target);
       }}
-      title="Internet access"
+      title="Network check"
       closeButtonProps={{ "aria-label": "Close" }}
-      size="lg"
+      size={488}
+      padding="lg"
       centered
     >
-      <NetworkGatePanel status={status} onRemediate={(target) => {
+      {opened && <NetworkGatePanel status={status} onRemediate={(target) => {
+        setHistoryOpen(false);
         destination.current = target;
         uiActions.closeNetworkCheck();
-      }} />
-      {opened && <NetworkChangeTimeline reportId={status?.report?.id} />}
+      }} history={(
+        <details className="group/history text-sm text-muted" open={historyOpen} onToggle={(event) => setHistoryOpen(event.currentTarget.open)}>
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 font-medium hover:text-fg [&::-webkit-details-marker]:hidden">
+            <IconChevronRight size={13} className="group-open/history:rotate-90" /> Connection history
+          </summary>
+          {historyOpen && <NetworkChangeTimeline reportId={status.report?.id} />}
+        </details>
+      )} />}
     </Modal>
   );
 }

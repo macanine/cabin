@@ -99,6 +99,7 @@ pub enum IpType {
 pub struct IpInfo {
     pub ip: IpAddr,
     pub country_code: Option<String>,
+    pub continent_code: Option<String>,
     pub country: Option<String>,
     pub region: Option<String>,
     pub city: Option<String>,
@@ -564,6 +565,11 @@ fn read_body(response: ureq::Response) -> Result<Vec<u8>, String> {
         return Err("response exceeded 1 MiB".into());
     }
     Ok(bytes)
+}
+
+/// Decode an IP and its country from a Cloudflare trace response.
+pub fn parse_cloudflare_trace(body: &[u8]) -> Result<IpInfo, String> {
+    mapping::parse_body(Service::Cloudflare, body)
 }
 
 pub fn public_ip(ip: IpAddr) -> bool {

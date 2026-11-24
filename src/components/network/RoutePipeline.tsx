@@ -1,10 +1,10 @@
 import { Popover, TextInput, Tooltip } from "@mantine/core";
-import { IconDeviceLaptop, IconGripVertical, IconPlus, IconSearch, IconX } from "@tabler/icons-react";
+import { IconDeviceLaptop, IconGripVertical, IconPlus, IconSearch, IconWorld, IconX } from "@tabler/icons-react";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import type { ProxyNode, RouteCheck } from "../../services/ipc/generated/core";
 import { flag, flagInName, stripFlags, hopRole, insertAt, moveItem, placeLabel, type HopPlace, type LinkState } from "../../lib/geo";
 import { nodeKey, nodeMatches } from "./nodeCatalog";
-import { testKey, type NodeTestState } from "./useNodeTests";
+import { useNodeTest } from "./useNodeTests";
 import { Flag } from "../Flag";
 
 /** Drag payloads: a node from the drawer, or a hop being reordered. */
@@ -116,10 +116,46 @@ function HopTip({ name, role, place, latency, prefixLatency, failure }: {
   );
 }
 
-export function RoutePipeline({ chain, enabled, byId, candidates, places, check, links, tests, bindInterface, onChange, selected, onSelect, exit, draft }: {
+function HopButton({ node, place, selected, position, total, chainLatency, failure, onSelect, onMove }: {
+  node?: ProxyNode;
+  place: HopPlace | undefined;
+  selected: boolean;
+  position: number;
+  total: number;
+  chainLatency?: number | null;
+  failure: string | null;
+  onSelect: () => void;
+  onMove: (offset: number, button: HTMLButtonElement) => void;
+}) {
+  const { result } = useNodeTest(chainLatency == null ? node : undefined);
+  const latency = chainLatency ?? result?.latencyMs ?? null;
+  const name = node ? bareName(node.name) : "Missing node";
+  const role = hopRole(position - 1, total);
+  const mark = flag(place?.geo?.countryCode) ?? (node ? flagInName(node.name) : null);
+  return (
+    <Tooltip label={<HopTip name={name} role={role} place={place} latency={latency} prefixLatency={chainLatency != null} failure={failure} />}
+      openDelay={350} multiline events={{ hover: true, focus: true, touch: false }} maw={300}>
+      <button type="button" className="net-seg-select" aria-label={`${name}, ${role.toLowerCase()}, position ${position} of ${total}`}
+        aria-pressed={selected} aria-keyshortcuts="ArrowLeft ArrowRight" onClick={onSelect}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          event.preventDefault();
+          onMove(event.key === "ArrowLeft" ? -1 : 1, event.currentTarget);
+        }}>
+        <IconGripVertical size={12} className="net-seg-grip" />
+        <span className="net-flag-sm" aria-hidden><Flag code={mark} size={11} /></span>
+        <span className="net-seg-name truncate">{name}</span>
+        {(failure || latency != null) && (
+          <span className={`net-seg-ms${failure ? " bad" : ""}`}>{failure ? "Down" : latency}<small>{failure ? "" : "ms"}</small></span>
+        )}
+      </button>
+    </Tooltip>
+  );
+}
+
+export function RoutePipeline({ chain, enabled, byId, candidates, places, check, links, onChange, selected, onSelect, draft }: {
   selected: string;
   onSelect: (key: string) => void;
-  exit: { flag: string | null; label: string } | null;
   chain: string[];
   enabled: boolean;
   draft: boolean;
@@ -128,8 +164,6 @@ export function RoutePipeline({ chain, enabled, byId, candidates, places, check,
   places: ReadonlyMap<string, HopPlace>;
   check: RouteCheck | null;
   links: LinkState[];
-  tests: NodeTestState;
-  bindInterface: string | null;
   onChange: (chain: string[]) => void;
 }) {
   const [dragging, setDragging] = useState<string | null>(null);
@@ -174,20 +208,15 @@ export function RoutePipeline({ chain, enabled, byId, candidates, places, check,
       <div className={`net-track${enabled ? "" : " off"}`} role="group" aria-label={draft ? "Draft route" : "Active route"} aria-describedby={chain.length > 1 ? helpId : undefined}>
         <button type="button" className={`net-seg nic${selected === "origin" ? " selected" : ""}`} aria-pressed={selected === "origin"} onClick={() => onSelect("origin")}>
           <IconDeviceLaptop size={15} />
-          <span className="net-seg-name">This Mac</span>
+          <span className="net-seg-name">This computer</span>
         </button>
         {chain.map((id, index) => {
           const node = byId.get(id);
           const place = places.get(id);
           const state = enabled ? links[index] ?? "idle" : "idle";
           const hopCheck = check?.hops[index]?.nodeId === id ? check.hops[index] : null;
-          const sample = node ? tests.results.get(testKey(node, "latency", bindInterface)) : undefined;
-          const latency = hopCheck?.latencyMs ?? sample?.latencyMs ?? null;
           const failed = state === "bad";
           const untested = brokenAt != null && index > brokenAt;
-          const mark = flag(place?.geo?.countryCode) ?? (node ? flagInName(node.name) : null);
-          const name = node ? bareName(node.name) : "Missing node";
-          const role = hopRole(index, chain.length);
           return (
             <div key={id} className="net-seg-slot">
               <Joint state={state} index={index} nodes={candidates} chain={chain} onInsert={insert} onDropAt={dropAt} />
@@ -203,34 +232,9 @@ export function RoutePipeline({ chain, enabled, byId, candidates, places, check,
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={(event) => dropAt(index, event, false)}
               >
-                <Tooltip
-                  label={<HopTip name={name} role={role} place={place} latency={latency} prefixLatency={hopCheck?.latencyMs != null} failure={failed ? hopCheck?.detail ?? "Unreachable" : null} />}
-                  openDelay={350}
-                  multiline
-                  events={{ hover: true, focus: true, touch: false }}
-                  maw={300}
-                >
-                  <button
-                    type="button"
-                    className="net-seg-select"
-                    aria-label={`${name}, ${role.toLowerCase()}, position ${index + 1} of ${chain.length}`}
-                    aria-pressed={selected === id}
-                    aria-keyshortcuts="ArrowLeft ArrowRight"
-                    onClick={() => onSelect(id)}
-                    onKeyDown={(event) => {
-                      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-                      event.preventDefault();
-                      moveHop(index, index + (event.key === "ArrowLeft" ? -1 : 1), event.currentTarget);
-                    }}
-                  >
-                    <IconGripVertical size={12} className="net-seg-grip" />
-                    <span className="net-flag-sm" aria-hidden><Flag code={mark} size={11} /></span>
-                    <span className="net-seg-name truncate">{name}</span>
-                    {(failed || latency != null) && (
-                      <span className={`net-seg-ms${failed ? " bad" : ""}`}>{failed ? "Down" : `${latency}`}<small>{failed ? "" : "ms"}</small></span>
-                    )}
-                  </button>
-                </Tooltip>
+                <HopButton node={node} place={place} selected={selected === id}
+                  position={index + 1} total={chain.length} chainLatency={hopCheck?.latencyMs} failure={failed ? hopCheck?.detail ?? "Unreachable" : null}
+                  onSelect={() => onSelect(id)} onMove={(offset, button) => moveHop(index, index + offset, button)} />
                 <button
                   type="button"
                   className="net-seg-remove"
@@ -264,8 +268,8 @@ export function RoutePipeline({ chain, enabled, byId, candidates, places, check,
           </NodePicker>
         </div>
         <button type="button" className={`net-seg exit${selected === "exit" ? " selected" : ""}`} aria-pressed={selected === "exit"} onClick={() => onSelect("exit")}>
-          <span className="net-flag-sm" aria-hidden><Flag code={exit?.flag} size={11} /></span>
-          <span className="net-seg-name truncate">Observed exit{exit ? ` · ${exit.label}` : ""}</span>
+          <IconWorld size={15} aria-hidden />
+          <span className="net-seg-name">Exit</span>
         </button>
       </div>
       {chain.length > 1 && <p className="net-chain-note" id={helpId}>Drag hops or press ← and → on a focused hop to reorder.</p>}
