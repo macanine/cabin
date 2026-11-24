@@ -157,12 +157,10 @@ account names, and URL credentials. Review raw excerpts before sharing a report.
 | Build the app (`.app` on macOS, NSIS installer on Windows) | `npm run app:build` (add `-- --debug` for a debug build) |
 | Run frontend tests | `npm test` |
 | Type-check and bundle the frontend | `npm run build` |
-| Run Chromium smoke tests with mocked IPC | `npm run test:ui` |
 | Run Rust tests | `cargo test --manifest-path <crate>/Cargo.toml` for `core`, `diagnostics`, `usage`, `vm`, `src-tauri`, and `ip-detection` |
 | Build the Linux ARM64 guest daemon | `npm run build:agentd` |
 
-Set `CHROME` to a Chromium or Chrome executable for `npm run test:ui`. On a fresh
-macOS or Windows checkout, run `npm run vendor` and `npm run build:agentd` before
+On a fresh macOS or Windows checkout, run `npm run vendor` and `npm run build:agentd` before
 running the `src-tauri` tests directly. Tauri validates both resources while compiling
 the test binary.
 

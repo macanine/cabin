@@ -282,7 +282,7 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 
 ## Verification
 
-- Use the [development commands](README.md#development) for frontend, Chromium, and Rust
+- Use the [development commands](README.md#development) for frontend and Rust
   tests. Use temp directories, in-memory SQLite, loopback listeners, and
   `system::fake::FakeSystem` for unit tests. `src-tauri/src/sync.rs` also has end-to-end
   tests using `CABIND_TEST_BIN` or a locally built `cabind` with a local shell

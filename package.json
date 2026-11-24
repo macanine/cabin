@@ -16,7 +16,6 @@
     "tauri:win": "node scripts/tauri.mjs --host windows",
     "vendor": "node scripts/fetch-vendor.mjs",
     "build:agentd": "node scripts/build-agentd.mjs",
-    "test:ui": "node tests/ui/smoke.mjs",
     "check:win": "node scripts/check-windows.mjs"
   },
   "dependencies": {
