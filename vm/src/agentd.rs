@@ -98,6 +98,18 @@ pub fn ensure_helper(runtime: &Runtime, binary: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The numeric target is supplied by the host's verified qcow2 capacity.
+pub(crate) fn grow_root(runtime: &Runtime, bytes: u64) -> Result<()> {
+    let (code, output) = runtime.ssh_capture(
+        &format!("sudo -n {HELPER_BIN} guest-system grow-root {bytes}"),
+        Duration::from_secs(240),
+    );
+    if code != 0 {
+        return message(format!("Could not verify guest disk expansion (exit {code}): {}", output.trim()));
+    }
+    Ok(())
+}
+
 fn deploy_script(expected: &str) -> String {
     format!(
         r#"

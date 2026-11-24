@@ -230,7 +230,7 @@ export function ModelPicker({ workspaceId, agent, value, disabled, onSelect, liv
       </Popover.Target>
       <Popover.Dropdown p={0} onKeyDown={onKey} style={{ overflow: "hidden" }}>
         {searchable && (
-          <div className="flex items-center gap-2 border-b border-line/70 py-2 pr-2 pl-3 text-faint">
+          <div className="flex items-center gap-2 border-b border-line/70 py-2 pr-2 pl-3 text-faint focus-within:border-[color:var(--field-focus-border)]">
             <IconSearch size={14} className="shrink-0" />
             <input
               autoFocus

@@ -9,7 +9,7 @@
 //! - `cabind device-probe`     collect guest device evidence as JSON
 //! - `cabind dns-serve`        serve DNS through the managed HTTP proxy
 //! - `cabind guest-desktop ...` list, launch or inspect desktop apps
-//! - `cabind guest-system ...`  query guest environment and validate JSON
+//! - `cabind guest-system ...`  query guest environment, validate JSON, or grow root
 //! - `cabind --version`
 
 #[cfg(unix)]
@@ -154,7 +154,12 @@ fn guest_system(args: &[String]) -> ExitCode {
                 agent_core::guest_system::validate_json(std::path::Path::new(path))
                     .map_err(|e| e.to_string())
             }),
-        _ => Err("usage: guest-system environment|validate-json <path>".into()),
+        Some("grow-root") if args.len() == 2 => {
+            agent_core::guest_system::grow_root(&args[1]).map_err(|e| e.to_string())
+        }
+        _ => Err(
+            "usage: guest-system environment|validate-json <path>|grow-root <target-bytes>".into(),
+        ),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

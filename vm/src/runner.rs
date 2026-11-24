@@ -1248,6 +1248,18 @@ impl Runner {
             // Native guest helpers can be needed by DNS, desktop and browser
             // operations before the daemon handshake deploys its user service.
             self.ensure_helper(runtime)?;
+            if let Err(error) = crate::resources::verify_boot(cfg, runtime) {
+                // Disk growth is forward-only. Leave the VM usable and retain
+                // the pending request for another attempt after a clean stop.
+                let message = error.to_string();
+                crate::util::log_line(log, &format!("[machine resources] {message}"));
+                if let Some(attempt) = attempt {
+                    attempt.note(&message);
+                }
+                if let Err(error) = crate::resources::record_notice(cfg, &message) {
+                    crate::util::log_line(log, &format!("[machine resources] Could not save the notice: {error}"));
+                }
+            }
             std::thread::scope(|scope| {
                 let dns = std::thread::Builder::new()
                     .name("guest-dns".into())

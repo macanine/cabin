@@ -12,7 +12,7 @@ export type View =
   | { kind: "session"; id: string }
   | { kind: "install" }
   | { kind: "chrome" }
-  /** Agents: one row each, then an agent's Account or Setup (views/AgentsView.tsx). */
+  /** Agents register and Providers, with optional agent selection. */
   | { kind: "agents"; agent?: AgentKind; section?: AgentSection }
   /** Token usage across agents (views/UsageView.tsx). */
   | { kind: "usage" }
@@ -38,7 +38,7 @@ export interface Toast {
   image?: string;
   /** How long it stays, ms; 0 stays until updated or dismissed. */
   duration: number;
-  /** Bumped on every update: restarts the time bar and the tone morph. */
+  /** Bumped on every update so the new message is announced. */
   revision: number;
   /** Set for the short exit animation before it is removed. */
   leaving?: boolean;
@@ -269,14 +269,19 @@ export const uiActions = {
   },
   /** Plays the exit, then removes the toast. */
   dismissToast(id: number) {
-    if (!ui.toasts.some((toast) => toast.id === id && !toast.leaving)) return;
+    const toast = ui.toasts.find((item) => item.id === id && !item.leaving);
+    if (!toast) return;
     scheduleToast(id, 0);
-    set({ toasts: ui.toasts.map((toast) => (toast.id === id ? { ...toast, leaving: true } : toast)) });
-    setTimeout(() => {
-      const gone = ui.toasts.find((toast) => toast.id === id);
-      if (gone?.image?.startsWith("blob:")) URL.revokeObjectURL(gone.image);
-      set({ toasts: ui.toasts.filter((toast) => toast.id !== id) });
-    }, TOAST_EXIT_MS);
+    const remove = () => {
+      if (toast.image?.startsWith("blob:")) URL.revokeObjectURL(toast.image);
+      set({ toasts: ui.toasts.filter((item) => item.id !== id) });
+    };
+    if (document.documentElement.dataset.perf === "lite" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      remove();
+      return;
+    }
+    set({ toasts: ui.toasts.map((item) => (item.id === id ? { ...item, leaving: true } : item)) });
+    setTimeout(remove, TOAST_EXIT_MS);
   },
   /** Hovering the toasts holds their timers; leaving resumes them. */
   pauseToasts(paused: boolean) {

@@ -6,6 +6,7 @@ import { theme } from "../../src/theme";
 import "../../src/App.css";
 import { Sidebar } from "../../src/components/Sidebar";
 import { MachineGate } from "../../src/components/MachineGate";
+import { Toasts } from "../../src/components/Toasts";
 import { patchState } from "../../src/state/store";
 import { startNetworkMonitor } from "../../src/state/networkMonitor";
 import { uiActions, useUi } from "../../src/state/ui";
@@ -48,7 +49,7 @@ patchState((s: any) => ({ ...s, ready: true, guestReady: !stopped && !install, n
     const unavailable = kind === "claude" && q.has("claudeUnavailable");
     const claudeLogin = unavailable ? { state: "unavailable" } : claudeAccount ? { state: "active", account: claudeAccount } : null;
     const authDetail = unavailable ? "Claude Code's sign-in status is temporarily unavailable." : claudeAccount ? "Signed in through Claude Code" : "";
-    return { kind, name: kind, package: requiresNode ? "@x/" + kind : "agy", requiresNode, installed, binary: "/b", version: installed ? "1.2." + i : null, cliChecked: true, authenticated: i === 0 && !unavailable, authDetail, configError: null, claudeLogin };
+    return { kind, name: kind, package: requiresNode ? "@x/" + kind : "agy", requiresNode, installed, binary: "/b", version: installed ? "1.2." + i : null, cliChecked: true, authenticated: i === 0 && !unavailable || kind === "codex" && q.has("codexSaved"), authDetail, configError: null, claudeLogin };
   }),
   settings: { defaultAgent: "claude", latencyTarget: "1.1.1.1:443", checkTarget: "example.com:443" }, dataDir: "/home/dev/.local/share/cabin",
   environment: { committed: { timezone: "UTC", language: "en_US.UTF-8" }, appliedAt: null, systemTimezone: "Asia/Shanghai", systemLanguage: "C.UTF-8" },
@@ -103,6 +104,12 @@ if (v === "agents" && q.has("claudeSwitch")) {
 }
 // Exit and origin lookups run only when asked, so other pages stay deterministic.
 if (q.has("monitor")) startNetworkMonitor();
+if (q.has("toast")) {
+  window.addEventListener("test:toast", () => {
+    const id = uiActions.toast("Attaching…", "loading");
+    uiActions.updateToast(id, { message: "Image attached", tone: "success", detail: "screenshot.png · 248 KB", duration: 1800 });
+  });
+}
 if (v === "permissions") uiActions.navigate({ kind: "settings", tab: "permissions" });
 
 function AgentsPage() {
@@ -133,6 +140,7 @@ function Shell() {
         <WindowStrip focus={false} back={false} />
         <Sidebar />
         <main className="main"><TitleBar slotRef={setSlot} /><div className="flex min-h-0 flex-1 flex-col"><Page /></div></main>
+        <Toasts />
       </div>
     </TitleBarSlotProvider>
   );

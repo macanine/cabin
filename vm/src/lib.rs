@@ -53,6 +53,7 @@ pub mod proxy;
 pub mod py_json;
 pub mod qemu_engine;
 pub mod readiness;
+pub mod resources;
 pub mod qmp;
 pub mod runner;
 pub mod shell;

@@ -187,9 +187,8 @@
   background: var(--bg);
 }
 .wb-search { margin: 8px 8px 4px; }
-.wb-search:focus-within, .wb-address:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  box-shadow: 0 0 0 3px var(--accent-soft);
+.wb-search:has(input:focus), .wb-address:has(input:focus) {
+  border-color: var(--field-focus-border);
 }
 .wb-search input, .wb-address input {
   all: unset;
@@ -310,7 +309,7 @@
   white-space: pre-wrap;
   resize: none;
 }
-.wb-commit textarea:focus { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 0 0 3px var(--accent-soft); }
+.wb-commit textarea:focus { border-color: var(--field-focus-border); outline: none; }
 .wb-commit-btn {
   all: unset;
   display: flex;

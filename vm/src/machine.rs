@@ -459,6 +459,20 @@ impl Machine {
         crate::storage::clean(&self.home, target)
     }
 
+    pub fn save_resources(&self, request: crate::resources::ResourceRequest, cancel_disk: bool) -> Result<Option<crate::resources::ResourceRequest>> {
+        let _lock = self.lock()?;
+        self.lifecycle.check()?;
+        let cfg = self.config()?;
+        if cancel_disk {
+            if self.storage_in_use() || Runtime::new(&cfg).alive() {
+                return crate::message("Stop the machine before cancelling pending disk expansion");
+            }
+            crate::resources::cancel_disk(&cfg)
+        } else {
+            crate::resources::save(&cfg, request)
+        }
+    }
+
     pub fn details(&self) -> Result<Option<crate::machine_details::MachineDetails>> {
         self.installed()
             .then(|| crate::machine_details::MachineDetails::read(&self.config()?))
@@ -880,10 +894,19 @@ impl Machine {
         if runtime.alive() {
             return runtime.previous_vm_error();
         }
+        let cfg = if let Some(request) = crate::resources::pending(&cfg)? {
+            if self.storage_in_use() {
+                return crate::message("Stop the previous QEMU process before applying machine resources");
+            }
+            attempt.note("Applying saved machine resources before boot");
+            crate::resources::apply_stopped(cfg, request)?
+        } else {
+            cfg
+        };
         let runner = Runner::new(cfg.clone())?.with_agentd(&self.agentd_binary);
         runner.apply_for_start_locked(&lock, attempt)?;
         attempt.machine_facts(&cfg);
-        runner.start_for_app_locked(&lock, &runtime, attempt)
+        runner.start_for_app_locked(&lock, &Runtime::new(&cfg), attempt)
     }
 
     /// The stable instance paths still identify its QEMU when metadata is unreadable.

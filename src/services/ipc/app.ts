@@ -4,7 +4,7 @@ import type {
   SetupAction, SetupCheck,
 } from "./generated/core";
 import { invokeGuest, invokeIpc, invokeTask, subscribe } from "./common";
-import type { CleanupResult, CleanupTarget, Fix, FixOutcome, MachineDetails, ReadinessReport, StorageReport } from "./generated/common";
+import type { CleanupResult, CleanupTarget, Fix, FixOutcome, MachineDetails, ReadinessReport, ResourceRequest, StorageReport } from "./generated/common";
 
 export const appIpc = {
   subscribe: (onEvent: (event: AppEvent) => void) => subscribe<AppEvent, HostSnapshot>("app_subscribe", onEvent),
@@ -28,6 +28,8 @@ export const machineIpc = {
     invokeIpc<string>("machine_diagnostics", { diskGb, memoryMb, steps, installError, installUser }),
   fix: (fix: Fix) => invokeIpc<FixOutcome>("host_fix", { fix }),
   details: () => invokeIpc<MachineDetails | null>("machine_details"),
+  saveResources: (request: ResourceRequest, cancelDisk = false) =>
+    invokeIpc<ResourceRequest | null>("machine_save_resources", { request, cancelDisk }),
   observation: () => invokeGuest<GuestMachineObservation>("machine_observation"),
   plan: (options: MachineInstallOptions) => invokeIpc<InstallPlan>("machine_plan", { options }),
   install: (options: MachineInstallOptions) => invokeTask<MachineStatus>("machine_install", { options }),

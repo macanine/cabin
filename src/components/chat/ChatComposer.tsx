@@ -96,7 +96,7 @@ export function ChatComposer({
   const images = controls.capabilities.prompt.images;
   return (
     <div
-      className={`glass relative rounded-[var(--card-radius)] px-3 pt-2.5 pb-2 transition-colors duration-[var(--motion-fast)] focus-within:border-line ${docked ? "rounded-t-none border-t-0" : ""}`}
+      className={`glass relative rounded-[var(--card-radius)] px-3 pt-2.5 pb-2 transition-colors duration-[var(--motion-fast)] has-[textarea:focus]:border-[color:var(--field-focus-border)] ${docked ? "rounded-t-none border-t-0" : ""}`}
       onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
       onDrop={(event) => {
         const files = clipboardFiles(event.dataTransfer);

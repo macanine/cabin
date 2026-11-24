@@ -35,7 +35,7 @@ export function ClaudeAccount({ status }: { status: AgentStatus }) {
   const identity = [account?.email, account?.organization].filter(Boolean).join(" · ");
 
   return (
-    <section className="agents-section">
+    <section className="min-w-0">
       <div className="agents-section-head">
         <div className="min-w-0">
           <h3>Account &amp; limits</h3>
@@ -44,7 +44,7 @@ export function ClaudeAccount({ status }: { status: AgentStatus }) {
         </div>
         {account?.plan && <Badge size="sm" color="gray" variant="light">{account.plan}</Badge>}
       </div>
-      {!account && !status.authenticated && !unavailable && <p className="agents-hint">Run <code>claude auth login</code> in a machine terminal to sign in.</p>}
+      {!account && !status.authenticated && !unavailable && <p className="agents-hint">Use <code>/login</code> in Claude Code, or run <code>claude auth login</code> from a workspace shell.</p>}
       {!account && (unavailable || status.authenticated) && <p className="agents-hint" role="status">{status.authDetail}</p>}
       {account?.usageBased && <p className="agents-hint">This seat uses usage-based billing.</p>}
       {account?.method === "subscription" && !account.usageBased && !account.id && <p className="agents-hint">Limits will appear when Claude Code reports the account identity.</p>}

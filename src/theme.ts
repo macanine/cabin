@@ -9,9 +9,37 @@ const brand: MantineColorsTuple = [
   "#fdf3ed", "#f9e2d4", "#f2c2a6", "#eaa175", "#e2844d", "#d97036", "#c2622d", "#a65225", "#87421d", "#693314",
 ];
 
-const floating = { transition: "fade", duration: 120, exitDuration: 90, timingFunction: "ease-out" } as const;
-const dialog = { transition: "fade", duration: 160, exitDuration: 110, timingFunction: "ease-out" } as const;
-const overlay = { backgroundOpacity: 0.26 };
+const floating = {
+  transition: {
+    transitionProperty: "opacity, transform",
+    in: { opacity: 1, transform: "none" },
+    out: { opacity: 0, transform: "translate(var(--floating-x, 0px), var(--floating-y, 0px)) scale(0.98)" },
+  },
+  duration: 170,
+  exitDuration: 95,
+  timingFunction: "var(--ease-out)",
+} as const;
+const dialog = {
+  transition: {
+    transitionProperty: "opacity, transform",
+    in: { opacity: 1, transform: "none" },
+    out: { opacity: 0, transform: "translateY(6px) scale(0.985)" },
+  },
+  duration: 220,
+  exitDuration: 120,
+  timingFunction: "var(--ease-spring)",
+} as const;
+const drawer = {
+  transition: {
+    transitionProperty: "opacity, transform",
+    in: { opacity: 1, transform: "none" },
+    out: { opacity: 0, transform: "translate(var(--drawer-x, 0px), var(--drawer-y, 0px))" },
+  },
+  duration: 240,
+  exitDuration: 130,
+  timingFunction: "var(--ease-out)",
+} as const;
+const overlay = { backgroundOpacity: 0.26, transitionProps: { duration: 160, exitDuration: 110 } };
 
 export const theme = createTheme({
   primaryColor: "brand",
@@ -38,14 +66,19 @@ export const theme = createTheme({
   components: {
     Badge: Badge.extend({ defaultProps: { radius: "sm" } }),
     Alert: Alert.extend({ defaultProps: { variant: "light" } }),
-    SegmentedControl: SegmentedControl.extend({ defaultProps: { transitionDuration: 140 } }),
+    SegmentedControl: SegmentedControl.extend({
+      defaultProps: { transitionDuration: 260, transitionTimingFunction: "var(--ease-spring)" },
+    }),
     Switch: Switch.extend({ defaultProps: { size: "sm" } }),
     Modal: Modal.extend({
       defaultProps: { centered: true, radius: "lg", shadow: "lg", overlayProps: overlay, transitionProps: dialog },
     }),
-    Drawer: Drawer.extend({ defaultProps: { shadow: "lg", overlayProps: overlay, transitionProps: dialog } }),
-    Menu: Menu.extend({ defaultProps: { transitionProps: floating, shadow: "md", offset: 6 } }),
-    Popover: Popover.extend({ defaultProps: { transitionProps: floating, shadow: "md" } }),
+    Drawer: Drawer.extend({
+      defaultProps: { shadow: "lg", overlayProps: overlay, transitionProps: drawer },
+      classNames: (_, { position }) => ({ content: `drawer-${position ?? "left"}` }),
+    }),
+    Menu: Menu.extend({ defaultProps: { transitionProps: floating, shadow: "md", offset: 6, radius: "lg" } }),
+    Popover: Popover.extend({ defaultProps: { transitionProps: floating, shadow: "md", radius: "lg" } }),
     Combobox: Combobox.extend({ defaultProps: { transitionProps: floating, shadow: "md", offset: 6 } }),
     Tooltip: Tooltip.extend({
       defaultProps: { openDelay: 350, radius: "sm", transitionProps: { transition: "fade", duration: 100 } },

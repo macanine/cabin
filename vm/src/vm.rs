@@ -1287,7 +1287,14 @@ pub fn preflight(cfg: &Config) -> Vec<String> {
         cfg.project_root.clone()
     };
     let free = disk_free_bytes(&base);
-    let needed = parse_size_bytes(&cfg.disk_size).unwrap_or(0) + 3 * 1024u64.pow(3);
+    // An installed qcow2 is sparse and already has its current clusters on
+    // disk. Installation and requested growth have their own capacity checks.
+    let install_capacity = if cfg.disk_path().is_file() {
+        0
+    } else {
+        parse_size_bytes(&cfg.disk_size).unwrap_or(0)
+    };
+    let needed = install_capacity.saturating_add(crate::readiness::IMAGE_HEADROOM_GB * 1024u64.pow(3));
     if free < needed {
         issues.push(format!(
             "not enough free disk: {} available, {} recommended",

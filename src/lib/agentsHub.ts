@@ -1,6 +1,4 @@
-// The Agents page (views/AgentsView.tsx): one row per agent, then one agent's
-// Account and Setup. Wording and grouping live here; the view renders them.
-// Token usage has its own page (views/UsageView.tsx).
+// Shared status and navigation helpers for Agents & providers.
 import type { AgentStatus, NodeState } from "../services/ipc/generated/core";
 import { majorOf } from "./nodeVersions.ts";
 

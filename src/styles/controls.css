@@ -58,58 +58,71 @@
   margin-left: 24px;
 }
 
-/* Toasts reposition in the deck while their cards fade in or out. */
+/* Slots glide independently of each capsule's entrance and exit. */
 .toasts {
   position: fixed;
   z-index: 1000;
   top: 10px;
   left: 50%;
-  width: min(92vw, 380px);
+  width: min(92vw, 360px);
   transform: translateX(-50%);
-  transition: height var(--motion-enter) ease-out;
+  transition: height var(--motion-glide) var(--ease-out);
 }
 
 .toast-slot {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: center;
+  inset: 0 0 auto;
   transform-origin: top center;
-  transition: transform var(--motion-enter) ease-out, opacity var(--motion-fast) ease-out;
+  transition: transform var(--motion-glide) var(--ease-spring), opacity var(--motion-enter) var(--ease-out);
 }
 
 .toast {
   --tone: var(--info);
-  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  /* One width for all, so the deck lines up behind the front card. */
-  width: 100%;
-  min-height: 40px;
-  padding: 6px 8px 6px 7px;
+  min-height: 44px;
+  padding: 6px 10px;
   border: 1px solid var(--glass-edge);
-  border-radius: var(--card-radius);
-  overflow: hidden;
+  border-radius: 24px;
   background: var(--glass-strong);
   color: var(--text);
   box-shadow: var(--shadow-float);
+  -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
   font-size: var(--text-sm);
   font-weight: 500;
   line-height: 1.35;
-  pointer-events: auto;
-  animation: fade var(--motion-fast) var(--ease-out);
-  /* Match the removal delay in state/ui.ts. */
-  transition: opacity 260ms ease-in;
+  transform-origin: top center;
+  animation: toast-unfold 460ms backwards;
+  /* Separate from the entrance transform so dismissal can interrupt it. */
+  transition: scale 260ms ease-in, translate 260ms ease-in;
 }
 .toast.success { --tone: var(--ok); }
 .toast.error { --tone: var(--bad); }
 .toast.loading { --tone: var(--accent); }
-.toast.leaving { opacity: 0; animation: none; pointer-events: none; }
-.toast.has-image { padding-left: 5px; border-radius: 18px; }
+.toast.leaving {
+  translate: 0 -5px;
+  scale: 0.64 0.8;
+}
+
+@keyframes toast-unfold {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.48, 0.72);
+    animation-timing-function: var(--ease-out);
+  }
+  57% {
+    opacity: 1;
+    transform: translateY(1px) scale(1.032, 1.06);
+    animation-timing-function: ease-in-out;
+  }
+  81% {
+    transform: scale(0.994, 0.985);
+    animation-timing-function: var(--ease-out);
+  }
+  100% { transform: none; }
+}
 
 .toast-icon {
   flex: none;
@@ -185,38 +198,18 @@
   stroke-dasharray: 25 38;
 }
 
-/* What is left of its time, as a hairline along the bottom. */
-.toast-time {
-  position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: 0;
-  height: 2px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--tone) 55%, transparent);
-  transform-origin: left center;
-  animation-name: toast-time;
-  animation-timing-function: linear;
-  animation-fill-mode: both;
-}
-.toast-time.paused { animation-play-state: paused; }
-
 /* Behind the front toast, details soften so the deck reads as one. */
 .toasts:not(.expanded) .toast-slot:not(:first-child) .toast-copy,
 .toasts:not(.expanded) .toast-slot:not(:first-child) .toast-icon,
 .toasts:not(.expanded) .toast-slot:not(:first-child) .toast-thumb { opacity: 0; transition: opacity var(--motion-fast) ease-out; }
 
-@keyframes toast-time {
-  from { transform: scaleX(1); }
-  to { transform: scaleX(0); }
-}
-
-:root[data-perf="lite"] .toast-time { display: none; }
-
 @media (prefers-reduced-motion: reduce) {
   .toast, .toast-spinner { animation: none; }
   .toasts, .toast-slot, .toast, .toast-close { transition: none; }
-  .toast-time { display: none; }
+}
+
+@media (hover: none) {
+  .toast-close { opacity: 1; }
 }
 
 /* Mantine's oval loader draws its ring on a content-box ::after, so a size

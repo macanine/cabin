@@ -53,7 +53,7 @@ function View() {
     case "chrome":
       return <ChromePage />;
     case "agents":
-      return <AgentsView key={view.agent ?? "all"} agent={view.agent} section={view.section} />;
+      return <AgentsView agent={view.agent} section={view.section} />;
     case "mcp":
       return <McpView key={view.agent ?? "all"} agent={view.agent} />;
     case "skills":

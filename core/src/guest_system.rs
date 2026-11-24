@@ -1,4 +1,7 @@
-//! Small guest-side system queries used during browser setup.
+//! Guest-side system commands used by the host helper.
+
+#[cfg(any(target_os = "linux", test))]
+mod grow_root;
 
 use std::path::Path;
 use std::process::Command;
@@ -55,6 +58,23 @@ pub fn validate_json(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn grow_root(target: &str) -> Result<()> {
+    let bytes = target
+        .parse::<u64>()
+        .ok()
+        .filter(|bytes| *bytes != 0 && target.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or_else(|| Error::invalid("grow-root requires a positive byte count"))?;
+    #[cfg(target_os = "linux")]
+    return grow_root::run(bytes);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bytes;
+        Err(Error::Unavailable(
+            "grow-root requires a Linux guest".into(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +90,21 @@ mod tests {
             "zh_CN.UTF-8"
         );
         assert_eq!(locale_from_file("LC_ALL=C\n"), "C.UTF-8");
+    }
+
+    #[test]
+    fn grow_root_rejects_invalid_targets_before_accessing_devices() {
+        for target in [
+            "",
+            "0",
+            "-1",
+            "+512",
+            "512 ",
+            "8GiB",
+            "18446744073709551616",
+        ] {
+            assert!(matches!(grow_root(target), Err(Error::Invalid(_))));
+        }
     }
 
     #[test]

@@ -267,6 +267,22 @@ impl Host {
         self.machine.details().map_err(Self::vm_error)
     }
 
+    pub fn save_resources(&self, request: vm_core::resources::ResourceRequest, cancel_disk: bool) -> Result<Option<vm_core::resources::ResourceRequest>, AppError> {
+        // Serialize with desktop machine operations. Validation errors belong to
+        // the settings form, not the machine's connection state.
+        let status = {
+            let startup = self.startup.locked();
+            if startup.as_ref().is_some_and(|(attempt, _)| attempt.running()) {
+                return Err(unavailable("Wait for the machine startup attempt to finish"));
+            }
+            self.claim_machine("Saving machine resources", false)?
+        };
+        self.emit(AppEvent::Machine { status });
+        let result = self.machine.save_resources(request, cancel_disk).map_err(Self::vm_error);
+        self.update(|status| status.busy = None);
+        result
+    }
+
     pub fn storage(&self, identifier: &str) -> crate::storage::StorageReport {
         let blocked = if self.machine.storage_in_use() {
             Some("Stop the machine to clean up storage".into())

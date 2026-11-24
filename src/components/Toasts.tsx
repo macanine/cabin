@@ -15,7 +15,7 @@ function ToneIcon({ tone, size = 13 }: { tone: Toast["tone"]; size?: number }) {
   return <Icon size={size} stroke={2.4} />;
 }
 
-function ToastCard({ toast, paused, onHeight }: { toast: Toast; paused: boolean; onHeight: (height: number) => void }) {
+function ToastCard({ toast, onHeight }: { toast: Toast; onHeight: (height: number) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const element = ref.current;
@@ -29,7 +29,7 @@ function ToastCard({ toast, paused, onHeight }: { toast: Toast; paused: boolean;
   return (
     <div
       ref={ref}
-      className={`toast ${toast.tone}${toast.leaving ? " leaving" : ""}${toast.image ? " has-image" : ""}`}
+      className={`toast ${toast.tone}${toast.leaving ? " leaving" : ""}`}
       role={toast.tone === "error" ? "alert" : "status"}
     >
       {toast.image ? (
@@ -47,14 +47,6 @@ function ToastCard({ toast, paused, onHeight }: { toast: Toast; paused: boolean;
       <button type="button" className="toast-close" aria-label="Dismiss" onClick={() => uiActions.dismissToast(toast.id)}>
         <IconX size={12} stroke={2.2} />
       </button>
-      {toast.duration > 0 && (
-        <span
-          key={`t${toast.revision}`}
-          className={`toast-time${paused ? " paused" : ""}`}
-          style={{ animationDuration: `${toast.duration}ms` }}
-          aria-hidden
-        />
-      )}
     </div>
   );
 }
@@ -62,8 +54,7 @@ function ToastCard({ toast, paused, onHeight }: { toast: Toast; paused: boolean;
 /**
  * Notices at the top centre, stacked like a deck: the newest in front, older
  * ones tucked behind it. Hovering fans them out and holds their timers. A
- * toast can change in place (a paste goes from "Attaching…" to "Attached"),
- * and shows a thin bar for the time it has left.
+ * toast can change in place (a paste goes from "Attaching…" to "Attached").
  */
 export function Toasts() {
   const toasts = useUi((ui) => ui.toasts);
@@ -110,13 +101,13 @@ export function Toasts() {
             className="toast-slot"
             style={{
               transform: `translateY(${slot.y}px) scale(${slot.scale})`,
-              opacity: slot.opacity,
+              opacity: toast.leaving ? 0 : slot.opacity,
               zIndex: slot.z,
-              pointerEvents: slot.opacity === 0 ? "none" : undefined,
+              pointerEvents: toast.leaving || slot.opacity === 0 ? "none" : undefined,
             }}
             aria-hidden={!expanded && index > 0 ? true : undefined}
           >
-            <ToastCard toast={toast} paused={paused} onHeight={onHeight(toast.id)} />
+            <ToastCard toast={toast} onHeight={onHeight(toast.id)} />
           </div>
         );
       })}

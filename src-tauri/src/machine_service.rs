@@ -70,6 +70,15 @@ pub(crate) async fn machine_details(
 }
 
 #[tauri::command]
+pub(crate) async fn machine_save_resources(
+    host: State<'_, Shared>,
+    request: vm_core::resources::ResourceRequest,
+    cancel_disk: bool,
+) -> Result<Option<vm_core::resources::ResourceRequest>, AppError> {
+    blocking(&host, move |host| host.save_resources(request, cancel_disk)).await
+}
+
+#[tauri::command]
 pub(crate) async fn storage_status(
     app: AppHandle,
     host: State<'_, Shared>,

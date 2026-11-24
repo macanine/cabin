@@ -1,29 +1,27 @@
-import { Progress } from "@mantine/core";
-import { useEffect, useState } from "react";
+import { forecastLimit, shortLimitLabel } from "../lib/agentLimits";
 import { formatDateTime } from "../lib/time";
+import { useMinute } from "../lib/useNow";
+import { PaceMeter } from "./PaceMeter";
 
-/** The provider's current window, not an estimate from local token logs. */
-export function AccountLimit({ label, used, resetsAt, resetText }: {
+/** The provider's current window with a pace forecast, not an estimate from local token logs. */
+export function AccountLimit({ label, used, resetsAt, resetText, windowMinutes }: {
   label: string;
   used: number;
   resetsAt?: number | null;
   resetText?: string | null;
+  windowMinutes?: number | null;
 }) {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(timer);
-  }, []);
-  const remaining = resetsAt == null ? null : Math.max(0, resetsAt - now);
-  const minutes = remaining == null ? null : Math.ceil(remaining / 60_000);
-  const countdown = minutes == null ? null : minutes === 0 ? "reset due" : minutes < 60
-    ? `in ${minutes}m` : `in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-  const percent = Math.max(0, Math.min(100, used));
+  const now = useMinute();
+  const forecast = forecastLimit({ label, usedPercent: used, resetsAt: resetsAt ?? null, windowMinutes }, now);
+  const percent = Math.round(forecast.used);
   return (
-    <div className="account-limit">
-      <div className="account-limit-heading"><strong>{label}</strong><span><b>{percent}%</b> used</span></div>
-      <Progress value={percent} color={percent >= 90 ? "red" : percent >= 70 ? "yellow" : "teal"} size="sm" radius="xl" aria-label={`${label}: ${percent}% used`} />
-      <div className="account-limit-reset">{resetsAt != null ? `Resets ${formatDateTime(resetsAt)} · ${countdown}` : resetText ? `Resets ${resetText}` : "Reset time unavailable"}</div>
+    <div className="account-limit" data-tone={forecast.tone}>
+      <div className="account-limit-heading"><strong>{shortLimitLabel(label)}</strong><span><b>{percent}%</b> used</span></div>
+      <PaceMeter forecast={forecast} label={`${label}: ${percent}% used`} />
+      <div className="account-limit-forecast">{forecast.text}</div>
+      <div className="account-limit-reset">
+        {resetsAt != null ? `Resets ${formatDateTime(resetsAt)}` : resetText ? `Resets ${resetText}` : "Reset time unavailable"}
+      </div>
     </div>
   );
 }

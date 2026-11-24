@@ -15,10 +15,10 @@ use crate::arch::GuestArch;
 use crate::{Result, platform, qemu_engine, util};
 
 const GIB: u64 = 1024 * 1024 * 1024;
-/// Room for the downloaded cloud image next to the disk.
-const IMAGE_HEADROOM_GB: u64 = 3;
+/// Room for cloud images and other host files next to the disk.
+pub(crate) const IMAGE_HEADROOM_GB: u64 = 3;
 /// Memory the host keeps for itself beyond the VM.
-const HOST_HEADROOM_MB: u64 = 2048;
+pub(crate) const HOST_HEADROOM_MB: u64 = 2048;
 const VIRTUALIZATION_HELP: &str = "https://support.microsoft.com/windows/enable-virtualization-on-windows-c5578302-6e43-4b4b-a449-8ced115f58e1";
 
 /// What a readiness item can do about itself.
@@ -374,8 +374,9 @@ fn disk_check(free: u64, disk_gb: u32) -> Readiness {
                 util::format_bytes(Some(needed))
             )
         } else {
+            let action = if disk_gb == 0 { "Free up space." } else { "Free up space or choose a smaller disk under Advanced." };
             format!(
-                "Only {} is free and the VM needs about {}. Free up space or choose a smaller disk under Advanced.",
+                "Only {} is free and the VM needs about {}. {action}",
                 util::format_bytes(Some(free)),
                 util::format_bytes(Some(needed))
             )
@@ -518,7 +519,7 @@ pub fn host_facts(home: &Path) -> HostFacts {
     }
 }
 
-fn physical_memory_mb() -> Option<u64> {
+pub(crate) fn physical_memory_mb() -> Option<u64> {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
     Some(system.total_memory() / (1024 * 1024)).filter(|&mb| mb > 0)

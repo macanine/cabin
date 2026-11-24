@@ -114,7 +114,7 @@ export function PlanReviewDock({
       {error && <PlanConflictNotice tone="bad">Could not apply the decision: {error}</PlanConflictNotice>}
       {editing && !readOnlyConflict && (
         <textarea
-          className="w-full resize-none rounded-xl border border-line bg-surface/70 px-3 py-2 font-[inherit] text-[13px] text-fg transition-[border-color,box-shadow] duration-200 outline-none placeholder:text-faint focus:border-accent focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+          className="w-full resize-none rounded-xl border border-line bg-surface/70 px-3 py-2 font-[inherit] text-[13px] text-fg transition-colors duration-[var(--motion-fast)] outline-none placeholder:text-faint focus:border-[color:var(--field-focus-border)]"
           value={feedback}
           onChange={(event) => setFeedback(event.currentTarget.value)}
           onKeyDown={(event) => {

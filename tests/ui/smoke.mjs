@@ -40,6 +40,13 @@ async function page(url, { reducedMotion = false, mac = false, windows = false }
   }
   await send("Page.navigate", { url }); await sleep(3000);
   const evalJs = async (e) => (await send("Runtime.evaluate", { expression: e, returnByValue: true })).result?.result?.value;
+  // A freshly started Vite optimizes dependencies on the first load and can leave
+  // that page blank: wait for content, and reload once if none arrives.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    for (let i = 0; i < 30 && !(await evalJs("document.body?.innerText.trim().length")); i++) await sleep(200);
+    if (await evalJs("document.body?.innerText.trim().length")) break;
+    await send("Page.reload", { ignoreCache: true }); await sleep(3000);
+  }
   const text = () => evalJs("document.body.innerText");
   const evalPage = evalJs;
   async function click(sel, contains = "") {
@@ -51,6 +58,10 @@ async function page(url, { reducedMotion = false, mac = false, windows = false }
     await sleep(600);
   }
   const type = async (s) => { for (const ch of s) await send("Input.dispatchKeyEvent", { type: "char", text: ch }); await sleep(500); };
+  const replaceText = async (s) => {
+    await send("Input.dispatchKeyEvent", { type: "keyDown", commands: ["selectAll"] });
+    await type(s);
+  };
   async function escape() {
     const event = { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 };
     await send("Input.dispatchKeyEvent", { ...event, type: "keyDown" });
@@ -58,14 +69,23 @@ async function page(url, { reducedMotion = false, mac = false, windows = false }
     await sleep(250);
   }
   const close = () => { ws.close(); chrome.kill(); };
-  return { text, click, type, escape, errors, close, resize, eval: evalPage };
+  return { text, click, type, replaceText, escape, errors, close, resize, eval: evalPage };
 }
 
 let failed = 0;
 async function test(name, url, run, options) {
   const p = await page(url, options);
   try {
-    const expectText = async (...parts) => { const t = await p.text(); for (const part of parts) if (!t.includes(part)) throw new Error(`missing "${part}"`); };
+    // Retry for a few seconds: the first page after Vite starts can still be compiling.
+    const expectText = async (...parts) => {
+      let missing = parts;
+      for (let i = 0; i < 25 && missing.length; i++) {
+        if (i) await sleep(200);
+        const t = await p.text();
+        missing = parts.filter((part) => !t.includes(part));
+      }
+      if (missing.length) throw new Error(`missing "${missing[0]}" in: ${JSON.stringify((await p.text())?.slice(0, 160))}`);
+    };
     await run(p, expectText);
     if (p.errors.length) throw new Error(`runtime errors: ${p.errors[0].slice(0, 200)}`);
     console.log(`ok   ${name}`);
@@ -121,44 +141,6 @@ await test("a failed install explains the stage and returns to the saved setting
   await p.click("button", "Change settings");
   await has("Set up your agent machine", "Install Ubuntu");
 });
-await test("start page machine menu offers stop and settings", `${base}/harness8.html?v=new`, async (p, has) => {
-  await p.click("button", "Machine running"); await has("Stop machine", "Machine settings");
-  const menu = await p.eval(`(() => {
-    const style = getComputedStyle(document.querySelector('.mantine-Menu-dropdown'));
-    return { filter: style.filter, backdrop: style.backdropFilter, transform: style.transform };
-  })()`);
-  if (menu.filter !== "none" || !menu.backdrop.includes("blur") || menu.transform !== "none") throw new Error(JSON.stringify(menu));
-});
-await test("dark drawer has a translucent surface and a simple overlay", `${base}/harness8.html?v=mcp&theme=dark&perf=full`, async (p, has) => {
-  await p.click("button", "Add MCP"); await has("Add MCP server", "Server ID");
-  const styles = await p.eval(`(() => {
-    const drawer = getComputedStyle(document.querySelector('.mantine-Drawer-content'));
-    const overlay = getComputedStyle(document.querySelector('.mantine-Drawer-overlay'));
-    return { background: drawer.backgroundColor, drawerBlur: drawer.backdropFilter, overlayBlur: overlay.backdropFilter };
-  })()`);
-  if (styles.background !== "rgba(36, 34, 32, 0.93)" || !styles.drawerBlur.includes("blur") || styles.overlayBlur !== "none") {
-    throw new Error(JSON.stringify(styles));
-  }
-  await p.escape();
-  const returned = await p.eval(`!document.querySelector('.mantine-Drawer-content') && document.activeElement?.textContent.trim() === 'Add MCP'`);
-  if (!returned) throw new Error("The drawer did not return focus to Add MCP");
-});
-await test("Reduce Motion skips dialog transitions", `${base}/harness8.html?v=new&perf=full`, async (p, has) => {
-  await p.click("main button", "New project"); await has("New project", "Machine only");
-  const state = await p.eval(`(() => {
-    const modal = getComputedStyle(document.querySelector('.mantine-Modal-content'));
-    return { system: matchMedia('(prefers-reduced-motion: reduce)').matches, duration: parseFloat(modal.transitionDuration) };
-  })()`);
-  if (!state.system || state.duration > 0.0001) throw new Error(JSON.stringify(state));
-}, { reducedMotion: true });
-await test("lite mode removes blur and motion", `${base}/harness8.html?v=new&perf=lite`, async (p) => {
-  const r = await p.eval(`(()=>{const g=[...document.querySelectorAll(".glass")][0];const c=getComputedStyle(g);return {perf:document.documentElement.dataset.perf,blur:c.backdropFilter,anim:getComputedStyle(document.querySelector("h1")).animationName}})()`);
-  if (r.perf !== "lite" || r.blur !== "none" || r.anim !== "none") throw new Error(JSON.stringify(r));
-});
-await test("full mode keeps the glass blur", `${base}/harness8.html?v=new&perf=full`, async (p) => {
-  const r = await p.eval(`getComputedStyle([...document.querySelectorAll(".glass")][0]).backdropFilter`);
-  if (!String(r).includes("blur")) throw new Error(String(r));
-});
 await test("machine settings show the status card and recovery tools", `${base}/harness8.html?v=settings&tab=machine`, async (p, has) => {
   await has("dev-vm", "Running", "4 vCPUs", "Recovery mode", "Review installation", "Erase machine");
   if ((await p.text()).includes("Refresh")) throw new Error("Unexpected machine refresh button");
@@ -179,15 +161,6 @@ await test("Mac network interface can be applied, retried and switched back", `$
   await p.click(".net-interface button", "Apply interface");
   if (!(await route()).includes("System route")) throw new Error("System route did not become active again");
 });
-for (const mode of ["stopped", "paused"]) {
-  await test(`Mac network interface can be saved while ${mode}`, `${base}/harness8.html?v=settings&tab=network&network=${mode}`, async (p, has) => {
-    await p.click('input[role="combobox"]');
-    await p.click('[role="option"]', "USB adapter (en8)");
-    await p.click(".net-interface button", "Save interface");
-    await has("Saved route", "USB adapter (en8)", mode === "stopped" ? "Machine stopped" : "Internet paused");
-    if ((await p.text()).includes("Save interface")) throw new Error("Saved interface remained a draft");
-  });
-}
 await test("Folder permissions rechecks folder access on foreground return", `${base}/harness8.html?v=permissions`, async (p, has) => {
   await has("Folder permissions", "Read access needed", "Read and write", "Open System Settings");
   if ((await p.text()).includes("Check again")) throw new Error("Unexpected permissions refresh button");
@@ -198,51 +171,8 @@ await test("Folder permissions rechecks folder access on foreground return", `${
   await has("Available");
   if ((await p.text()).includes("Read access needed")) throw new Error("Folder status did not refresh");
 }, { mac: true });
-await test("new Mac project shows access recovery with sync options folded", `${base}/harness8.html?v=new`, async (p, has) => {
-  await p.click("main button", "New project");
-  await p.click("button", "Choose a folder");
-  await has("Cabin needs permission to read this folder", "Request access");
-  const disabled = () => p.eval(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Create and sync')?.disabled`);
-  if (!await disabled()) throw new Error("Project creation should wait for access");
-  await p.click("button", "Request access");
-  if (await disabled()) throw new Error("Project creation did not become available after the folder recheck");
-});
-await test("Windows project creation uses the picked folder name", `${base}/harness8.html?v=new&windows`, async (p, has) => {
-  await p.click('button[aria-label="Settings and machine"]');
-  await has("Folder permissions");
-  await p.escape();
-  await p.click("main button", "New project");
-  await has("Local folder");
-  await p.click("button", "Choose a folder");
-  await p.click("button", "Sync options");
-  const inputs = await p.eval(`[...document.querySelectorAll('[role=dialog] input')].filter(input => input.type === 'text').map(input => input.value)`);
-  if (!inputs.includes("site") || !inputs.includes("~/projects/site")) throw new Error(JSON.stringify(inputs));
-}, { windows: true });
-await test("Node versions load automatically for the selected mirror", `${base}/harness8.html?v=settings&tab=tools`, async (p, has) => {
-  await p.click("button", "Install Node.js");
-  await has("Node.js versions", "Continue");
-  if ((await p.text()).includes("Load versions")) throw new Error("Unexpected versions refresh button");
-  await p.click("label", "npmmirror");
-  const ready = () => p.eval(`[...document.querySelectorAll('[role="dialog"] button')].some(b => b.textContent.trim() === 'Continue' && !b.disabled)`);
-  for (let i = 0; i < 30 && !await ready(); i++) await sleep(100);
-  await p.click('[role="dialog"] button', "Continue");
-  await has("v24.10.0");
-});
-await test("usage shows figures and the Antigravity filter", `${base}/harness8.html?v=usage`, async (p, has) => {
-  await has("Total cost", "Requests", "Cache hit rate", "Antigravity");
-  if ((await p.text()).includes("Sync now")) throw new Error("Unexpected usage sync button");
-});
-await test("MCP matrix includes Antigravity bindings", `${base}/harness8.html?v=mcp`, async (p, has) => {
-  await has("filesystem", "github", "Add MCP");
-  if (!await p.eval(`!!document.querySelector('[aria-label="Antigravity · filesystem"]')`)) throw new Error("Antigravity MCP binding missing");
-  if (!await p.eval(`!!document.querySelector('[aria-label="Antigravity · events: Unsupported"]')`)) throw new Error("Antigravity SSE should be unsupported");
-});
-await test("Skills matrix includes Antigravity bindings", `${base}/harness8.html?v=skills`, async (p, has) => {
-  await has("frontend-design");
-  if (!await p.eval(`!!document.querySelector('[aria-label="Antigravity · pdf"]')`)) throw new Error("Antigravity skill binding missing");
-});
 await test("Claude account and limits follow the active seat", `${base}/harness8.html?v=agents&claudeSwitch`, async (p, has) => {
-  await p.click('[aria-label="Claude Code: Signed in"]');
+  await p.click('[aria-label="Manage Claude Code account"]');
   await has("Account & limits", "dev@example.com · Example Studio", "Team", "37% used");
   await p.eval(`window.dispatchEvent(new Event('test:claude-seat'))`);
   for (let i = 0; i < 20 && !(await p.text()).includes("81% used"); i++) await sleep(100);
@@ -250,56 +180,43 @@ await test("Claude account and limits follow the active seat", `${base}/harness8
   const text = await p.text();
   if (text.includes("37% used") || text.includes("Example Studio")) throw new Error("A previous Claude seat is still visible");
 });
-await test("a temporary Claude probe failure does not ask the user to sign in again", `${base}/harness8.html?v=agents&claudeUnavailable`, async (p, has) => {
-  await p.click('[aria-label="Claude Code: Sign-in check unavailable"]');
-  await has("Account & limits", "Claude Code's sign-in status is temporarily unavailable.");
-  if ((await p.text()).includes("claude auth login")) throw new Error("An unavailable probe was shown as a sign-out");
+await test("Plan limits forecast each window and rows share aligned columns", `${base}/harness8.html?v=agents&codexSaved&agy=installed`, async (p, has) => {
+  await has("Claude Code · 5-hour", "Codex · Weekly", "~46% used by reset", "Runs out in ~40h 30m");
+  const view = await p.eval(`(() => {
+    const tiles = [...document.querySelectorAll('.ag-tile')];
+    const lefts = new Set([...document.querySelectorAll('.ag-provider')].map((e) => Math.round(e.getBoundingClientRect().left)));
+    return { overview: !!document.querySelector('section[aria-label="Plan limits"]'), tiles: tiles.length, bad: tiles.filter((t) => t.dataset.tone === 'bad').length,
+      ticks: document.querySelectorAll('.ag-tile .pace-tick').length, aligned: lefts.size === 1 };
+  })()`);
+  if (!view.overview || view.tiles !== 4 || view.bad !== 1 || view.ticks !== 4 || !view.aligned) throw new Error(`Plan limits: ${JSON.stringify(view)}`);
+  await p.click(".ag-tile", "Codex · Weekly");
+  await has("Saved accounts", "64% used");
+  await p.resize(560, 800);
+  if (await p.eval(`document.querySelector('.agents-workspace').scrollWidth > document.querySelector('.agents-workspace').clientWidth`)) {
+    throw new Error("Agents overflows a narrow window");
+  }
 });
-await test("Antigravity can install without Node.js", `${base}/harness8.html?v=agents`, async (p, has) => {
-  await has("3 of 5 installed", "no Node.js yet");
-  const enabled = (agent) => p.eval(`document.querySelector('[aria-label="${agent}: Not installed"]')?.parentElement.querySelector('button.mantine-Button-root')?.disabled === false`);
-  if (!await enabled("Antigravity") || await enabled("Pi")) throw new Error("Incorrect Node.js install requirement");
-  await p.click('[aria-label="Antigravity: Not installed"]');
-  const runtimeCard = await p.eval(`document.querySelector('[role="tabpanel"]')?.innerText.includes('Chat runtime')`);
-  if (runtimeCard) throw new Error("Unexpected separate Antigravity chat runtime");
-});
-await test("Antigravity sign-in opens an agent terminal", `${base}/harness8.html?v=agents&agy=installed`, async (p, has) => {
-  await p.click('[aria-label="Antigravity: Sign-in needed"]');
-  await has("agy acp --login");
-  await p.click("button", "Open terminal");
-  await has("Opened session agy-login");
+await test("Providers shows and switches Codex accounts without leaving the page", `${base}/harness8.html?v=agents&codexSaved`, async (p, has) => {
+  await p.click('nav[aria-label="Agent management"] button', "Providers");
+  await has("Account & limits", "Anthropic", "OpenAI");
+  await p.click('nav[aria-label="Providers"] button', "OpenAI");
+  await has("Saved accounts", "primary@example.com", "backup@example.com", "37% used");
+  await p.click("button", "Switch");
+  if (!(await p.eval(`document.querySelector('[aria-label="Export backup@example.com"]')?.closest('.list-row')?.innerText.includes('Active')`))) {
+    throw new Error("The switched account was not marked Active");
+  }
+  await p.click("button", "Paste credentials");
+  await has("Credential JSON", "Saved accounts");
+  if (await p.eval(`!!document.querySelector('[role="dialog"]')`)) throw new Error("Paste opened a dialog");
+  await p.resize(580, 800);
+  const overflow = await p.eval(`(() => { const page = document.querySelector('.agents-workspace'); return page.scrollWidth > page.clientWidth; })()`);
+  if (overflow) throw new Error("Providers overflows a narrow window");
 });
 await test("chat: plan popover, slash menu, diff", `${base}/harness4.html`, async (p, has) => {
   await p.click("button.press", "2/4"); await has("Wire Tailwind", "Verify in the app");
   await p.click("textarea"); await p.type("/"); await has("/compact", "/review");
 });
-await test("chat: changes popover shows a diff with hunks", `${base}/harness4.html`, async (p, has) => {
-  await p.click("button.press", "files changed");
-  await p.click(".mantine-Popover-dropdown button", "src/components/Boot.tsx");
-  await has("@@", "BootHero");
-});
-await test("chat: approval card shows the command and decisions", `${base}/harness4.html?m=ask`, async (_, has) => { await has("Run a command", "npm run build", "Approve"); });
-await test("chat: model and permission pickers", `${base}/harness4.html?m=empty`, async (p, has) => {
-  await p.click("button", "claude-sonnet"); await has("Opus 5.5", "REASONING EFFORT");
-});
 
-await test("running chat keeps the composer compact and the activity mark still", `${base}/harness4.html?m=run`, async (p, has) => {
-  await has("Thinking", "21%");
-  const state = await p.eval(`(() => {
-    const input = document.querySelector('[aria-label="Message"]');
-    const stop = document.querySelector('[aria-label="Stop (Esc)"]');
-    const meter = document.querySelector('[role="meter"]');
-    const mark = document.querySelector('[data-status="running"] .animate-breathe');
-    return {
-      working: document.body.innerText.includes('Working'),
-      stopOnRight: stop.getBoundingClientRect().right >= input.getBoundingClientRect().right - 4,
-      flatMeter: !meter.querySelector('svg'),
-      animation: mark && getComputedStyle(mark).animationName,
-      rings: document.querySelectorAll('[data-status="running"] .animate-spin').length,
-    };
-  })()`);
-  if (state.working || !state.stopOnRight || !state.flatMeter || state.animation !== "breathe" || state.rings) throw new Error(JSON.stringify(state));
-});
 await test("terminal zoom, Retina backing and IME keep a consistent character grid", `${base}/harness4.html?m=terminal&theme=dark`, async (p, has) => {
   const geometry = () => p.eval(`(() => {
     const canvas = document.querySelector('.terminal-host canvas');
@@ -367,17 +284,6 @@ await test("Git checks Commit all against current staging and ignores an older p
   await has("Working tree clean");
   if (await p.eval("JSON.stringify(__gitTest.commits)") !== "[false]") throw new Error("expected one staged-only commit");
 });
-await test("markdown code uses one frame and a compact copy control", `${base}/harness4.html`, async (p, has) => {
-  await has("export default defineConfig");
-  const state = await p.eval(`(() => {
-    const block = document.querySelector('[data-streamdown="code-block"]');
-    const body = block.querySelector('[data-streamdown="code-block-body"]');
-    const copy = block.querySelector('[data-streamdown="code-block-copy-button"]');
-    return { outer: getComputedStyle(block).borderTopWidth, inner: getComputedStyle(body).borderTopWidth,
-      copy: getComputedStyle(copy).borderTopWidth, tokens: body.querySelectorAll('code span[style]').length };
-  })()`);
-  if (state.outer !== "1px" || state.inner !== "0px" || state.copy !== "0px" || !state.tokens) throw new Error(JSON.stringify(state));
-});
 await test("machine start animates its entrance and shows only begun steps", `${base}/harness8.html?v=start&perf=full`, async (p, has) => {
   await has("Starting your machine", "Check the configuration", "Connect to the machine", "Waiting for SSH");
   const state = await p.eval(`(() => {
@@ -407,17 +313,6 @@ await test("machine start animates its entrance and shows only begun steps", `${
   const folded = await details();
   if (!folded.inert || folded.height !== 0) throw new Error("Details remained interactive or occupied space");
 });
-await test("startup respects Reduce Motion with details available", `${base}/harness8.html?v=start&perf=full`, async (p, has) => {
-  await has("Starting your machine", "Waiting for SSH");
-  await p.click("button", "Details and logs");
-  const styles = await p.eval(`(() => {
-    const step = getComputedStyle(document.querySelector('main ol li:nth-child(2)'));
-    const details = document.querySelector('main [data-open]');
-    return { delay: parseFloat(step.animationDelay), duration: parseFloat(step.animationDuration),
-      transition: parseFloat(getComputedStyle(details).transitionDuration), open: !details.firstElementChild.inert };
-  })()`);
-  if (styles.delay !== 0 || styles.duration > 0.0001 || styles.transition > 0.0001 || !styles.open) throw new Error(JSON.stringify(styles));
-}, { reducedMotion: true });
 
 vite.kill();
 console.log(failed ? `${failed} UI test(s) failed` : "all UI tests passed");

@@ -12,14 +12,10 @@
   border-radius: 14px;
   padding: 12px 14px 10px;
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.03), 0 4px 16px -6px rgb(0 0 0 / 0.08);
-  transition: border-color 240ms var(--ease-out), box-shadow 240ms var(--ease-out);
+  transition: border-color var(--motion-fast) var(--ease-out);
 }
 
-/* Focus grows a soft accent halo rather than snapping to a new border. */
-.composer:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  box-shadow: 0 0 0 4px var(--accent-soft), 0 6px 22px -8px rgb(0 0 0 / 0.14);
-}
+.composer:has(textarea:focus) { border-color: var(--field-focus-border); }
 
 /* Room for CJK: Japanese and Chinese glyphs fill the whole em box and the
    IME underlines the text being composed, so lines need more leading than
@@ -60,4 +56,5 @@
   padding: 4px;
   font: inherit;
 }
+.worktree-choice select:focus { border-color: var(--field-focus-border); outline: none; }
 

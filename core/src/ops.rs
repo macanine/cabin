@@ -2,7 +2,7 @@
 //!
 //! An operation is a list of steps. All steps are prepared first (validation,
 //! backups), then applied and verified in order. Any failure or cancellation
-//! rolls back the applied steps in reverse order. Every state change is
+//! rolls back reversible steps in reverse order. Every state change is
 //! persisted to the SQLite journal and emitted to the event sink.
 
 use crate::util::{LockExt, RwLockExt};
@@ -59,7 +59,12 @@ pub trait Step: Send {
         Ok(())
     }
 
-    /// Undo `apply`. Called for the applied steps and for a step whose
+    /// A failed operation must leave the progress made by this step in place.
+    fn forward_only(&self) -> bool {
+        false
+    }
+
+    /// Undo `apply`. Called for reversible steps and for a reversible step whose
     /// `apply`/`verify` failed, so it must tolerate partial application.
     fn rollback(&mut self, _ctx: &StepCtx<'_>) -> Result<()> {
         Ok(())
@@ -394,7 +399,13 @@ impl OperationManager {
         };
 
         let mut rollback_ok = true;
+        let mut forward_only = false;
         for &index in touched.iter().rev() {
+            if steps[index].forward_only() {
+                forward_only = true;
+                journal.log(index, "Leaving any completed changes in place for retry".into());
+                continue;
+            }
             let log = |line: String| journal.log(index, line);
             let ctx = StepCtx {
                 cancel: &CancelToken::default(),
@@ -427,6 +438,17 @@ impl OperationManager {
                 .get(failed_index)
                 .map(|step| step.name.clone())
                 .unwrap_or_default();
+            if forward_only && rollback_ok {
+                record.state = if cancelled {
+                    OperationState::Cancelled
+                } else {
+                    OperationState::Failed
+                };
+                record.error = Some(format!(
+                    "{step_name}: {error}. Any completed forward-only changes are kept for retry."
+                ));
+                return;
+            }
             record.state = match (cancelled, rollback_ok) {
                 (_, false) => OperationState::Failed,
                 (true, true) => OperationState::Cancelled,

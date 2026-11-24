@@ -26,6 +26,7 @@
   --card-radius: 14px; --radius: 8px;
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px;
   --text-xs: 11.5px; --text-sm: 12.5px; --text-md: 13.5px; --text-lg: 16px; --text-xl: 26px;
+  --field-focus-border: color-mix(in srgb, var(--muted) 72%, var(--border));
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   /* A soft spring: settles with a hint of overshoot. For things that move between places. */
   --ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1);

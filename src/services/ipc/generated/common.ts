@@ -15,7 +15,8 @@ controlsCenterY: number, };
 export type DeviceReportState = "missing" | "stale" | "unverified" | "failed" | "warnings" | "passed";
 export type DeviceFinding = { id: string, group: string, severity: string, title: string, residual: boolean, };
 export type DeviceDetails = { preset: string | null, cpu: string | null, storage: string | null, nic: string | null, runtime: boolean, sealed: boolean, state: DeviceReportState, measuredAt: number | null, reportPath: string | null, findings: Array<DeviceFinding>, };
-export type MachineDetails = { osName: string, accelerator: string, qemuRelease: string | null, imageUrl: string | null, imageChecksum: string | null, aptMirror: string | null, diskPath: string, diskAllocatedBytes: number | null, instancePath: string, logsPath: string, networkMode: string, sshEndpoint: string | null, mac: string, timezone: string, locale: string, desktop: string | null, displayMode: string, resolution: string, scale: number, gpu: string, audio: string, spice: boolean, pid: number | null, startedAt: number | null, device: DeviceDetails | null, };
+export type ResourceRequest = { cpus: number, memoryMb: number, diskGib: number | null, };
+export type MachineDetails = { osName: string, accelerator: string, qemuRelease: string | null, imageUrl: string | null, imageChecksum: string | null, aptMirror: string | null, diskPath: string, diskAllocatedBytes: number | null, pendingResources: ResourceRequest | null, diskGrowthNotice: string | null, instancePath: string, logsPath: string, networkMode: string, sshEndpoint: string | null, mac: string, timezone: string, locale: string, desktop: string | null, displayMode: string, resolution: string, scale: number, gpu: string, audio: string, spice: boolean, pid: number | null, startedAt: number | null, device: DeviceDetails | null, };
 export type Fix = { "kind": "enableWhpx" } | { "kind": "restartHost" } | { "kind": "reinstallApp" } | { "kind": "openUrl", url: string, };
 export type Readiness = { id: string, label: string, ok: boolean, 
 /**
@@ -70,6 +71,7 @@ export type IpcCommand =
   | "machine_diagnostics"
   | "host_fix"
   | "machine_details"
+  | "machine_save_resources"
   | "storage_status"
   | "storage_clean"
   | "machine_plan"

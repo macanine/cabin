@@ -1,4 +1,5 @@
 import type { NetworkRoute, NetworkStatus } from "../../src/services/ipc/generated/core";
+import type { ResourceRequest } from "../../src/services/ipc/generated/common";
 import { initialState } from "../../src/state/reducer";
 
 // Plausible guest/host replies for page work. Anything unknown answers null.
@@ -9,6 +10,16 @@ export function mockIpc(networkMode?: string | null, windows = false) {
   let allowed = windows;
   let usageImported = false;
   let rejectApply = networkMode === "reject";
+  const codexSaved = new URLSearchParams(location.search).has("codexSaved");
+  let activeCodex = "primary";
+  const codexAccounts = () => codexSaved ? {
+    accounts: ["primary", "backup"].map((id) => ({ id, email: `${id}@example.com`, planType: "plus", authMode: "chatgpt", active: id === activeCodex })),
+    activeAccountId: activeCodex,
+    quota: { planType: "plus", windows: [
+      { kind: "fiveHour", label: "5 hours", usedPercent: 37, windowMinutes: 300, resetsAt: now + 1.5 * 3600e3 },
+      { kind: "sevenDay", label: "Weekly", usedPercent: 64, windowMinutes: 10080, resetsAt: now + 4 * 86400e3 },
+    ], resetCreditCount: 0, resetCredits: [], refreshedAt: now },
+  } : { accounts: [], activeAccountId: null, quota: null };
   const running = networkMode !== "stopped";
   const paused = networkMode === "paused";
   const network: NetworkStatus = {
@@ -17,7 +28,14 @@ export function mockIpc(networkMode?: string | null, windows = false) {
   };
   const access = () => allowed ? { state: "available", message: null, privacySettings: false }
     : { state: "readDenied", message: "Cabin needs permission to read this folder.", privacySettings: true };
+  let pendingResources: ResourceRequest | null = null;
   const handlers: Record<string, (p: any) => unknown> = {
+    machine_details: () => ({ osName: "Ubuntu 24.04 LTS", accelerator: "hvf", pendingResources, diskGrowthNotice: null }),
+    machine_save_resources: ({ request, cancelDisk }: { request: ResourceRequest; cancelDisk: boolean }) => {
+      if (request.diskGib != null && request.diskGib <= 20) throw new Error("Unexpected disk shrink request");
+      pendingResources = cancelDisk ? null : request;
+      return pendingResources;
+    },
     mac_open_file_settings: () => { allowed = true; },
     mac_permissions: () => [{ id: "sync-site", name: "Site", path: folder, needsWrite: true, access: access() }],
     mac_folder_access: ({ path, request }) => {
@@ -72,9 +90,18 @@ export function mockIpc(networkMode?: string | null, windows = false) {
     claude_usage: ({ accountId }) => {
       if (accountId !== "claude-team" && accountId !== "claude-personal") throw new Error("Unexpected Claude account ID");
       const usedPercent = accountId === "claude-team" ? 37 : 81;
-      return { windows: [{ label: "5 hours", usedPercent, resetsAt: now + 3600e3, resetText: null }], noLimits: false, refreshedAt: now };
+      return { windows: [
+        { label: "5 hours", usedPercent, resetsAt: now + 3600e3, resetText: null },
+        { label: "Current week (all models)", usedPercent: 22, resetsAt: now + 5 * 86400e3, resetText: null },
+      ], noLimits: false, refreshedAt: now };
     },
-    codex_accounts: () => ({ accounts: [], activeAccountId: null, quota: null }),
+    codex_accounts: codexAccounts,
+    codex_refresh_quota: codexAccounts,
+    codex_switch_account: ({ accountId }) => {
+      if (accountId !== "backup") throw new Error("Unexpected Codex account ID");
+      activeCodex = accountId;
+      return codexAccounts();
+    },
     node_state: () => ({ active: null, minimumMajor: 20, recommendedMajor: 24, installed: [] }),
     node_releases: ({ mirror }) => [{
       version: mirror === "https://nodejs.org/dist" ? "v24.9.0" : "v24.10.0", major: 24,

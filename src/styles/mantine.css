@@ -13,14 +13,29 @@
   --mantine-color-anchor: var(--accent);
 }
 
-.mantine-Menu-dropdown,
-.mantine-Popover-dropdown,
-.mantine-Combobox-dropdown {
+:is(.mantine-Menu-dropdown, .mantine-Popover-dropdown, .mantine-Combobox-dropdown) {
   --popover-border-color: var(--glass-edge);
   background-color: var(--glass-strong);
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(14px);
+
+  &[data-position^="bottom"] { --floating-y: -4px; transform-origin: top; }
+  &[data-position^="top"] { --floating-y: 4px; transform-origin: bottom; }
+  &[data-position^="left"] { --floating-x: 4px; transform-origin: right; }
+  &[data-position^="right"] { --floating-x: -4px; transform-origin: left; }
 }
 .mantine-Menu-dropdown { padding: var(--space-1); }
+
+.mantine-Drawer-content {
+  &.drawer-left:dir(ltr), &.drawer-right:dir(rtl) { --drawer-x: -18px; }
+  &.drawer-right:dir(ltr), &.drawer-left:dir(rtl) { --drawer-x: 18px; }
+  &.drawer-top { --drawer-y: -18px; }
+  &.drawer-bottom { --drawer-y: 18px; }
+}
+.mantine-Modal-overlay,
+.mantine-Drawer-overlay {
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
 .mantine-Modal-content,
 .mantine-Drawer-content {
   background-color: var(--glass-strong);
@@ -30,31 +45,56 @@
 .mantine-Modal-header,
 .mantine-Drawer-header { background-color: transparent; }
 
-/* Keep local hover, selection and keyboard focus legible. */
+/* Keep hover and navigation feedback on the row itself. */
 .mantine-Menu-item,
-.mantine-Combobox-option,
+[data-combobox-option],
 .mantine-Button-root,
 .mantine-ActionIcon-root {
   transition: background-color 110ms ease-out, color 110ms ease-out, border-color 110ms ease-out;
 }
 .mantine-Menu-item[data-hovered],
-.mantine-Combobox-option[data-combobox-selected]:not([data-checked]),
-.mantine-Combobox-option:hover { background-color: var(--hover); }
-.mantine-Combobox-option[data-combobox-selected][data-checked] { background-color: var(--accent-soft); color: var(--accent); }
-
-/* Unstyled inputs sit in containers with their own focus indicator. */
-.mantine-Input-input:not([data-variant="unstyled"]) {
-  border-color: var(--border);
-  transition: border-color 110ms ease-out;
+[data-combobox-option]:hover:not([data-combobox-disabled]) { background-color: var(--hover); }
+[data-combobox-option][data-combobox-selected]:not([data-combobox-disabled]) {
+  background-color: var(--selected);
+  color: var(--text);
 }
-.mantine-Input-input:not([data-variant="unstyled"]):focus,
-.mantine-Input-input:not([data-variant="unstyled"]):focus-within { border-color: var(--accent); }
-.mantine-Input-input[data-variant="unstyled"],
-.mantine-Input-input[data-variant="unstyled"]:focus { box-shadow: none; outline: none; }
+
+/* Mantine keeps validation colors and lets unstyled fields delegate focus to their wrapper. */
+.mantine-Input-wrapper[data-variant="default"]:not([data-error], [data-success]) {
+  --input-bd: var(--border);
+}
+.mantine-Input-wrapper:not([data-variant="unstyled"]) {
+  --input-bd-focus: var(--field-focus-border);
+}
+.mantine-Input-input:focus-within { outline: none; box-shadow: none; }
 
 .mantine-Badge-root { text-transform: none; font-weight: 600; letter-spacing: 0; }
 .mantine-SegmentedControl-root { background: var(--hover); }
-.mantine-SegmentedControl-indicator { background: var(--surface); }
-.mantine-Tooltip-tooltip { background-color: var(--text); color: var(--bg); }
+.mantine-SegmentedControl-indicator {
+  background-color: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--glass-edge);
+  transition-timing-function: var(--sc-transition-timing-function);
+}
+.mantine-SegmentedControl-label[data-active] { color: var(--text); }
+
+.mantine-Switch-input:not(:checked, :disabled, [data-disabled]) + .mantine-Switch-track {
+  --switch-bg: var(--border);
+  --switch-text-color: var(--muted);
+}
+.mantine-Switch-thumb {
+  transition: inset-inline-start 220ms var(--ease-spring);
+}
+
+.mantine-Tooltip-tooltip {
+  --tooltip-bg: var(--surface);
+  --tooltip-color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: var(--mantine-shadow-xs);
+}
+
+:root[data-perf="lite"] :is(
+  .mantine-Menu-dropdown, .mantine-Popover-dropdown, .mantine-Combobox-dropdown,
+  .mantine-Modal-content, .mantine-Drawer-content, .mantine-Tooltip-tooltip
+) { box-shadow: none; }
 
 }

@@ -1,25 +1,20 @@
-import { useAutoRefresh } from "../lib/useAutoRefresh";
-import { ActionIcon, Badge, Button, Loader, Menu, Tooltip } from "@mantine/core";
-import {
-  IconArrowLeft, IconDots, IconDownload, IconSettings, IconTerminal2, IconUser,
-} from "@tabler/icons-react";
-import { useCallback, useState } from "react";
+import { ActionIcon, Button, Loader, Tooltip } from "@mantine/core";
+import { IconChevronDown, IconChevronRight, IconDownload, IconRefresh } from "@tabler/icons-react";
+import { useCallback, useRef, useState } from "react";
 import { AcpRuntimePanel } from "../components/AcpRuntimePanel";
 import { AGENT_KINDS } from "../components/AgentPicker";
-import { ClaudeAccount, useClaudeUsage } from "../components/ClaudeAccount";
-import { CodexAccountsPanel } from "../components/CodexAccounts";
+import { useClaudeUsage } from "../components/ClaudeAccount";
 import { AgentLogo, AGENT_NAMES } from "../components/common";
 import { AgentExtensionsPanel } from "../components/extensions/AgentExtensionsPanel";
 import { MachineGate } from "../components/MachineGate";
 import { NewWorkspaceModal } from "../components/NewWorkspaceModal";
 import { ViewHeader } from "../components/TitleBar";
-import { limitLines, type LimitLine } from "../lib/agentLimits";
-import {
-  AGENT_SECTIONS, agentState, attentionCount, currentClaudeAccount, defaultSection, nodeProblem,
-  type AgentSection, type AgentState,
-} from "../lib/agentsHub";
+import { forecastLimit, formatSpan, shortLimitLabel, type LimitForecast, type LimitWindow } from "../lib/agentLimits";
+import { PaceMeter } from "../components/PaceMeter";
+import { useMinute } from "../lib/useNow";
+import { agentState, attentionCount, currentClaudeAccount, defaultSection, nodeProblem, type AgentSection, type AgentState } from "../lib/agentsHub";
 import { attempt, runOperation } from "../lib/operations";
-import { formatDateTime } from "../lib/time";
+import { useAutoRefresh } from "../lib/useAutoRefresh";
 import { agentsIpc } from "../services/ipc/agents";
 import { appIpc } from "../services/ipc/app";
 import type { AcpRuntime, AgentKind, AgentStatus, NodeState } from "../services/ipc/generated/core";
@@ -27,339 +22,325 @@ import { libraryIpc } from "../services/ipc/library";
 import { nodeIpc } from "../services/ipc/node";
 import { useApp } from "../state/store";
 import { uiActions } from "../state/ui";
+import { AgentProviders, PROVIDER_NAMES } from "./agents/AgentProviders";
 
-const BADGE: Record<AgentState["tone"], string> = { ok: "teal", info: "blue", warn: "yellow", bad: "red", off: "gray" };
-
-function StateBadge({ state }: { state: AgentState }) {
-  return <Badge size="xs" variant="light" color={BADGE[state.tone]}>{state.label}</Badge>;
-}
-
-/** Agent checks, Node.js, ACP runtimes and installs, shared by the list and an agent. */
 function useAgentSetup() {
   const [node, setNode] = useState<NodeState | null>(null);
   const [runtimes, setRuntimes] = useState<AcpRuntime[]>([]);
   const [installing, setInstalling] = useState<AgentKind | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState(false);
+  const pendingCheck = useRef<Promise<void> | null>(null);
   const loadRuntimes = useCallback(async () => {
     const next = await agentsIpc.runtimes().catch(() => null);
     if (next) setRuntimes(next);
   }, []);
-  const check = useCallback(async () => {
-    const [, nextNode] = await Promise.allSettled([agentsIpc.refresh(), nodeIpc.state(), loadRuntimes()]);
-    if (nextNode.status === "fulfilled") setNode(nextNode.value);
+  const check = useCallback(() => {
+    if (pendingCheck.current) return pendingCheck.current;
+    setChecking(true);
+    pendingCheck.current = Promise.allSettled([agentsIpc.refresh(), nodeIpc.state(), loadRuntimes()])
+      .then(([agentCheck, nodeCheck]) => {
+        setCheckError(agentCheck.status === "rejected");
+        if (nodeCheck.status === "fulfilled") setNode(nodeCheck.value);
+      }).finally(() => {
+        pendingCheck.current = null;
+        setChecking(false);
+      });
+    return pendingCheck.current;
   }, [loadRuntimes]);
-  useAutoRefresh(() => { if (!installing) return check(); }, { minGap: 10_000, interval: 60_000 });
+  useAutoRefresh(check, { enabled: installing == null, minGap: 10_000, interval: 60_000 });
 
-  const install = useCallback(async (agent: AgentStatus) => {
+  async function install(agent: AgentStatus) {
     setInstalling(agent.kind);
-    await runOperation(appIpc.runSetup({ kind: "installAgent", agent: agent.kind }), `${AGENT_NAMES[agent.kind]} ${agent.installed ? "updated" : "installed"}`);
-    await attempt(agentsIpc.refresh());
-    setInstalling(null);
-  }, []);
+    try {
+      const action = !agent.installed ? "installed" : agent.version ? "updated" : "reinstalled";
+      await runOperation(appIpc.runSetup({ kind: "installAgent", agent: agent.kind }), `${AGENT_NAMES[agent.kind]} ${action}`);
+    } finally {
+      setInstalling(null);
+    }
+  }
 
-  return { node, problem: nodeProblem(node), runtimes, loadRuntimes, installing, install };
+  return { problem: nodeProblem(node), runtimes, loadRuntimes, installing, install, checking, checkError, check };
 }
 type Setup = ReturnType<typeof useAgentSetup>;
 
-type Limits = { lines: LimitLine[]; plan: string | null } | "loading" | null;
+type Window = LimitWindow & { windowMinutes?: number | null };
+type Limits = { windows: Window[]; plan: string | null };
 
-/**
- * Plan limits as the providers report them (Claude Code's /usage, Codex
- * app-server's last quota). Only signed-in agents are asked; the others have
- * no limits to show.
- */
-function useAgentLimits(agents: AgentStatus[], enabled: boolean): Partial<Record<AgentKind, Limits>> {
+function useAgentLimits(agents: AgentStatus[], enabled: boolean): Partial<Record<AgentKind, Limits | null>> {
   const claude = currentClaudeAccount(agents.find((agent) => agent.kind === "claude" && agent.installed));
-  const codexReady = agents.some((agent) => agent.kind === "codex" && agent.installed);
+  const codexReady = agents.some((agent) => agent.kind === "codex" && agent.installed && agent.authenticated);
   const { usage } = useClaudeUsage(claude, enabled);
-  const [codex, setCodex] = useState<Limits>(null);
+  const [codex, setCodex] = useState<Limits | null>(null);
 
   useAutoRefresh(async (isCurrent) => {
-    setCodex((current) => current ?? "loading");
-    try {
-      const { quota } = await agentsIpc.codexAccounts();
-      if (isCurrent()) setCodex(quota && !quota.error ? { lines: limitLines(quota.windows), plan: quota.planType } : null);
-    } catch {
-      if (isCurrent()) setCodex(null);
-    }
+    const { quota } = await agentsIpc.codexAccounts();
+    if (isCurrent()) setCodex(quota && !quota.error ? { windows: quota.windows, plan: quota.planType } : null);
   }, { enabled: enabled && codexReady, minGap: 60_000, interval: 180_000 });
 
   return {
-    claude: claude ? { lines: limitLines(usage?.windows ?? []), plan: claude.plan } : null,
+    claude: claude ? { windows: usage?.windows ?? [], plan: claude.plan } : null,
     codex: codexReady ? codex : null,
   };
 }
 
-/**
- * Agents, as a list of rows (logo, state, version, plan limits, the one
- * action that matters); one agent opens on Account or Setup. Token usage
- * is its own page.
- */
+function useAgentTerminal() {
+  const workspace = useApp((state) => state.workspaces.find((entry) => !entry.archived));
+  const [creating, setCreating] = useState<AgentKind | null>(null);
+  const [starting, setStarting] = useState<AgentKind | null>(null);
+
+  async function open(kind: AgentKind, workspaceId: string) {
+    setStarting(kind);
+    try {
+      const session = await attempt(libraryIpc.createSession(workspaceId, kind, null));
+      if (session) uiActions.navigate({ kind: "session", id: session.id });
+    } finally {
+      setStarting(null);
+    }
+  }
+
+  return {
+    starting,
+    open: (kind: AgentKind) => workspace ? void open(kind, workspace.id) : setCreating(kind),
+    picker: creating && <NewWorkspaceModal opened onClose={() => setCreating(null)} onCreated={(created) => {
+      setCreating(null);
+      void open(creating, created.id);
+    }} />,
+  };
+}
+
 export function AgentsView({ agent, section }: { agent?: AgentKind; section?: AgentSection }) {
-  return (
-    <MachineGate>
-      <AgentsContent selected={agent} section={section} />
-    </MachineGate>
-  );
+  return <MachineGate><AgentsContent selected={agent} section={section} /></MachineGate>;
+}
+
+function showAgents(agent?: AgentKind) {
+  uiActions.navigate(agent ? { kind: "agents", agent, section: "setup" } : { kind: "agents" });
+}
+
+function showProviders(agent?: AgentKind) {
+  uiActions.navigate(agent ? { kind: "agents", agent, section: "account" } : { kind: "agents", section: "account" });
 }
 
 function AgentsContent({ selected, section }: { selected?: AgentKind; section?: AgentSection }) {
   const agents = useApp((state) => state.agents);
   const setup = useAgentSetup();
-  const limits = useAgentLimits(agents, !selected);
-  const status = selected ? agents.find((entry) => entry.kind === selected) : undefined;
-
-  if (selected) {
-    return (
-      <AgentDetail
-        kind={selected}
-        status={status}
-        section={section ?? defaultSection(status)}
-        setup={setup}
-      />
-    );
-  }
-
+  const terminal = useAgentTerminal();
+  const status = agents.find((agent) => agent.kind === selected);
+  const page = section ?? (selected ? defaultSection(status) : "setup");
+  const limits = useAgentLimits(agents, page === "setup");
+  const installed = agents.filter((agent) => agent.installed).length;
   const attention = attentionCount(agents);
-  return (
-    <>
-      <ViewHeader title="Agents" subtitle={`${agents.filter((agent) => agent.installed).length} of ${AGENT_KINDS.length} installed${attention > 0 ? ` · ${attention} need${attention === 1 ? "s" : ""} attention` : ""}`} />
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-6 pb-12 max-sm:p-4">
-        <div className="mx-auto grid max-w-[880px] min-w-0 gap-3">
-          {setup.problem && (
-            <div className="callout warn row">
-              <span className="grow">{setup.problem}</span>
-              <Button size="xs" onClick={() => uiActions.navigate({ kind: "settings", tab: "tools" })}>Set up Node.js</Button>
-            </div>
-          )}
-          <ul className="stagger m-0 grid list-none gap-2 p-0" aria-label="Agents">
-            {AGENT_KINDS.map((kind) => (
-              <AgentRow
-                key={kind}
-                kind={kind}
-                status={agents.find((entry) => entry.kind === kind)}
-                limits={limits[kind]}
-                setup={setup}
-              />
-            ))}
-          </ul>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function LimitText({ limits }: { limits: Limits | undefined }) {
-  if (limits === "loading") return <span className="shrink-0"><Loader size={12} color="gray" /></span>;
-  if (!limits || limits.lines.length === 0) return null;
-  return (
-    <span className="grid shrink-0 justify-items-end gap-px text-right text-sm text-muted tabular-nums max-sm:hidden">
-      {limits.lines.slice(0, 3).map((line) => (
-        <span key={line.text} className={line.low ? "font-semibold text-bad" : undefined}
-          title={line.resetsAt != null ? `Resets ${formatDateTime(line.resetsAt)}` : undefined}>
-          {line.text}
-        </span>
-      ))}
-    </span>
-  );
-}
-
-function AgentRow({ kind, status, limits, setup }: {
-  kind: AgentKind;
-  status: AgentStatus | undefined;
-  limits: Limits | undefined;
-  setup: Setup;
-}) {
-  const state = agentState(status);
-  const open = (section?: AgentSection) => uiActions.navigate({ kind: "agents", agent: kind, section });
-  const needsInstall = !status || !status.installed || (status.cliChecked && !status.version);
-  const nodeBlocked = (status?.requiresNode ?? true) && setup.problem != null;
-  const busy = setup.installing === kind;
-  const plan = limits && limits !== "loading" ? limits.plan : null;
-  const sub = !status ? "Checking…"
-    : !status.installed ? status.package
-      : [status.version ? `v${status.version}` : "version unavailable", status.package].join(" · ");
-
-  return (
-    <li className="glass flex min-w-0 items-center gap-2 rounded-[var(--card-radius)] pr-3 transition-colors duration-[var(--motion-fast)] hover:bg-[color-mix(in_srgb,var(--glass),var(--text)_3%)]">
-      <button type="button" className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-l-[var(--card-radius)] border-0 bg-transparent py-3 pr-2 pl-4 text-left text-fg focus-visible:outline-offset-[-2px]" onClick={() => open()} aria-label={`${AGENT_NAMES[kind]}: ${state.label}`}>
-        <span className={`grid size-9 shrink-0 place-items-center rounded-[10px] bg-hover transition-opacity duration-300 ${state.tone === "off" ? "opacity-50" : ""}`}><AgentLogo agent={kind} size={20} /></span>
-        <span className="grid min-w-0 flex-1 gap-0.5">
-          <span className="flex min-w-0 items-center gap-2">
-            <strong className="text-md font-semibold">{AGENT_NAMES[kind]}</strong>
-            <StateBadge state={state} />
-            {plan && <Badge size="xs" variant="outline" color="gray">{plan}</Badge>}
-          </span>
-          <span className="truncate text-sm text-muted">{sub}</span>
-        </span>
-        <LimitText limits={limits} />
-      </button>
-      <span className="flex shrink-0 items-center gap-1">
-        {status && needsInstall ? (
-          <Button size="xs" leftSection={<IconDownload size={14} />} loading={busy}
-            disabled={setup.installing != null || nodeBlocked} onClick={() => void setup.install(status)}>
-            {status.installed ? "Reinstall" : "Install"}
-          </Button>
-        ) : state.tone === "warn" ? (
-          <Button size="xs" variant="light" onClick={() => open("account")}>Sign in</Button>
-        ) : null}
-        <Menu position="bottom-end" withinPortal>
-          <Menu.Target>
-            <ActionIcon variant="subtle" color="gray" aria-label={`${AGENT_NAMES[kind]} actions`}><IconDots size={16} /></ActionIcon>
-          </Menu.Target>
-          <Menu.Dropdown>
-            <Menu.Item leftSection={<IconUser size={14} />} onClick={() => open("account")}>Account</Menu.Item>
-            <Menu.Item leftSection={<IconSettings size={14} />} onClick={() => open("setup")}>Setup</Menu.Item>
-            {status?.installed && !needsInstall && (
-              <Menu.Item leftSection={<IconDownload size={14} />} disabled={setup.installing != null || nodeBlocked}
-                onClick={() => void setup.install(status)}>Update CLI</Menu.Item>
-            )}
-          </Menu.Dropdown>
-        </Menu>
-      </span>
-    </li>
-  );
-}
-
-function AgentDetail({ kind, status, section, setup }: {
-  kind: AgentKind;
-  status: AgentStatus | undefined;
-  section: AgentSection;
-  setup: Setup;
-}) {
-  const state = agentState(status);
-  const runtime = setup.runtimes.find((entry) => entry.agent === kind);
-  const needsInstall = !status || !status.installed || (status.cliChecked && !status.version);
-  const nodeBlocked = (status?.requiresNode ?? true) && setup.problem != null;
-  const go = (next: AgentSection) => uiActions.navigate({ kind: "agents", agent: kind, section: next });
-  const installButton = status && needsInstall && (
-    <Button size="xs" leftSection={<IconDownload size={14} />} loading={setup.installing === kind}
-      disabled={setup.installing != null || nodeBlocked} onClick={() => void setup.install(status)}>
-      {status.installed ? "Reinstall" : "Install"}
-    </Button>
-  );
 
   return (
     <>
-      <ViewHeader title={AGENT_NAMES[kind]} lead={
-        <Tooltip label="All agents">
-          <ActionIcon variant="subtle" color="gray" aria-label="All agents" onClick={() => uiActions.navigate({ kind: "agents" })}>
-            <IconArrowLeft size={16} />
+      <ViewHeader title="Agents & providers">
+        <Tooltip label="Check agent status">
+          <ActionIcon size="md" variant="subtle" color="gray" aria-label="Check agent status"
+            disabled={setup.installing != null} loading={setup.checking} onClick={() => void setup.check()}>
+            <IconRefresh size={17} />
           </ActionIcon>
         </Tooltip>
-      }>
-        <div className="inline-flex gap-0.5 rounded-lg bg-hover p-0.5" role="tablist" aria-label={`${AGENT_NAMES[kind]} sections`}>
-          {AGENT_SECTIONS.map((entry) => (
-            <button key={entry.value} type="button" role="tab" aria-selected={section === entry.value} onClick={() => go(entry.value)}
-              className={`press cursor-pointer rounded-md border-0 px-3 py-[3px] text-sm ${section === entry.value ? "bg-sel font-semibold text-fg" : "bg-transparent text-muted hover:text-fg"}`}>
-              {entry.label}
-            </button>
-          ))}
-        </div>
       </ViewHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-6 pb-12 max-sm:p-4">
-        <div className="mx-auto grid max-w-[880px] min-w-0 gap-3" role="tabpanel">
-          {nodeBlocked && needsInstall && (
-            <div className="callout warn row">
-              <span className="grow">{setup.problem}</span>
-              <Button size="xs" onClick={() => uiActions.navigate({ kind: "settings", tab: "tools" })}>Set up Node.js</Button>
-            </div>
-          )}
-          {status && (
-            <section className="glass flex items-center gap-4 rounded-2xl p-4">
-              <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-hover"><AgentLogo agent={kind} size={26} /></span>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2"><strong className="text-lg font-semibold">{AGENT_NAMES[kind]}</strong><StateBadge state={state} /></div>
-                <div className="truncate text-sm text-muted">{status.version ? `v${status.version}` : status.installed ? "Version unavailable" : "Not installed"} · {status.package}</div>
-                {status.configError && <div className="mt-1 text-xs text-bad">Config problem: {status.configError}</div>}
-              </div>
-              {needsInstall ? installButton : state.tone === "warn" ? (
-                (kind !== "antigravity" || section !== "account") && (
-                  <Button size="xs" variant="light" onClick={() => go("account")}>Sign in</Button>
-                )
-              ) : (
-                <Button size="xs" variant="default" loading={setup.installing === kind} disabled={setup.installing != null || nodeBlocked} onClick={() => void setup.install(status)}>Update CLI</Button>
-              )}
-            </section>
-          )}
-          {!status ? (
-            <div className="grid place-items-center py-16"><Loader size="sm" /></div>
-          ) : section === "account" ? (
-            !status.installed ? (
-              <section className="agents-section">
-                <div className="agents-section-head">
-                  <div><h3>Not installed</h3><p>Install {status.package} to sign in and use {AGENT_NAMES[kind]}.</p></div>
-                  {installButton}
-                </div>
-              </section>
-            ) : kind === "claude" ? <ClaudeAccount status={status} />
-              : kind === "codex" ? <section className="agents-section"><CodexAccountsPanel status={status} /></section>
-                : kind === "antigravity" ? <AntigravityAccount status={status} />
-                : (
-                  <section className="agents-section">
-                    <div className="agents-section-head"><div><h3>Account</h3><p>{status.authDetail || "Check the agent's sign-in to see its current status."}</p></div></div>
-                  </section>
-                )
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-12 max-sm:px-3">
+        <div className="agents-workspace mx-auto max-w-[1120px]">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-x-4 gap-y-2 border-b border-line">
+            <nav className="flex gap-4" aria-label="Agent management">
+              <button type="button" className="agents-nav-button" aria-current={page === "setup" ? "page" : undefined}
+                onClick={() => showAgents()}>Agents</button>
+              <button type="button" className="agents-nav-button" aria-current={page === "account" ? "page" : undefined}
+                onClick={() => showProviders(status?.kind)}>Providers</button>
+            </nav>
+            {page === "setup" && agents.length > 0 && <p className="m-0 pb-2.5 text-sm text-muted">
+              {installed} of {AGENT_KINDS.length} installed
+              {attention > 0 && <span className="ml-3 text-warn">{attention} need{attention === 1 ? "s" : ""} attention</span>}
+            </p>}
+          </div>
+          {setup.checkError && <p className="callout warn mb-3" role="status">Couldn’t check agent status. Use Check agent status to retry.</p>}
+          {page === "account" ? (
+            <AgentProviders agents={agents} selected={selected} onSelect={showProviders} onSetup={showAgents}
+              onOpenTerminal={terminal.open} starting={terminal.starting} />
           ) : (
             <>
-              {runtime && (
-                <section className="agents-section">
-                  <div className="agents-section-head"><div><h3>Chat runtime</h3><p>The ACP version new chats use.</p></div></div>
-                  <AcpRuntimePanel runtime={runtime} agent={status} onChange={setup.loadRuntimes} />
-                </section>
+              {setup.problem && (
+                <div className="callout warn mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <span>{setup.problem}</span>
+                  <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "settings", tab: "tools" })}>Set up Node.js</Button>
+                </div>
               )}
-              {status.installed && !needsInstall && (
-                <section className="agents-section">
-                  <div className="agents-section-head"><div><h3>MCP & skills</h3><p>Shared libraries, enabled per agent.</p></div>
-                    <div className="flex gap-2">
-                      <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "mcp", agent: kind })}>MCP servers</Button>
-                      <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "skills", agent: kind })}>Skills</Button>
-                    </div>
-                  </div>
-                  <details className="extension-project-details">
-                    <summary className="cursor-pointer text-xs text-faint hover:text-muted">Project skills and agent backups</summary>
-                    <AgentExtensionsPanel kind={kind} />
-                  </details>
-                </section>
-              )}
+              <LimitsOverview limits={limits} />
+              <div className="ag-list">
+                <ul className="m-0 list-none p-0" aria-label="Agents">
+                  {AGENT_KINDS.map((kind) => (
+                    <AgentRow key={kind} kind={kind} status={agents.find((entry) => entry.kind === kind)}
+                      limits={limits[kind]} setup={setup} expanded={selected === kind} onOpenTerminal={terminal.open} starting={terminal.starting} />
+                  ))}
+                </ul>
+              </div>
             </>
           )}
         </div>
       </div>
+      {terminal.picker}
     </>
   );
 }
 
-function AntigravityAccount({ status }: { status: AgentStatus }) {
-  const workspace = useApp((state) => state.workspaces.find((entry) => !entry.archived));
-  const [creating, setCreating] = useState(false);
-  const [starting, setStarting] = useState(false);
+type Reading = { kind: AgentKind; window: Window; forecast: LimitForecast };
 
-  async function signIn(workspaceId: string) {
-    setStarting(true);
-    const session = await attempt(libraryIpc.createSession(workspaceId, status.kind, null));
-    setStarting(false);
-    if (session) uiActions.navigate({ kind: "session", id: session.id });
-  }
+/** Every plan window the agents report, with its pace forecast, tightest first per agent. */
+function useReadings(limits: Partial<Record<AgentKind, Limits | null>>): Reading[] {
+  const now = useMinute();
+  return AGENT_KINDS.flatMap((kind) => (limits[kind]?.windows ?? []).map((window) => ({ kind, window, forecast: forecastLimit(window, now) })));
+}
+
+const LEFT = (forecast: LimitForecast) => Math.max(0, Math.round(100 - forecast.used));
+
+/** Plan limits across agents: what is left, when it resets, and where the pace lands. */
+function LimitsOverview({ limits }: { limits: Partial<Record<AgentKind, Limits | null>> }) {
+  const readings = useReadings(limits);
+  if (readings.length === 0) return null;
+  return (
+    <section className="ag-limits" aria-label="Plan limits">
+      <header className="ag-limits-head">
+        <h2>Plan limits</h2>
+        <span>Forecasts assume the pace since each window opened</span>
+      </header>
+      <div className="ag-limit-tiles stagger">
+        {readings.map(({ kind, window, forecast }) => {
+          const name = `${AGENT_NAMES[kind]} · ${shortLimitLabel(window.label)}`;
+          return (
+            <button key={`${kind}-${window.label}`} type="button" className="ag-tile" data-tone={forecast.tone}
+              onClick={() => showProviders(kind)} aria-label={`${name}: ${LEFT(forecast)}% left. ${forecast.text}`}>
+              <span className="ag-tile-name">{name}</span>
+              <span className="ag-tile-figure">
+                <strong>{LEFT(forecast)}<small>%</small></strong>
+                <span>left</span>
+                {forecast.resetsIn != null && <span className="ag-tile-reset">resets in {formatSpan(forecast.resetsIn)}</span>}
+              </span>
+              <PaceMeter forecast={forecast} label={name} />
+              <span className="ag-tile-forecast">{forecast.text}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/** The row's windows as short meters; the overview above carries the detail. */
+function RowLimits({ windows }: { windows: Window[] }) {
+  const now = useMinute();
+  return (
+    <span className="ag-row-meters">
+      {windows.slice(0, 2).map((window) => {
+        const forecast = forecastLimit(window, now);
+        const label = shortLimitLabel(window.label);
+        return (
+          <span key={window.label} className="ag-row-meter" data-tone={forecast.tone} title={`${label}: ${LEFT(forecast)}% left · ${forecast.text}`}>
+            <span className="ag-row-meter-label">{label.replace("Weekly", "Week")}</span>
+            <PaceMeter forecast={forecast} size="sm" label={`${label} ${LEFT(forecast)}% left`} />
+            <span className="ag-row-meter-value">{LEFT(forecast)}%</span>
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+const DOT: Record<AgentState["tone"], string> = {
+  ok: "bg-ok", info: "bg-info", warn: "bg-warn", bad: "bg-bad", off: "bg-faint/60",
+};
+const LABEL: Record<AgentState["tone"], string> = {
+  ok: "text-muted", info: "text-info", warn: "text-warn", bad: "text-bad", off: "text-faint",
+};
+
+function AgentRow({ kind, status, limits, setup, expanded, onOpenTerminal, starting }: {
+  kind: AgentKind;
+  status?: AgentStatus;
+  limits?: Limits | null;
+  setup: Setup;
+  expanded: boolean;
+  onOpenTerminal: (kind: AgentKind) => void;
+  starting: AgentKind | null;
+}) {
+  const state = agentState(status);
+  const nodeBlocked = (status?.requiresNode ?? true) && setup.problem != null;
+  const canOperate = status?.cliChecked && status.installed && !!status.version;
+  const needsInstall = status && (!status.installed || (status.cliChecked && !status.version));
+  const detailId = `agent-setup-${kind}`;
+  const account = currentClaudeAccount(status);
+  const provider = account?.provider || PROVIDER_NAMES[kind];
 
   return (
-    <section className="agents-section">
-      <div className="agents-section-head">
-        <div>
-          <h3>Account</h3>
-          {status.authDetail && <p>{status.authDetail}</p>}
-          {!status.authenticated && <p>
-            Follow the sign-in prompts in the Antigravity terminal. For manual sign-in, run <code>agy acp --login</code> in a workspace shell, open the URL it prints, then paste the sign-in code back into the shell.
-          </p>}
+    <li aria-label={AGENT_NAMES[kind]} className="ag-item" data-expanded={expanded || undefined}>
+      <div className="ag-row">
+        <div className="ag-id">
+          <span className="ag-mark"><AgentLogo agent={kind} size={22} /></span>
+          <div className="grid min-w-0 gap-0.5">
+            <strong className="text-md font-semibold">{AGENT_NAMES[kind]}</strong>
+            <span className="ag-status">
+              <span className={`ag-dot ${status ? DOT[state.tone] : "bg-faint/60"}`} aria-hidden="true" />
+              <span className={status ? LABEL[state.tone] : "text-faint"}>{status ? state.label : "Checking…"}</span>
+              {status?.version && <span className="text-faint tabular-nums">v{status.version}</span>}
+            </span>
+          </div>
         </div>
-        {!status.authenticated && status.version && (
-          <Button size="xs" leftSection={<IconTerminal2 size={14} />} loading={starting}
-            onClick={() => workspace ? void signIn(workspace.id) : setCreating(true)}>Open terminal</Button>
-        )}
+        <div className="ag-provider">
+          {status?.installed && <button type="button" className="ag-provider-link"
+            aria-label={`Manage ${AGENT_NAMES[kind]} account`} onClick={() => showProviders(kind)}>
+            <span className="ag-provider-name">
+              <span>{provider}</span>
+              {limits?.plan && <span className="ag-plan">{limits.plan}</span>}
+              <IconChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
+            </span>
+            {limits && limits.windows.length > 0 && <RowLimits windows={limits.windows} />}
+          </button>}
+        </div>
+        <div className="ag-actions">
+          {needsInstall && <Button size="xs" leftSection={<IconDownload size={14} />}
+            loading={setup.installing === kind} disabled={setup.installing != null || nodeBlocked}
+            onClick={() => void setup.install(status)}>{status.installed ? "Reinstall" : "Install"}</Button>}
+          {canOperate && state.tone === "warn" && <Button size="xs" variant="light" loading={starting === kind}
+            disabled={starting != null} onClick={() => onOpenTerminal(kind)}>Sign in</Button>}
+          {canOperate && <Button size="xs" variant="subtle" color="gray" loading={setup.installing === kind}
+            disabled={setup.installing != null || nodeBlocked} onClick={() => void setup.install(status)}>Update CLI</Button>}
+          <Button size="xs" variant="subtle" color="gray" aria-expanded={expanded} aria-controls={expanded ? detailId : undefined}
+            aria-label={`${AGENT_NAMES[kind]} setup`} rightSection={<IconChevronDown size={13} className={`transition-transform duration-[var(--motion-reveal)] ${expanded ? "rotate-180" : ""}`} />}
+            onClick={() => showAgents(expanded ? undefined : kind)}>Setup</Button>
+        </div>
       </div>
-      {creating && <NewWorkspaceModal opened onClose={() => setCreating(false)} onCreated={(created) => {
-        setCreating(false);
-        void signIn(created.id);
-      }} />}
+      {expanded && <AgentSetupDetails id={detailId} kind={kind} status={status} setup={setup} />}
+    </li>
+  );
+}
+
+function AgentSetupDetails({ id, kind, status, setup }: { id: string; kind: AgentKind; status?: AgentStatus; setup: Setup }) {
+  const runtime = setup.runtimes.find((entry) => entry.agent === kind);
+  return (
+    <section id={id} aria-label={`${AGENT_NAMES[kind]} setup`} className="ag-setup grid min-w-0 gap-4 px-4 py-4 sm:px-5">
+      {!status ? <Loader size="xs" aria-label="Checking installation" /> : <>
+        <div className="grid gap-1 text-sm text-muted">
+          <span className="[overflow-wrap:anywhere]">Package <code className="ml-1 text-fg">{status.package}</code></span>
+          {status.configError && <span className="text-bad [overflow-wrap:anywhere]">{status.configError}</span>}
+        </div>
+        {runtime && <div className="min-w-0">
+          <h3 className="m-0 mb-2 text-md font-semibold">Chat runtime</h3>
+          <AcpRuntimePanel runtime={runtime} agent={status} onChange={setup.loadRuntimes} />
+        </div>}
+        {status.installed && status.version && <div className="grid gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="m-0 text-md font-semibold">MCP &amp; skills</h3>
+            <div className="flex gap-2">
+              <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "mcp", agent: kind })}>MCP servers</Button>
+              <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "skills", agent: kind })}>Skills</Button>
+            </div>
+          </div>
+          <details className="extension-project-details">
+            <summary className="cursor-pointer text-sm text-muted">Project skills and agent backups</summary>
+            <AgentExtensionsPanel kind={kind} />
+          </details>
+        </div>}
+      </>}
     </section>
   );
 }

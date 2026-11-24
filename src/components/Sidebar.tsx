@@ -50,7 +50,7 @@ const MODE_ICON: Record<TaskListMode, ReactNode> = {
 export function InlineRename({
   value,
   onDone,
-  className = "min-w-0 flex-1 rounded border border-accent bg-surface px-1 py-px font-[inherit] text-fg outline-none",
+  className = "min-w-0 flex-1 rounded border border-line bg-surface px-1 py-px font-[inherit] text-fg outline-none focus:border-[color:var(--field-focus-border)]",
 }: {
   value: string;
   onDone: (next: string | null) => void;
@@ -381,7 +381,7 @@ function TaskList() {
       </div>
 
       {searching && (
-        <label className="mx-2.5 mt-1 mb-1.5 flex items-center gap-1.5 rounded-lg border border-line bg-surface/70 px-2 text-faint transition-[border-color,box-shadow] duration-200 focus-within:border-accent focus-within:shadow-[0_0_0_3px_var(--accent-soft)]">
+        <label className="mx-2.5 mt-1 mb-1.5 flex items-center gap-1.5 rounded-lg border border-line bg-surface/70 px-2 text-faint transition-colors duration-[var(--motion-fast)] focus-within:border-[color:var(--field-focus-border)]">
           <IconSearch size={14} />
           <input
             id={SEARCH_INPUT_ID}
@@ -573,7 +573,7 @@ export function Sidebar() {
         <NavIndicator index={NAV_ORDER.indexOf(view as NavKind)} />
         <NavButton {...nav} accent icon={<IconPlus size={13} stroke={2.6} />} label="New Task" title={`New task (${NEW_TASK_KEY})`} active={view === "new"} onClick={go("new")} />
         <NavButton {...nav} icon={<IconBrandChrome size={18} stroke={1.7} />} label="Chrome" active={view === "chrome"} onClick={go("chrome")} />
-        <NavButton {...nav} icon={<IconRobot size={18} stroke={1.7} />} label="Agents" title="Agents, accounts and usage" active={view === "agents"} onClick={go("agents")}>
+        <NavButton {...nav} icon={<IconRobot size={18} stroke={1.7} />} label="Agents" title="Agents and providers" active={view === "agents"} onClick={go("agents")}>
           {agentAttention > 0 && <span className="dot warn" aria-label={`${agentAttention} need attention`} />}
         </NavButton>
         <NavButton {...nav} icon={<IconChartBar size={18} stroke={1.7} />} label="Usage" title={today ?? "Usage"} active={view === "usage"} onClick={go("usage")}>

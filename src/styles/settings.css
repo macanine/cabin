@@ -1,16 +1,17 @@
 /* Agent selector and the selected agent's account and versions. */
 
-.agents-section { border: 1px solid var(--glass-edge); border-radius: var(--card-radius); background: var(--glass); padding: var(--space-4); min-width: 0; }
 .agents-section-head h3 { margin: 0; font-size: var(--text-md); font-weight: 600; }
 .agents-section-head p, .agents-hint { margin: 4px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .agents-section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
-.agents-section > .runtime-panel { margin-top: 4px; }
 .account-limits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px; margin-top: 14px; }
 .account-limit { display: grid; gap: 8px; padding: 13px; border-radius: 10px; background: var(--hover); }
 .account-limit-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12px; }
 .account-limit-heading > span { color: var(--muted); white-space: nowrap; }
 .account-limit-heading b { color: var(--text); font-size: 16px; font-variant-numeric: tabular-nums; }
-.account-limit-reset { font-size: 11px; color: var(--muted); }
+.account-limit-reset { font-size: 11px; color: var(--faint); }
+.account-limit-forecast { font-size: 12px; color: var(--muted); }
+.account-limit[data-tone="warn"] .account-limit-forecast { color: var(--warn); font-weight: 600; }
+.account-limit[data-tone="bad"] .account-limit-forecast { color: var(--bad); font-weight: 600; }
 
 /* Legacy expanded agent cards. */
 

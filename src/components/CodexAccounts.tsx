@@ -34,7 +34,6 @@ import { agentsIpc } from "../services/ipc/agents";
 import { chooseFile, chooseFolder } from "../services/ipc/dialogs";
 import { readTextFile, writeCodexExport } from "../services/ipc/files";
 import { attempt } from "../lib/operations";
-import { AgentLogo } from "./common";
 import { AccountLimit } from "./AccountLimits";
 import { toIpcError } from "../services/ipc/common";
 import { uiActions } from "../state/ui";
@@ -103,7 +102,7 @@ function QuotaPanel({ quota }: { quota: CodexQuota }) {
       {quota.windows.length > 0 && (
         <Stack gap="sm" mt="md">
           {quota.windows.map((window) => (
-            <AccountLimit key={`${window.kind}-${window.windowMinutes}`} label={window.label} used={window.usedPercent} resetsAt={window.resetsAt} />
+            <AccountLimit key={`${window.kind}-${window.windowMinutes}`} label={window.label} used={window.usedPercent} resetsAt={window.resetsAt} windowMinutes={window.windowMinutes} />
           ))}
         </Stack>
       )}
@@ -317,16 +316,33 @@ export function CodexAccountsPanel({ status }: { status: AgentStatus }) {
             variant="subtle"
             leftSection={<IconKey size={14} />}
             disabled={busy != null}
-            onClick={() => setPasteOpen(true)}
+            aria-expanded={pasteOpen}
+            aria-controls={pasteOpen ? "codex-import-paste" : undefined}
+            onClick={() => {
+              setPasteOpen(!pasteOpen);
+              setPaste("");
+            }}
           >
-            Paste
+            Paste credentials
           </Button>
         </Group>
       </Group>
 
       <Checkbox size="xs" mt="sm" checked={activateImport} onChange={(event) => setActivateImport(event.currentTarget.checked)} label="Switch to the first imported account" />
 
-      {data == null ? (
+      {pasteOpen && (
+        <form id="codex-import-paste" className="mt-3 grid gap-3 rounded-lg border border-line bg-hover p-3"
+          onSubmit={(event) => { event.preventDefault(); void submitPaste(); }}>
+          <Textarea label="Credential JSON" autoFocus value={paste} onChange={(event) => setPaste(event.currentTarget.value)}
+            description="Accepts Codex auth.json, a CLIProxyAPI Codex auth file, or a Sub2API export. Cabin stores credentials privately in the VM."
+            autosize minRows={3} maxRows={10} spellCheck={false} autoComplete="off" />
+          <Group justify="flex-end">
+            <Button type="submit" size="xs" loading={busy === "paste"} disabled={!paste.trim() || busy != null}>Import</Button>
+          </Group>
+        </form>
+      )}
+
+      {!data ? !readError && (
         <div className="row muted" style={{ marginTop: 14 }}>
           <Loader size="xs" /> Reading Codex accounts…
         </div>
@@ -339,8 +355,7 @@ export function CodexAccountsPanel({ status }: { status: AgentStatus }) {
       ) : (
         <div className="list" style={{ marginTop: 14 }}>
           {data.accounts.map((account) => (
-            <div className="list-row" key={account.id}>
-              <AgentLogo agent="codex" size={20} />
+            <div className="list-row flex-wrap" key={account.id}>
               <div className="grow" style={{ minWidth: 0 }}>
                 <Group gap="xs">
                   <Text size="sm" fw={600} truncate>
@@ -431,51 +446,6 @@ export function CodexAccountsPanel({ status }: { status: AgentStatus }) {
         </>
       ) : null}
       {readError && <Text size="xs" c="dimmed" role="status">{readError}</Text>}
-
-      <Modal
-        opened={pasteOpen}
-        onClose={() => {
-          setPasteOpen(false);
-          setPaste("");
-        }}
-        title="Import Codex credentials"
-        centered
-      >
-        <Stack gap="md">
-          <Text size="sm" c="dimmed">
-            Paste Codex’s <span className="mono">auth.json</span>, a CLIProxyAPI{" "}
-            <span className="mono">codex</span> auth file, or a Sub2API data export.
-            Tokens are sent to the VM and stored in a private credential file.
-          </Text>
-          <Textarea
-            value={paste}
-            onChange={(event) => setPaste(event.currentTarget.value)}
-            autosize
-            minRows={5}
-            maxRows={12}
-            spellCheck={false}
-            autoComplete="off"
-            placeholder='{"auth_mode":"chatgpt","tokens":{…}} or {"type":"sub2api-data","accounts":[…]}'
-          />
-          <Checkbox
-            checked={activateImport}
-            onChange={(event) => setActivateImport(event.currentTarget.checked)}
-            label="Switch Codex to the first imported account"
-          />
-          <Group justify="flex-end">
-            <Button variant="default" onClick={() => setPasteOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              loading={busy === "paste"}
-              disabled={!paste.trim()}
-              onClick={submitPaste}
-            >
-              Import
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
 
       <Modal opened={exportTarget != null} onClose={() => setExportTarget(null)} title="Export Codex account" centered>
         <Stack gap="md">

@@ -19,6 +19,8 @@ pub struct MachineDetails {
     pub disk_path: String,
     #[cfg_attr(feature = "bindings", ts(type = "number | null"))]
     pub disk_allocated_bytes: Option<u64>,
+    pub pending_resources: Option<crate::resources::ResourceRequest>,
+    pub disk_growth_notice: Option<String>,
     pub instance_path: String,
     pub logs_path: String,
     pub network_mode: String,
@@ -127,6 +129,8 @@ impl MachineDetails {
             image_checksum,
             apt_mirror: cfg.apt_mirror.as_deref().and_then(public_url),
             disk_allocated_bytes,
+            pending_resources: crate::resources::pending(cfg)?,
+            disk_growth_notice: crate::resources::notice(cfg),
             disk_path: disk_path.display().to_string(),
             logs_path: cfg.instance_logs_dir().display().to_string(),
             instance_path: cfg.instance_dir().display().to_string(),

@@ -16,14 +16,14 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 | Area | Start here | Related code and tests |
 |---|---|---|
 | Host, VM, and SSH | [host/](src-tauri/src/host/mod.rs), [machine.rs](vm/src/machine.rs), [agentd.rs](vm/src/agentd.rs) | `src-tauri/src/host/{machine,guest,network_check}.rs`, `src-tauri/src/machine_service.rs`, `vm/src/{config,vm,os,qemu_engine,platform}.rs`, `vm/src/steps/` |
-| Installer and startup | [InstallWizard.tsx](src/views/InstallWizard.tsx), [StartReportView.tsx](src/components/StartReportView.tsx) | `src/views/install/{InstallSetup,InstallProgress}.tsx`, `src/components/{Boot,MachineGate,Recovery}.tsx`, `src/lib/{installForm,wizard,startReport,recovery}.ts` |
+| Installer and startup | [InstallWizard.tsx](src/views/InstallWizard.tsx), [StartReportView.tsx](src/components/StartReportView.tsx) | `src/views/install/{InstallSetup,InstallProgress,MachineCard}.tsx`, `src/components/{Boot,MachineGate,Recovery}.tsx`, `src/lib/{installForm,wizard,startReport,recovery}.ts` |
 | IPC and application state | [common.ts](src/services/ipc/common.ts), [dispatch.rs](src-tauri/src/host/dispatch.rs), [rpc.rs](core/src/rpc.rs) | `src/services/ipc/`, `src/state/{store,reducer}.ts`, `core/src/model.rs`, `src-tauri/src/lib.rs` |
 | Routes, interfaces, and subscriptions | [NetworkDashboard.tsx](src/components/network/NetworkDashboard.tsx), [global_network/](src-tauri/src/global_network/mod.rs) | `src-tauri/src/global_network/{gate,paths,health,catalog}.rs`, `src/lib/networkRoute.ts`, `src/components/network/useNetworkLive.ts`, `vm/src/network_interfaces.rs`, `vm/src/netgw/`, `core/src/proxy/`, `tests/geo.test.mjs`, `vm/tests/gateway_interface_live.rs` |
 | Network checks and exit | [network_gate/](src-tauri/src/network_gate/), [network_health.rs](src-tauri/src/network_health.rs), [network_probe.rs](core/src/network_probe.rs) | `src-tauri/src/network_gate/{report,exit,browser}.rs`, `vm/src/network_probe_targets.rs`, `src/components/network/{NetworkGatePanel,NetworkCheckModal}.tsx`, `src/state/networkMonitor.ts`, `src/lib/networkSummary.ts`, `ip-detection/` |
 | Desktop and browser | [ChromeView.tsx](src/views/ChromeView.tsx), [chrome_feature.rs](vm/src/chrome_feature.rs) | `src/components/{BrowserEnvironmentPanel,ChromeViewer}.tsx`, `src/lib/browserEnvironment.ts`, `core/src/{browser,native_display}/`, `core/src/{guest_desktop,device_probe,guest_dns}.rs` |
 | App shell and window | [App.tsx](src/App.tsx), [TitleBar.tsx](src/components/TitleBar.tsx), [window_chrome.rs](src-tauri/src/window_chrome.rs) | `src/components/Sidebar.tsx`, `src/lib/windowChrome.ts`, `src/styles/shell.css`, `src-tauri/tauri.macos.conf.json` |
 | Chat runtime and rendering | [agent_runtime/](core/src/agent_runtime/), [Chat.tsx](src/components/Chat.tsx) | `core/src/{chat_view,workspace_diff}.rs`, `src/components/chat/`, `src/lib/{chatTimeline,chatTasks}.ts`, `tests/chat-timeline.test.mjs` |
-| Agent setup and accounts | [AgentsView.tsx](src/views/AgentsView.tsx), [agents/](core/src/agents/) | `src/lib/{agentsHub,agentLimits}.ts`, `core/src/agents/claude/account.rs`, `core/src/agent_runtime/{acp/launch,runtimes}.rs` |
+| Agent setup and accounts | [AgentsView.tsx](src/views/AgentsView.tsx), [agents/](core/src/agents/) | `src/lib/{agentsHub,agentLimits}.ts`, `src/components/{PaceMeter,AccountLimits}.tsx`, `core/src/agents/claude/account.rs`, `core/src/agent_runtime/{acp/launch,runtimes}.rs` |
 | MCP, skills, and mentions | [McpView.tsx](src/views/McpView.tsx), [SkillsView.tsx](src/views/SkillsView.tsx) | `core/src/agents/{mcp_library,skill_library,skill_sources}.rs`, `agent_catalog`, `workspace_files`, `src/components/chat/useComposerMenu.ts` |
 | Usage and performance | [UsageView.tsx](src/views/UsageView.tsx), [usage/](usage/), [MonitorPanel.tsx](src/components/MonitorPanel.tsx) | `src/components/usage/{UsageMonitor,usageParts}.tsx`, `src/lib/{usageView,perfGauges}.ts` |
 | Project sync and Mac permissions | [sync.rs](src-tauri/src/sync.rs), [core/src/sync/](core/src/sync/), [host_permissions.rs](src-tauri/src/host_permissions.rs) | `src/components/NewWorkspaceModal.tsx`, `src/components/sync/`, `src/lib/syncForm.ts`, `src/views/settings/PermissionsSettings.tsx` |
@@ -38,6 +38,10 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   method names and params aligned with `GuestMethod` in `src/services/ipc/common.ts`. Keep
   Tauri commands thin and put SSH and QEMU mechanics in `vm/`. Long Mac operations report
   through `Channel<TaskEvent<T>>`.
+- Save VM resource requests separately from the running config. Under the machine operation
+  lock, a cold start can grow the standalone qcow2, verify its virtual capacity, and save the
+  new allocation. The pending disk request remains until the root-owned guest helper verifies
+  the enlarged ext4 filesystem. Never shrink an image or filesystem to roll back an expansion.
 - Use camelCase wire fields and preserve stable `{ code, message, details? }` errors.
   Regenerate [bindings](README.md#ipc-bindings) from Rust and leave
   `src/services/ipc/generated/` to ts-rs. Render backend state and events. `useApp`
@@ -227,8 +231,13 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   `useAutoRefresh` coalesces foreground updates and bounds visible polling. Keep the last
   result during a background refresh. Reserve buttons for actions such as granting access,
   checking a draft, or restarting a service.
-- Agents shows one row per agent with account limits and its current action. Usage leads
-  with filters, figures, and trend, followed by tables. The sidebar includes today's spend,
+- Agents leads with Plan limits (one tile per provider window) above one row per CLI with
+  compact limit meters, direct actions, and inline Setup. Providers shows each CLI's native
+  account and limit controls. Every plan window renders through `PaceMeter` with
+  `forecastLimit` from `src/lib/agentLimits.ts`: used share, the pace-projected share at
+  reset, and a tick for the time passed. Word forecasts as pace estimates and withhold them
+  early in a window or without a reset time. Usage leads with filters,
+  figures, and trend, followed by tables. The sidebar includes today's spend,
   the network status, and the CPU, RAM, swap, and load-per-core rings. Poll the busiest
   processes only while the performance details are open.
 - Use `src/lib/format.ts` for counts and prices in English. Use bundled SVGs in `Flag.tsx`

@@ -55,8 +55,10 @@ shows progress and logs with cancel and retry controls.
 
 ## Agents and usage
 
-The **Agents** page shows each CLI's version, sign-in status, and available plan limits.
-Open an agent's **Account** or **Setup** tab to manage it. All chats use the
+**Agents & providers** shows each CLI's version and sign-in state, its provider, and available
+plan limits. Install or update a CLI from its row, or expand **Setup** to manage its chat runtime
+and extensions. Select a provider from the row or the **Providers** tab to see its accounts and
+limits. Sign-in uses the native CLI. All chats use the
 [Agent Client Protocol](https://agentclientprotocol.com).
 
 | Agent | Chat runtime | Sign-in and limits |
@@ -109,7 +111,17 @@ changes apply live and identity changes restart Chrome. VNC over SSH is the defa
 Machines without the device profile can enable SPICE, which adds a virtual GPU on the next
 restart. Both viewers use the same desktop.
 
-## Machine recovery and storage
+## Machine resources, recovery and storage
+
+In **Settings → Machine → Change allocation**, set the vCPU count, memory in MiB, or a
+larger total disk capacity in GiB. Save while the machine is running or stopped. If it is
+running, stop it and then start it to use the new allocation. Saving does not stop it.
+
+The disk can only grow. Cabin expands its standalone qcow2 image before boot, then grows and
+verifies the Ubuntu root partition and ext4 filesystem. You can cancel a queued expansion
+only before the image has changed, while the machine is stopped. If guest expansion is not
+verified, Machine settings shows the error and the next cold start retries it without
+shrinking the disk. Custom root layouts, such as LVM or encrypted volumes, are not supported.
 
 Open **Machine recovery** from a startup error or **Settings → Machine** to review the start
 log and verify or repair the installation. Repair preserves the VM disk. **Erase and

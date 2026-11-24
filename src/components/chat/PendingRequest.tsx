@@ -57,7 +57,7 @@ function Question({ question, value, onChange }: { question: ChatQuestion; value
         </div>
       )}
       <input
-        className="w-full rounded-lg border border-line bg-surface/70 px-3 py-1.5 font-[inherit] text-[13px] text-fg transition-[border-color,box-shadow] duration-200 outline-none placeholder:text-faint focus:border-accent focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+        className="w-full rounded-lg border border-line bg-surface/70 px-3 py-1.5 font-[inherit] text-[13px] text-fg transition-colors duration-[var(--motion-fast)] outline-none placeholder:text-faint focus:border-[color:var(--field-focus-border)]"
         aria-label={`Answer: ${question.question}`}
         placeholder={question.options.length ? "Or type another answer" : "Your answer"}
         value={custom}

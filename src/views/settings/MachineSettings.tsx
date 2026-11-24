@@ -5,12 +5,12 @@ import { useCallback, useEffect, useState } from "react";
 import { CopyDiagnosticsButton, RecoveryPanel } from "../../components/Recovery";
 import { toIpcError } from "../../services/ipc/common";
 import { MachineDetailsPanel, MachineResources } from "./MachineDetailsPanel";
+import { MachineResourceEditor } from "./MachineResourceEditor";
 import { machineIpc } from "../../services/ipc/app";
 import { confirmAction } from "../../services/ipc/dialogs";
 import { useApp } from "../../state/store";
 import { attempt } from "../../lib/operations";
 import { uiActions } from "../../state/ui";
-import { diskGb } from "../../lib/installForm";
 import { reportElapsed } from "../../lib/startReport";
 import { formatBytes, formatDuration, formatInteger } from "../../lib/format";
 import { machineLabel } from "../../components/MachineGate";
@@ -34,7 +34,7 @@ async function destroy() {
   }
 }
 
-function useInspection<T>(load: () => Promise<T>, request: string | null) {
+function useInspection<T>(load: () => Promise<T>, request: string | null, keepLast = false) {
   const [result, setResult] = useState<{ request: string; value?: T; error?: string }>();
   const [epoch, setEpoch] = useState(0);
   useAutoRefresh(() => setEpoch((value) => value + 1), { enabled: request != null, initial: false, minGap: 5_000 });
@@ -48,7 +48,7 @@ function useInspection<T>(load: () => Promise<T>, request: string | null) {
     });
     return () => { current = false; };
   }, [load, request, epoch]);
-  return request != null && result?.request === request ? result : undefined;
+  return request != null && (keepLast || result?.request === request) ? result : undefined;
 }
 
 export function MachineSettings() {
@@ -57,11 +57,12 @@ export function MachineSettings() {
   const request = machine ? `${machine.state}:${machine.connection}:${machine.busy ?? ""}:${machine.display}:${machine.browser}:${machine.device}` : null;
   const installed = machine != null && machine.state !== "notInstalled";
   const connected = machine?.connection === "connected";
-  const inspection = useInspection(machineIpc.details, installed ? request : null);
+  const [resourceRevision, setResourceRevision] = useState(0);
+  const inspection = useInspection(machineIpc.details, installed ? `${request}:${resourceRevision}` : null, true);
   const observation = useInspection(machineIpc.observation, connected ? request : null);
   const loadChecks = useCallback(
-    () => machineIpc.checks(diskGb(machine?.diskSize) ?? 20, machine?.memoryMb ?? 4096).then((report) => report.items),
-    [machine?.diskSize, machine?.memoryMb],
+    () => machineIpc.checks(installed ? 0 : 20, machine?.memoryMb ?? 4096).then((report) => report.items),
+    [installed, machine?.memoryMb],
   );
   const checks = useInspection(loadChecks, request);
 
@@ -117,6 +118,8 @@ export function MachineSettings() {
       </section>
 
       {machine.error && <RecoveryPanel compact message={machine.error} />}
+      {installed && inspection?.value && <MachineResourceEditor machine={machine} details={inspection.value}
+        onSaved={() => setResourceRevision((revision) => revision + 1)} />}
       {installed && (inspection?.value ? (
         <MachineDetailsPanel machine={machine} details={inspection.value} observation={observation?.value ?? null} />
       ) : (
