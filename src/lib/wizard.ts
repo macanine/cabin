@@ -143,9 +143,9 @@ const FAILURE_RULES: readonly (readonly [RegExp, string, string])[] = [
   [/debian is no longer supported/,
     "This machine needs Ubuntu", "Back up what you need from the old machine before replacing it with a new Ubuntu installation in Machine settings."],
   [/unknown operating system|--cpus must|--memory must|--apt-mirror must|--ssh-port must/,
-    "Check the machine settings", "Open Advanced and choose a supported Ubuntu release, size, and package mirror, then retry."],
+    "Check the machine settings", "Choose Change settings, pick a supported size, release, and package mirror, then retry."],
   [/device profile is currently built for arm/,
-    "The device profile is unavailable on this computer", "Turn off Device profile under Advanced, then retry."],
+    "The device profile is unavailable on this computer", "Turn off Device profile under More options, then retry."],
   [/already installed or has files to recover|already provisioned with a different configuration|existing disk .* needs recovery|disk was kept|files were kept|cleaning up the partial install also failed|seed is immutable/,
     "The existing machine needs recovery", "Open Machine settings and use Verify or repair installation. Keep a backup before choosing to erase anything."],
   [/stop the machine before repairing|previous qemu process has not exited|cannot identify the recorded qemu process|machine could not be stopped/,
@@ -183,7 +183,7 @@ const FAILURE_RULES: readonly (readonly [RegExp, string, string])[] = [
   [/timed out|timeout/,
     "The VM took too long to respond", "Close apps that use a lot of CPU or memory and check the guest console before retrying."],
   [/cloud-init did not finish|cloud-init status is not done|acceptance script failed|passwordless sudo for the provisioned user|kernel metapackage|qemu-guest-agent package is not installed/,
-    "Ubuntu could not finish its initial setup", "Check the first-boot log for a package or network error. Retry, or choose another package mirror under Advanced."],
+    "Ubuntu could not finish its initial setup", "Check the first-boot log for a package or network error. Retry, or choose another package mirror under More options."],
   [/json error|saved machine configuration|unable to read.*config|config (?:defaults|overrides) must be/,
     "Cabin could not read the machine’s configuration", "Open Machine settings to verify the installation, or copy diagnostics if the configuration still cannot be read."],
   [/preflight failed|unsupported host architecture/,
@@ -215,7 +215,7 @@ export function explainFailure(text: string, step?: string, log: readonly string
   const id = step ?? t.match(/step "([^"]+)" failed/)?.[1];
   if (id && Object.prototype.hasOwnProperty.call(STEP_FAILURES, id)) return STEP_FAILURES[id];
   if (id?.startsWith("device-")) {
-    return { title: "The device profile could not be applied", advice: "Check the failed step log, or turn off Device profile under Advanced and retry." };
+    return { title: "The device profile could not be applied", advice: "Check the failed step log, or turn off Device profile under More options and retry." };
   }
   return {
     title: "A step failed",

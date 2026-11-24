@@ -14,6 +14,9 @@ import { StepProgress } from "../../components/StepProgress";
 import { CopyDiagnosticsButton } from "../../components/Recovery";
 import { BootDetails, BootStep, Note, Ticker } from "../../components/Boot";
 import { useAutoOpen } from "../../components/motion";
+import { Celebration } from "../../components/Celebration";
+import type { HostFacts } from "../../services/ipc/generated/common";
+import { type CardTone, MachineCard, type MachineSpec } from "./MachineCard";
 import { downloadSummary, formatDuration } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 import {
@@ -66,9 +69,11 @@ function DownloadBar({ download }: { download: DownloadProgress }) {
  * and let users retry failures or resume an incomplete installation.
  */
 export function InstallProgress({
-  machine, steps, startedAt, error, installOptions, cancelled, osName, onRetry, onEdit,
+  machine, steps, startedAt, error, installOptions, cancelled, osName, spec, host, onRetry, onEdit,
 }: {
   machine: MachineStatus;
+  spec: MachineSpec;
+  host: HostFacts | null;
   steps: InstallStep[];
   startedAt: number | null;
   error: string | null;
@@ -149,115 +154,139 @@ export function InstallProgress({
       : cancelled ?? (failed ? help?.title : installed ? "Every step is recorded and can be verified and resumed." : undefined);
 
   const stepKind = (state: WizardState) => (state === "cached" ? "done" : state === "rolledBack" ? "pending" : state);
+  // The card's screen narrates the running stage: the download, or its newest log line.
+  const runningDownload = steps.find((s) => s.state === "running" && s.download)?.download;
+  const screenLine = justInstalled ? "cabind connected · ready for agents"
+    : failed ? `stopped: ${(failedStep?.title ?? WIZARD_STEPS[current].title).toLowerCase()}`
+    : installing || starting ? (runningDownload ? `${runningDownload.verifying ? "verifying" : "downloading"} ${downloadSummary(runningDownload).text}` : stageTicker(steps, WIZARD_STEPS[current]) ?? `${WIZARD_STEPS[current].title.toLowerCase()}…`)
+      : null;
+  const leaving = installing && machine.busy === "Installing the machine";
+  const cardActions = justInstalled ? (noAgents ? (
+    <Button size="md" fullWidth className="iw-install" onClick={() => uiActions.navigate({ kind: "agents" })}>Install your agents</Button>
+  ) : (
+    <Button size="md" fullWidth className="iw-install" leftSection={<IconPlayerPlay size={16} />} onClick={() => uiActions.navigate({ kind: "new" })}>Start a task</Button>
+  )) : leaving ? (
+    <>
+      <p className="iw-card-note">You can leave this page; the install continues.</p>
+      <Button size="xs" variant="subtle" color="red" onClick={cancel}>Cancel install</Button>
+    </>
+  ) : null;
+  const showMeter = installing || starting || failed || justInstalled;
+  const tone: CardTone = justInstalled ? "ready" : failed ? "failed" : installing || starting ? "building" : installed ? "idle" : "draft";
 
   return (
     <>
-      <header className="install-header">
+      <header className="iw-header">
+        {justInstalled && <div className="iw-celebrate"><Celebration size={44} /></div>}
+        <p className="iw-eyebrow">{installed && !installing && !justInstalled && !starting ? "Machine settings" : "Cabin setup"}</p>
         <h1><span role="status">{title}</span></h1>
-        {subtitle && <p>{subtitle}</p>}
+        {subtitle && <p className="iw-lead" key={subtitle}>{subtitle}</p>}
       </header>
 
-      {(installing || starting || failed || justInstalled) && (
-        <div className="install-meter">
-          <div className="flex flex-wrap items-baseline justify-between gap-x-3 text-sm text-muted">
-            <span>Installation progress</span>
-            <span className="flex gap-3 tabular-nums">
-              {elapsed && <span>{elapsed}</span>}
-              <strong className="text-fg">{Math.round(progress * 100)}%</strong>
-            </span>
-          </div>
-          <Progress value={progress * 100} size="sm" radius="xl" transitionDuration={260}
-            color={failed ? "var(--bad)" : justInstalled ? "var(--ok)" : "var(--accent)"} aria-label="Installation progress" />
-        </div>
-      )}
+      <div className="iw-grid">
+        <div className="iw-main">
+          {showMeter && (
+            <div className="iw-progress" data-tone={tone}>
+              <div className="iw-progress-head">
+                <span className="iw-percent">{Math.round(progress * 100)}<small>%</small></span>
+                <span className="iw-progress-meta">
+                  <span>Installation progress</span>
+                  {elapsed && <span className="tabular-nums">{elapsed}</span>}
+                </span>
+              </div>
+              <div className="iw-segments" role="progressbar" aria-label="Installation progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>
+                {WIZARD_STEPS.map((def, index) => {
+                  const state = justInstalled ? "done" : states[index];
+                  const fill = state === "done" || state === "cached" ? 1 : state === "running" ? fractions[index] : state === "failed" ? 1 : 0;
+                  return (
+                    <span key={def.key} data-state={state} data-indeterminate={state === "running" && fill == null} title={def.title}>
+                      <span style={{ inlineSize: `${Math.round((fill ?? 0) * 100)}%` }} />
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
-      {justInstalled && (
-        <div className="flex flex-wrap gap-3">
-          {noAgents ? (
-            <Button size="md" onClick={() => uiActions.navigate({ kind: "agents" })}>Install your agents</Button>
-          ) : (
-            <Button size="md" leftSection={<IconPlayerPlay size={16} />} onClick={() => uiActions.navigate({ kind: "new" })}>Start a task</Button>
+          {help && (
+            <div className="iw-failure" role="alert">
+              <strong>{help.title}</strong>
+              <p>{help.advice}</p>
+              {!installed && <p className="text-faint">Retry reuses a verified image if it was already downloaded.</p>}
+              {failure && <code>{failure}</code>}
+            </div>
+          )}
+          {(help || (cancelled && !installed)) && (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {help && <CopyDiagnosticsButton installError={failure} installOptions={installed ? undefined : installOptions} />}
+              {!installed && <>
+                <Button variant="default" leftSection={<IconArrowLeft size={14} />} onClick={onEdit}>Change settings</Button>
+                <Button leftSection={<IconRotateClockwise size={14} />} onClick={onRetry}>{cancelled ? "Install again" : "Retry"}</Button>
+              </>}
+            </div>
+          )}
+
+          <ol className="iw-stages" aria-label="Installation stages">
+            {WIZARD_STEPS.map((def, index) => {
+              const state = justInstalled ? "done" : states[index];
+              const own = steps.filter((s) => def.pipeline.includes(s.id));
+              const secs = seconds(own);
+              const download = own.find((s) => s.download)?.download;
+              const live = state === "running";
+              const ticker = live && !download ? stageTicker(steps, def) : null;
+              return (
+                <BootStep key={def.key} order={index} state={stepKind(state)} title={def.title} time={state === "cached" ? "cached" : secs > 0 ? formatDuration(secs * 1000) : ""}>
+                  {(live || state === "failed") && <div className="text-sm text-muted">{def.description}</div>}
+                  {live && download && <DownloadBar download={download} />}
+                  {ticker && <Ticker title={ticker}>{ticker}</Ticker>}
+                  {live && def.key === "agentd" && machine.state === "running" && !connected && (
+                    <Ticker>{machine.connection === "updating" ? "Updating Cabin's service in the machine…" : machine.error ?? "Waiting for SSH…"}</Ticker>
+                  )}
+                </BootStep>
+              );
+            })}
+          </ol>
+
+          {installed && !installing && !justInstalled && !starting && (
+            <section className="glass grid gap-2 rounded-xl p-3.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="min-w-0 flex-1 text-sm text-faint">Resume repairs missing steps while the machine is stopped.</span>
+                <Button size="xs" onClick={resume} disabled={machine.busy != null || machine.state === "running"}>Resume</Button>
+              </div>
+              {notice && <div className="animate-fade text-sm text-muted">{notice}</div>}
+              {/* The mirror lives in the cloud-init seed: it only matters until first boot finishes. */}
+              {!provisioned && <Checkbox size="xs" label="Use another package mirror when resuming" checked={changeMirror} onChange={(e) => setChangeMirror(e.currentTarget.checked)} />}
+              {changeMirror && !provisioned && <MirrorPicker os={machine.os} value={mirror} onChange={setMirror} />}
+            </section>
+          )}
+          {actionError && !help && <Note tone="bad">{actionError}</Note>}
+
+          {steps.length > 0 && (
+            <BootDetails open={details} onToggle={toggleDetails}>
+              <StepProgress
+                steps={steps.map((step) => ({
+                  key: step.id,
+                  title: step.title,
+                  tone: TONE[asWizard(step.state)],
+                  status: `${STATE_TEXT[step.state] ?? step.state}${step.seconds != null && step.state !== "cached" ? ` · ${formatDuration(step.seconds * 1000)}` : ""}`,
+                  finished: FINISHED.has(step.state),
+                  log: step.logTail,
+                  detail: step.detail,
+                  logPath: step.state === "failed" ? step.logPath : null,
+                }))}
+              />
+            </BootDetails>
           )}
         </div>
-      )}
 
-      {help && (
-        <Note tone="bad" role="alert">
-          <div className="grid gap-1.5 text-fg">
-            <p className="m-0">{help.advice}</p>
-            {!installed && <p className="m-0 text-faint">Retry reuses a verified image if it was already downloaded.</p>}
-            {failure && <p className="m-0 font-mono text-xs text-faint [overflow-wrap:anywhere]">{failure}</p>}
-          </div>
-        </Note>
-      )}
-      {(help || (cancelled && !installed)) && (
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {help && <CopyDiagnosticsButton installError={failure} installOptions={installed ? undefined : installOptions} />}
-          {!installed && <>
-            <Button variant="default" leftSection={<IconArrowLeft size={14} />} onClick={onEdit}>Change settings</Button>
-            <Button leftSection={<IconRotateClockwise size={14} />} onClick={onRetry}>{cancelled ? "Install again" : "Retry"}</Button>
-          </>}
-        </div>
-      )}
-
-      <ol className="install-stages" aria-label="Installation stages">
-        {WIZARD_STEPS.map((def, index) => {
-          const state = states[index];
-          const own = steps.filter((s) => def.pipeline.includes(s.id));
-          const secs = seconds(own);
-          const download = own.find((s) => s.download)?.download;
-          const live = state === "running";
-          const ticker = live && !download ? stageTicker(steps, def) : null;
-          return (
-            <BootStep key={def.key} order={index} state={stepKind(state)} title={def.title} time={state === "cached" ? "cached" : secs > 0 ? formatDuration(secs * 1000) : ""}>
-              {(live || state === "failed") && <div className="text-sm text-muted">{def.description}</div>}
-              {live && download && <DownloadBar download={download} />}
-              {ticker && <Ticker title={ticker}>{ticker}</Ticker>}
-              {live && def.key === "agentd" && machine.state === "running" && !connected && (
-                <Ticker>{machine.connection === "updating" ? "Updating Cabin's service in the machine…" : machine.error ?? "Waiting for SSH…"}</Ticker>
-              )}
-            </BootStep>
-          );
-        })}
-      </ol>
-
-      {installing && machine.busy === "Installing the machine" && (
-        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-sm text-muted">
-          <span>You can leave this page; the install continues.</span>
-          <Button className="shrink-0" size="xs" variant="subtle" color="red" onClick={cancel}>Cancel install</Button>
-        </div>
-      )}
-
-      {installed && !installing && !justInstalled && !starting && (
-        <section className="glass grid gap-2 rounded-xl p-3.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="min-w-0 flex-1 text-sm text-faint">Resume repairs missing steps while the machine is stopped.</span>
-            <Button size="xs" onClick={resume} disabled={machine.busy != null || machine.state === "running"}>Resume</Button>
-          </div>
-          {notice && <div className="animate-fade text-sm text-muted">{notice}</div>}
-          {/* The mirror lives in the cloud-init seed: it only matters until first boot finishes. */}
-          {!provisioned && <Checkbox size="xs" label="Use another package mirror when resuming" checked={changeMirror} onChange={(e) => setChangeMirror(e.currentTarget.checked)} />}
-          {changeMirror && !provisioned && <MirrorPicker os={machine.os} value={mirror} onChange={setMirror} />}
-        </section>
-      )}
-      {actionError && !help && <Note tone="bad">{actionError}</Note>}
-
-      {steps.length > 0 && (
-        <BootDetails open={details} onToggle={toggleDetails}>
-          <StepProgress
-            steps={steps.map((step) => ({
-              key: step.id,
-              title: step.title,
-              tone: TONE[asWizard(step.state)],
-              status: `${STATE_TEXT[step.state] ?? step.state}${step.seconds != null && step.state !== "cached" ? ` · ${formatDuration(step.seconds * 1000)}` : ""}`,
-              finished: FINISHED.has(step.state),
-              log: step.logTail,
-              detail: step.detail,
-              logPath: step.state === "failed" ? step.logPath : null,
-            }))}
-          />
-        </BootDetails>
-      )}
+        <aside className="iw-aside">
+          <MachineCard spec={spec} host={host} tone={tone}
+            caption={justInstalled && machine.guestVersion ? `Cabin ${machine.guestVersion} connected` : undefined}
+            screen={screenLine}>
+            {cardActions}
+          </MachineCard>
+        </aside>
+      </div>
     </>
   );
 }

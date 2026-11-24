@@ -1,7 +1,7 @@
 import { Button } from "@mantine/core";
 import { IconAlertTriangle, IconCheck, IconCircleX } from "@tabler/icons-react";
 import { useState } from "react";
-import type { Fix, Readiness } from "../../services/ipc/generated/common";
+import type { Fix, HostFacts, Readiness } from "../../services/ipc/generated/common";
 import { machineIpc } from "../../services/ipc/app";
 import { toIpcError } from "../../services/ipc/common";
 import { DisclosureChevron, Reveal } from "../../components/motion";
@@ -16,6 +16,18 @@ export function fixLabel(fix: Fix): string | null {
     case "openUrl": return "How to fix";
     case "reinstallApp": return "Download Cabin";
   }
+}
+
+const PLATFORM: Record<string, string> = { macos: "macOS", windows: "Windows", linux: "Linux" };
+
+/** "macOS · 8 CPUs · 16 GB memory · 120 GB for the machine" */
+function hostLine(host: HostFacts): string {
+  return [
+    PLATFORM[host.platform] ?? host.platform,
+    host.cpus ? `${host.cpus} CPUs` : null,
+    host.memoryMb ? `${Math.round(host.memoryMb / 1024)} GB memory` : null,
+    host.maxDiskGb ? `${host.maxDiskGb} GB available` : null,
+  ].filter(Boolean).join(" · ");
 }
 
 const DOWNLOAD_URL = "https://github.com/macanine/cabin/releases/latest";
@@ -38,12 +50,19 @@ function Row({ item, tone, busy, onFix, pendingRestart }: { item: Readiness; ton
  * What this computer needs before installing: blockers in red and warnings in
  * amber, each with its fix button; everything that passed folds into one line.
  */
-export function ReadinessPanel({ items, checking, onChanged }: { items: Readiness[] | null; checking: boolean; onChanged: () => void }) {
+export function ReadinessPanel({ items, host = null, checking, onChanged }: { items: Readiness[] | null; host?: HostFacts | null; checking: boolean; onChanged: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [restart, setRestart] = useState<"needed" | "confirm" | null>(null);
   const [showPassed, setShowPassed] = useState(false);
-  if (items == null) return <Note>Checking this computer…</Note>;
+  if (items == null) {
+    return (
+      <div className="iw-ready" data-state="checking" role="status">
+        <span className="iw-ready-mark"><span className="size-1.5 animate-breathe rounded-full bg-current" /></span>
+        <span className="iw-ready-text"><strong>Checking this computer…</strong></span>
+      </div>
+    );
+  }
   const { blocking, warnings, passed } = readinessView(items);
 
   async function fix(next: Fix, id: string) {
@@ -87,16 +106,18 @@ export function ReadinessPanel({ items, checking, onChanged }: { items: Readines
         </div>
       )}
       {passed.length > 0 && (
-        <div>
-          <button type="button" aria-expanded={showPassed} onClick={() => setShowPassed((v) => !v)}
-            className="press flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-1 py-1 text-left text-sm text-muted">
-            <IconCheck size={15} className="text-ok" />
-            <span className="flex-1">{problems.length === 0 ? "This computer is ready" : `${passed.length} ${passed.length === 1 ? "check" : "checks"} passed`}</span>
+        <div className="iw-ready" data-state={problems.length === 0 ? "ok" : "partial"}>
+          <button type="button" aria-expanded={showPassed} onClick={() => setShowPassed((v) => !v)} className="iw-ready-row">
+            <span className="iw-ready-mark"><IconCheck size={13} stroke={3} /></span>
+            <span className="iw-ready-text">
+              <strong>{problems.length === 0 ? "This computer is ready" : `${passed.length} ${passed.length === 1 ? "check" : "checks"} passed`}</strong>
+              {host && problems.length === 0 && <span>{hostLine(host)}</span>}
+            </span>
             <DisclosureChevron open={showPassed} />
           </button>
           <Reveal open={showPassed}>
-            <ul className="m-0 grid list-none gap-1 px-1 pt-1 pb-2 text-sm text-muted">
-              {passed.map((item) => <li key={item.id} className="flex gap-2"><IconCheck size={14} className="mt-0.5 shrink-0 text-ok" /><span><strong className="text-fg">{item.label}</strong>{item.detail ? ` · ${item.detail}` : ""}</span></li>)}
+            <ul className="iw-ready-list">
+              {passed.map((item) => <li key={item.id}><IconCheck size={13} className="mt-0.5 shrink-0 text-ok" /><span><strong className="text-fg">{item.label}</strong>{item.detail ? ` · ${item.detail}` : ""}</span></li>)}
             </ul>
           </Reveal>
         </div>

@@ -71,12 +71,25 @@ if (install && mock) {
   });
   mock.handlers.machine_plan = () => ({ os: os.id, osName: os.name, osChoices: [os], username: "dev", hostname: "dev-vm" });
   mock.handlers.machine_test_mirrors = () => [];
+  const result = q.get("installResult");
+  const done = (id: string, title: string, seconds: number) => ({ id, title, state: "done", detail: null, logTail: [], logPath: null, seconds, appliedAt: now, fingerprint: null, download: null });
   mock.handlers.machine_install = () => {
     patchState((state) => ({ ...state, machine: state.machine && { ...state.machine, busy: "Installing the machine" }, install: [{
       id: "image", title: "Download Ubuntu", state: "running", detail: null, logTail: ["Downloading Ubuntu image"],
       logPath: null, seconds: null, appliedAt: null, fingerprint: null,
       download: { doneBytes: 400_000_000, totalBytes: 800_000_000, bytesPerSec: 18_000_000, verifying: false },
     }] }));
+    if (result === "failed") {
+      patchState((state) => ({ ...state, machine: state.machine && { ...state.machine, busy: null }, install: [
+        done("qemu", "Check QEMU", 1), done("image", "Download Ubuntu", 42), done("disk", "Create disk", 2), done("seed", "Write seed", 1),
+        { id: "provision", title: "First boot", state: "failed", detail: "cloud-init did not finish", logTail: ["E: Unable to fetch some archives"], logPath: "/logs/provision.log", seconds: 95, appliedAt: null, fingerprint: null, download: null },
+      ] }));
+    }
+    if (result === "done") {
+      patchState((state) => ({ ...state, guestReady: true,
+        machine: state.machine && { ...state.machine, busy: null, state: "running", connection: "connected" },
+        install: [done("qemu", "Check QEMU", 1), done("image", "Download Ubuntu", 42), done("disk", "Create disk", 2), done("seed", "Write seed", 1), done("provision", "First boot", 180)] }));
+    }
   };
 }
 if (v === "agents") uiActions.navigate({ kind: "agents" });

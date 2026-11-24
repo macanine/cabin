@@ -1,4 +1,3 @@
-import { IconBrandUbuntu, IconCheck } from "@tabler/icons-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { HostFacts, Readiness } from "../services/ipc/generated/common";
 import type { InstallPlan, MachineInstallOptions, OsChoice } from "../services/ipc/generated/core";
@@ -17,10 +16,11 @@ let draft: MachineInstallOptions | null = null;
 let hostApplied = false;
 
 /**
- * The machine installer: one setup screen (readiness, a summary of the
- * defaults picked for this computer, Install, advanced folded away), then the
- * install as a live progress view. An installed
- * machine opens on that view with automatic verification and a Resume action.
+ * The machine installer: a setup screen (readiness, size, release and
+ * account in the open, the rest under More options), then the install as a
+ * live progress view. Both phases share one layout with the machine card
+ * beside them. An installed machine opens on the progress view with
+ * automatic verification and a Resume action.
  */
 export function InstallWizard() {
   const machine = useApp((state) => state.machine);
@@ -109,55 +109,55 @@ export function InstallWizard() {
 
   if (!machine) return <div className="page" />;
 
+  const osName = chosenOs(options, choices)?.name ?? plan?.osName ?? "Ubuntu";
+  // An installed machine describes itself; a new one is the draft.
+  const spec = installed ? {
+    osName,
+    cpus: machine.cpus,
+    memoryMb: machine.memoryMb,
+    diskGb: diskGb(machine.diskSize),
+    username: machine.username ?? "dev",
+    hostname: machine.hostname ?? "dev-vm",
+  } : {
+    osName,
+    cpus: options.cpus,
+    memoryMb: options.memoryMb,
+    diskGb: diskGb(options.diskSize),
+    username: options.username || plan?.username || "dev",
+    hostname: options.hostname || plan?.hostname || "dev-vm",
+  };
+
   return (
     <div className="install-wizard" ref={scroll}>
-      <div className="install-frame">
-        <div className="install-layout">
-          <aside className="install-rail" aria-label="Installation phases">
-            <div className="install-platform">
-              <IconBrandUbuntu size={31} stroke={1.65} aria-hidden="true" />
-              <span>Ubuntu</span>
-            </div>
-            <ol className="install-phases">
-              <li aria-current={showProgress ? undefined : "step"}>
-                <span aria-hidden="true">{showProgress ? <IconCheck size={14} /> : "1"}</span>
-                <span>Prepare{showProgress && <span className="sr-only"> completed</span>}</span>
-              </li>
-              <li aria-current={showProgress ? "step" : undefined}>
-                <span aria-hidden="true">2</span>
-                <span>Install</span>
-              </li>
-            </ol>
-          </aside>
-          <div className="install-content" key={showProgress ? "progress" : "setup"}>
-            {showProgress ? (
-              <InstallProgress
-                machine={machine}
-                steps={steps}
-                startedAt={startedAt}
-                error={error}
-                installOptions={{ diskSize: options.diskSize, memoryMb: options.memoryMb, username: options.username ?? plan?.username ?? null }}
-                cancelled={cancelled}
-                osName={chosenOs(options, choices)?.name ?? plan?.osName ?? "Ubuntu"}
-                onRetry={install}
-                onEdit={() => setEditing(true)}
-              />
-            ) : (
-              <InstallSetup
-                options={options}
-                set={(patch) => setOptions((value) => ({ ...value, ...patch }))}
-                plan={plan}
-                choices={choices}
-                readiness={readiness}
-                checking={checked !== checkKey}
-                host={host}
-                onRecheck={onRecheck}
-                planError={planError}
-                onInstall={() => void install()}
-              />
-            )}
-          </div>
-        </div>
+      <div className="iw-frame view-enter" key={showProgress ? "progress" : "setup"}>
+        {showProgress ? (
+          <InstallProgress
+            machine={machine}
+            steps={steps}
+            startedAt={startedAt}
+            error={error}
+            installOptions={{ diskSize: options.diskSize, memoryMb: options.memoryMb, username: options.username ?? plan?.username ?? null }}
+            cancelled={cancelled}
+            osName={osName}
+            spec={spec}
+            host={host}
+            onRetry={install}
+            onEdit={() => setEditing(true)}
+          />
+        ) : (
+          <InstallSetup
+            options={options}
+            set={(patch) => setOptions((value) => ({ ...value, ...patch }))}
+            plan={plan}
+            choices={choices}
+            readiness={readiness}
+            checking={checked !== checkKey}
+            host={host}
+            onRecheck={onRecheck}
+            planError={planError}
+            onInstall={() => void install()}
+          />
+        )}
       </div>
     </div>
   );

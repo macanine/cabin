@@ -1,7 +1,5 @@
 import { Button, NumberInput, Slider, Switch, TextInput } from "@mantine/core";
-import {
-  IconArrowRight, IconCheck, IconCpu, IconDeviceDesktop, IconSettings, IconUser,
-} from "@tabler/icons-react";
+import { IconArrowRight, IconCheck, IconDeviceDesktop, IconUser } from "@tabler/icons-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { HostFacts, Readiness } from "../../services/ipc/generated/common";
 import type { InstallPlan, MachineInstallOptions, MirrorResult, OsChoice } from "../../services/ipc/generated/core";
@@ -10,13 +8,12 @@ import { MirrorPicker } from "../../components/MirrorPicker";
 import { Note } from "../../components/Boot";
 import { DisclosureChevron, Reveal } from "../../components/motion";
 import { ReadinessPanel } from "./ReadinessPanel";
+import { gb, MachineCard } from "./MachineCard";
 import { explainFailure } from "../../lib/wizard";
 import {
-  chosenOs, diskGb, formProblem, hostnameProblem, installSummary, matchingPreset, mirrorHost,
-  presetFitsHost, readinessView, RESOURCE_PRESETS, usernameProblem,
+  chosenOs, diskGb, formProblem, hostnameProblem, matchingPreset, mirrorHost,
+  presetFitsHost, readinessView, RESOURCE_PRESETS, type ResourcePreset, usernameProblem,
 } from "../../lib/installForm";
-
-const gb = (mb: number) => `${mb / 1024 % 1 === 0 ? mb / 1024 : (mb / 1024).toFixed(1)} GB`;
 
 /** The working mirror with the best measured speed. */
 function fastest(results: MirrorResult[]): MirrorResult | null {
@@ -24,38 +21,61 @@ function fastest(results: MirrorResult[]): MirrorResult | null {
     (best, r) => (!best || (r.speedKbps ?? 0) > (best.speedKbps ?? 0) ? r : best), null);
 }
 
-/** A radio card: the chosen one is ringed in the accent and shows a check. */
-function Choice({ selected, onSelect, children, disabled = false }: { selected: boolean; onSelect: () => void; children: ReactNode; disabled?: boolean }) {
+/** A titled group of the setup form. */
+function Group({ title, hint, children }: { title: string; hint?: ReactNode; children: ReactNode }) {
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      disabled={disabled}
-      onClick={onSelect}
-      className={`press relative grid min-w-0 cursor-pointer content-start gap-0.5 rounded-xl border p-3.5 text-left text-fg disabled:cursor-default disabled:opacity-60 ${
-        selected ? "border-accent bg-accent-soft shadow-[0_0_0_3px_var(--accent-soft)]" : "glass hover:border-accent/50"
-      }`}
-    >
+    <section className="iw-group">
+      <header className="iw-group-head">
+        <h2>{title}</h2>
+        {hint && <span>{hint}</span>}
+      </header>
       {children}
-      {selected && <span className="absolute top-3 right-3 grid size-[18px] place-items-center rounded-full bg-accent text-white"><IconCheck size={12} stroke={3} /></span>}
+    </section>
+  );
+}
+
+/** CPU, memory and disk as short bars (the share of this computer) with their values. */
+function Footprint({ cpus, memoryMb, disk, host }: { cpus: number; memoryMb: number; disk: number; host: HostFacts | null }) {
+  const rows: [number | null, string, string][] = [
+    [host?.cpus ? cpus / host.cpus : null, `${cpus} CPU`, "CPUs"],
+    [host?.memoryMb ? memoryMb / host.memoryMb : null, gb(memoryMb), "memory"],
+    [host?.maxDiskGb ? disk / host.maxDiskGb : null, `${disk} GB`, "disk"],
+  ];
+  return (
+    <span className="iw-footprint">
+      {rows.map(([share, value, what]) => (
+        <span key={what} className="contents">
+          <span className="iw-footprint-bar" aria-hidden>
+            <span style={{ inlineSize: `${Math.round(Math.max(0.06, Math.min(1, share ?? 0.4)) * 100)}%` }} />
+          </span>
+          <span className="iw-footprint-value"><span className="sr-only">{what} </span>{value}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function SizeCard({ preset, selected, fits, host, onSelect }: {
+  preset: ResourcePreset; selected: boolean; fits: boolean; host: HostFacts | null; onSelect: () => void;
+}) {
+  return (
+    <button type="button" role="radio" aria-checked={selected} disabled={!fits} onClick={onSelect} className="iw-option iw-size">
+      <span className="iw-option-title">
+        {preset.label}
+        {selected && <span className="iw-tick"><IconCheck size={11} stroke={3} /></span>}
+      </span>
+      <span className="iw-option-note">{fits ? preset.note : "Too large for this computer"}</span>
+      <Footprint cpus={preset.cpus} memoryMb={preset.memoryMb} disk={preset.diskGb} host={host} />
     </button>
   );
 }
 
-const Sub = ({ children }: { children: ReactNode }) => <span className="text-sm text-muted">{children}</span>;
-const Heading = ({ children, hint }: { children: ReactNode; hint?: ReactNode }) => (
-  <div className="mb-2.5 flex items-baseline justify-between gap-3">
-    <h2 className="m-0 text-md font-semibold text-fg">{children}</h2>
-    {hint && <span className="text-xs text-faint">{hint}</span>}
-  </div>
-);
-
 /**
- * The installer's setup on one screen: what this computer needs, a one-line
- * summary of the defaults chosen for it, Install, and everything adjustable
- * folded under Advanced. The fastest mirror is measured in the background
- * and used unless one is chosen.
+ * The installer's setup: readiness first, then the choices that matter
+ * (size, release, account) laid out in the open, with the mirror and device
+ * profile under More options. The machine card beside it previews the result
+ * and holds Install. The fastest mirror is measured in the background and
+ * used unless one is chosen.
  */
 export function InstallSetup({ options, set, plan, choices, readiness, host, planError, checking, onInstall, onRecheck }: {
   options: MachineInstallOptions;
@@ -71,17 +91,20 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
 }) {
   const os = chosenOs(options, choices);
   const preset = matchingPreset(options);
-  const [advanced, setAdvanced] = useState(false);
+  const [more, setMore] = useState(false);
   const [custom, setCustom] = useState(preset == null);
   const [mirrorAuto, setMirrorAuto] = useState<MirrorResult | null>(null);
   const mirrorChosen = useRef(false);
   const problem = formProblem(options);
   const planHelp = planError ? explainFailure(planError) : null;
-  const blocked = checking || readiness == null || readinessView(readiness).blocking.length > 0;
+  const view = readiness ? readinessView(readiness) : null;
+  const blockers = view?.blocking.length ?? 0;
+  const blocked = checking || readiness == null || blockers > 0;
   const unsupported = readiness?.some((item) => item.id === "supportedHost" || item.id === "appLocation");
   const canMeasure = host != null && !unsupported;
   const user = options.username ?? "";
-  const host_ = options.hostname ?? "";
+  const hostname = options.hostname ?? "";
+  const customOpen = custom || preset == null;
 
   // Measure the mirrors for this system once; use the fastest unless one was picked.
   useEffect(() => {
@@ -98,103 +121,108 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
   }, [canMeasure, os?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const mirrorLine = options.aptMirror
-    ? `${mirrorHost(options.aptMirror)}${mirrorAuto && mirrorAuto.uri === options.aptMirror ? " (fastest)" : ""}`
-    : mirrorAuto?.default ? `${mirrorAuto.host} (fastest)` : "Ubuntu's own archive";
+    ? `${mirrorHost(options.aptMirror)}${mirrorAuto && mirrorAuto.uri === options.aptMirror ? " · fastest" : ""}`
+    : mirrorAuto?.default ? `${mirrorAuto.host} · fastest` : "Ubuntu's archive";
   const osChoices = choices.length ? choices : [{ id: "ubuntu-24.04", name: "Ubuntu 24.04 LTS", testing: false, mirrors: [] }];
-  const checks = <ReadinessPanel items={readiness} checking={checking} onChanged={onRecheck} />;
+  const osName = os?.name ?? plan?.osName ?? "Ubuntu";
+
+  // Sliders stop at what this computer can give (leaving 2 GB for itself).
+  const cpuMax = Math.max(1, Math.min(64, host?.cpus || 16));
+  const memMax = host?.memoryMb ? Math.max(1024, Math.floor((host.memoryMb - 2048) / 512) * 512) : 16384;
+  const diskMax = Math.max(8, Math.min(1024, host?.maxDiskGb || 1024));
+
+  if (unsupported) {
+    return (
+      <>
+        <header className="iw-header">
+          <p className="iw-eyebrow">Cabin setup</p>
+          <h1>Cabin can't install a machine here yet</h1>
+        </header>
+        <div className="iw-solo"><ReadinessPanel items={readiness} host={host} checking={checking} onChanged={onRecheck} /></div>
+      </>
+    );
+  }
+
+  const ready = !blocked && problem == null && plan != null && planError == null;
+  const cardBadge = readiness == null || checking ? "Checking…" : blockers > 0 ? "Needs attention" : undefined;
 
   return (
     <>
-      <header className="install-header">
-        <h1>{unsupported ? "Cabin setup" : "Set up your agent machine"}</h1>
-        {!unsupported && <p>Cabin installs a local Ubuntu machine for Claude Code, Codex, OpenCode, Pi and Antigravity.</p>}
+      <header className="iw-header">
+        <p className="iw-eyebrow">Welcome to Cabin</p>
+        <h1>Set up your agent machine</h1>
+        <p className="iw-lead">
+          Claude Code, Codex, OpenCode, Pi and Antigravity work inside a private Ubuntu machine on this computer.
+          These settings were picked for this computer. Change anything you like.
+        </p>
       </header>
 
-      {!unsupported && (
-        <section className="install-machine" aria-label="Machine configuration">
-          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-            <h2 className="m-0 text-lg font-semibold">{os?.name ?? plan?.osName ?? "Ubuntu"}</h2>
-            <span className="text-sm text-muted">{preset?.label ?? "Custom"}</span>
-          </div>
-          <dl className="install-specs">
-            {[
-              ["CPU", `${options.cpus ?? "?"} vCPUs`],
-              ["Memory", gb(options.memoryMb ?? 0)],
-              ["Disk", `${diskGb(options.diskSize) ?? "?"} GB`],
-              ["Linux user", options.username || plan?.username || "dev"],
-            ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
-          </dl>
-        </section>
-      )}
+      <ReadinessPanel items={readiness} host={host} checking={checking} onChanged={onRecheck} />
 
-      {checks}
+      <div className="iw-grid">
+        <div className="iw-main stagger">
 
-      {!unsupported && <div>
-        {(problem || planHelp) && <Note tone="bad" role="alert">
-          {problem ?? <><strong>{planHelp?.title}</strong> · {planHelp?.advice}<br /><span className="text-faint">{planError}</span></>}
-        </Note>}
-        <div className="install-actions">
-          <Button type="button" variant="subtle" color="gray" size="sm" aria-expanded={advanced}
-            leftSection={<IconSettings size={16} />} rightSection={<DisclosureChevron open={advanced} />}
-            onClick={() => setAdvanced((v) => !v)}>
-            Advanced settings
-          </Button>
-          <Button size="md" className="install-primary" rightSection={<IconArrowRight size={17} />}
-            disabled={problem != null || plan == null || planError != null || blocked} onClick={onInstall}>
-            Install Ubuntu
-          </Button>
-        </div>
-        <Reveal open={advanced}>
-          <div className="grid min-w-0 gap-6 px-1 pt-4 pb-1">
-            <div>
-              <Heading>Ubuntu</Heading>
-              <div role="radiogroup" aria-label="Ubuntu release" className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5">
-                {osChoices.map((choice, index) => (
-                  <Choice key={choice.id} selected={(os?.id ?? "ubuntu-24.04") === choice.id} onSelect={() => { mirrorChosen.current = false; set({ os: choice.id, aptMirror: null }); }}>
-                    <strong className="text-md">{choice.name}</strong>
-                    <Sub>{choice.testing ? "Development release" : index === 0 ? "Recommended · supported to 2029" : "Newest LTS"}</Sub>
-                  </Choice>
-                ))}
-              </div>
+          <Group title="Size" hint="You can change it later in Machine settings">
+            <div role="radiogroup" aria-label="Machine size" className="iw-options iw-options-size">
+              {RESOURCE_PRESETS.map((p) => (
+                <SizeCard key={p.key} preset={p} host={host} fits={presetFitsHost(p, host)} selected={!customOpen && preset?.key === p.key}
+                  onSelect={() => { setCustom(false); set({ cpus: p.cpus, memoryMb: p.memoryMb, diskSize: `${p.diskGb}G` }); }} />
+              ))}
+              <button type="button" role="radio" aria-checked={customOpen} onClick={() => setCustom(true)} className="iw-option iw-size">
+                <span className="iw-option-title">
+                  Custom
+                  {customOpen && <span className="iw-tick"><IconCheck size={11} stroke={3} /></span>}
+                </span>
+                <span className="iw-option-note">Set each value</span>
+                <Footprint cpus={options.cpus ?? 2} memoryMb={options.memoryMb ?? 2048} disk={diskGb(options.diskSize) ?? 20} host={host} />
+              </button>
             </div>
-            <div>
-              <Heading hint={installSummary(options, os)}>Size</Heading>
-              <div role="radiogroup" aria-label="Machine size" className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-2.5">
-                {RESOURCE_PRESETS.map((p) => (
-                  <Choice key={p.key} disabled={!presetFitsHost(p, host)} selected={!custom && preset?.key === p.key} onSelect={() => { setCustom(false); set({ cpus: p.cpus, memoryMb: p.memoryMb, diskSize: `${p.diskGb}G` }); }}>
-                    <strong className="flex flex-wrap items-center gap-x-1.5 pr-6 text-md">{p.label}</strong>
-                    <span className="font-mono text-xs">{p.cpus} CPU · {gb(p.memoryMb)} · {p.diskGb} GB</span>
-                    <Sub>{p.note}</Sub>
-                  </Choice>
-                ))}
-                <Choice selected={custom || preset == null} onSelect={() => setCustom(true)}>
-                  <strong className="flex items-center gap-1.5 text-md"><IconCpu size={14} /> Custom</strong>
-                  <Sub>Set each value</Sub>
-                </Choice>
+            <Reveal open={customOpen}>
+              <div className="iw-custom">
+                <label className="iw-slider">
+                  <span>CPUs</span>
+                  <Slider min={1} max={cpuMax} step={1} value={Math.min(options.cpus ?? 2, cpuMax)} onChange={(cpus) => set({ cpus })} label={(v) => `${v} CPU`} />
+                  <strong>{options.cpus}</strong>
+                </label>
+                <label className="iw-slider">
+                  <span>Memory</span>
+                  <Slider min={1024} max={memMax} step={512} value={Math.min(options.memoryMb ?? 2048, memMax)} onChange={(memoryMb) => set({ memoryMb })} label={gb} />
+                  <strong>{gb(options.memoryMb ?? 2048)}</strong>
+                </label>
+                <label className="iw-slider">
+                  <span>Disk</span>
+                  <NumberInput min={8} max={diskMax} value={diskGb(options.diskSize) ?? 20} suffix=" GB" onChange={(v) => set({ diskSize: `${Number(v) || 8}G` })} />
+                  <span className="text-xs text-faint">grows as used</span>
+                </label>
               </div>
-              <Reveal open={custom || preset == null}>
-                <div className="glass mt-3 grid gap-4 rounded-xl p-4">
-                  {([
-                    ["CPUs", <Slider key="c" min={1} max={16} step={1} value={options.cpus ?? 2} onChange={(cpus) => set({ cpus })} marks={[{ value: 1 }, { value: 4 }, { value: 8 }, { value: 16 }]} />, String(options.cpus)],
-                    ["Memory", <Slider key="m" min={1024} max={16384} step={512} value={options.memoryMb ?? 2048} onChange={(memoryMb) => set({ memoryMb })} label={gb} />, gb(options.memoryMb ?? 2048)],
-                  ] as const).map(([label, slider, value]) => (
-                    <label key={label} className="grid grid-cols-[72px_minmax(0,1fr)_64px] items-center gap-4 text-sm">
-                      <span className="text-muted">{label}</span>{slider}<strong className="text-right font-mono">{value}</strong>
-                    </label>
-                  ))}
-                  <label className="grid grid-cols-[72px_minmax(0,1fr)_64px] items-center gap-4 text-sm">
-                    <span className="text-muted">Disk</span>
-                    <NumberInput min={8} max={1024} value={diskGb(options.diskSize) ?? 20} suffix=" GB" onChange={(v) => set({ diskSize: `${Number(v) || 8}G` })} />
-                    <span className="text-xs text-faint">grows as used</span>
-                  </label>
-                </div>
-              </Reveal>
-              {(options.memoryMb ?? 0) < 2048 && <div className="mt-3"><Note tone="warn">{gb(options.memoryMb ?? 0)} installs, but agents need about 2 GB to work comfortably.</Note></div>}
-            </div>
-            <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+            </Reveal>
+            {(options.memoryMb ?? 0) < 2048 && <Note tone="warn">{gb(options.memoryMb ?? 0)} installs, but agents need about 2 GB to work comfortably.</Note>}
+          </Group>
+
+          {osChoices.length > 1 && (
+            <Group title="Release">
+              <div role="radiogroup" aria-label="Ubuntu release" className="iw-options iw-options-os">
+                {osChoices.map((choice, index) => {
+                  const selected = (os?.id ?? osChoices[0].id) === choice.id;
+                  return (
+                    <button key={choice.id} type="button" role="radio" aria-checked={selected} className="iw-option"
+                      onClick={() => { mirrorChosen.current = false; set({ os: choice.id, aptMirror: null }); }}>
+                      <span className="iw-option-title">
+                        {choice.name}
+                        {selected && <span className="iw-tick"><IconCheck size={11} stroke={3} /></span>}
+                      </span>
+                      <span className="iw-option-note">{choice.testing ? "Development release" : index === 0 ? "Recommended · supported to 2029" : "Newest LTS"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </Group>
+          )}
+
+          <Group title="Account" hint="Agents run as this user, with passwordless sudo">
+            <div className="iw-fields">
               <TextInput
                 label="Username"
-                description="The Linux account agents run as (passwordless sudo)."
                 placeholder={plan?.username ?? "dev"}
                 leftSection={<IconUser size={16} />}
                 value={user}
@@ -203,32 +231,72 @@ export function InstallSetup({ options, set, plan, choices, readiness, host, pla
               />
               <TextInput
                 label="Hostname"
-                description="Shown in the shell prompt and on the machine's network."
                 placeholder={plan?.hostname ?? "dev-vm"}
                 leftSection={<IconDeviceDesktop size={16} />}
-                value={host_}
-                error={hostnameProblem(host_)}
+                value={hostname}
+                error={hostnameProblem(hostname)}
                 onChange={(e) => set({ hostname: e.currentTarget.value.trim().toLowerCase() || null })}
               />
             </div>
-            <div>
-              <Heading hint={`now: ${mirrorLine}`}>Package mirror</Heading>
-              <MirrorPicker key={os?.id} os={os?.id ?? null} heading={false} autoPick={false} value={options.aptMirror ?? null}
-                onChange={(aptMirror) => { mirrorChosen.current = true; set({ aptMirror }); }} />
-            </div>
-            {host?.deviceProfileSupported !== false && (
-              <div className="glass rounded-xl p-3.5">
-                <Switch
-                  label="Device profile"
-                  description="Applies a hardware profile and verifies the runtime devices after setup."
-                  checked={options.device}
-                  onChange={(e) => set({ device: e.currentTarget.checked })}
-                />
+          </Group>
+
+          <section className="iw-group">
+            <button type="button" className="iw-more" aria-expanded={more} onClick={() => setMore((v) => !v)}>
+              <DisclosureChevron open={more} />
+              <span>More options</span>
+              <span className="iw-more-hint">Mirror: {mirrorLine}{options.device ? " · Device profile on" : ""}</span>
+            </button>
+            <Reveal open={more}>
+              <div className="iw-more-body">
+                <div>
+                  <h3 className="iw-sub">Package mirror</h3>
+                  <MirrorPicker key={os?.id} os={os?.id ?? null} heading={false} autoPick={false} value={options.aptMirror ?? null}
+                    onChange={(aptMirror) => { mirrorChosen.current = true; set({ aptMirror }); }} />
+                </div>
+                {host?.deviceProfileSupported !== false && (
+                  <Switch
+                    label="Device profile"
+                    description="Applies a hardware profile and verifies the runtime devices after setup."
+                    checked={options.device}
+                    onChange={(e) => set({ device: e.currentTarget.checked })}
+                  />
+                )}
               </div>
+            </Reveal>
+          </section>
+        </div>
+
+        <aside className="iw-aside iw-aside-lead">
+          <MachineCard
+            tone="draft"
+            host={host}
+            badge={cardBadge}
+            caption={preset ? `${preset.label} size` : "Custom size"}
+            spec={{
+              osName,
+              cpus: options.cpus,
+              memoryMb: options.memoryMb,
+              diskGb: diskGb(options.diskSize),
+              username: options.username || plan?.username || "dev",
+              hostname: options.hostname || plan?.hostname || "dev-vm",
+            }}
+          >
+            {(problem || planHelp) && (
+              <Note tone="bad" role="alert">
+                {problem ?? <><strong>{planHelp?.title}</strong> · {planHelp?.advice}<br /><span className="text-faint">{planError}</span></>}
+              </Note>
             )}
-          </div>
-        </Reveal>
-      </div>}
+            <Button size="md" fullWidth className="iw-install" rightSection={<IconArrowRight size={17} />}
+              disabled={!ready} onClick={onInstall}>
+              Install Ubuntu
+            </Button>
+            <p className="iw-card-note">
+              {blockers > 0 ? "Resolve the computer checks to continue."
+                : "Cabin downloads Ubuntu and its packages. You can keep working while it installs."}
+            </p>
+          </MachineCard>
+        </aside>
+      </div>
     </>
   );
 }
