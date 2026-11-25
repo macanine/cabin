@@ -375,7 +375,7 @@ impl Files {
             verify_output(&session.output()?, output)?;
             session.verify_viewer(output)?;
         }
-        if legacy || pending.restart_chrome.is_some() {
+        if pending.restart_chrome.is_some() || (legacy && session.chrome().pid.is_some()) {
             let wayland = if let Some(wayland) = pending.restart_chrome {
                 wayland
             } else {

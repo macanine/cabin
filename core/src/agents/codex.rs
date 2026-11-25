@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 use crate::fsx;
 use crate::model::{
     AgentKind, CodexAccount, CodexAccounts, CodexCredits, CodexQuota, CodexQuotaWindow,
-    CodexResetCard, CodexResetResult,
+    CodexResetCard, CodexResetResult, SkillEntry,
 };
 use crate::system::CommandSpec;
 use crate::util::now_millis;
@@ -36,8 +36,8 @@ static SPEC: AgentSpec = AgentSpec {
 };
 
 impl AgentAdapter for Codex {
-    fn skill_insert(&self, name: &str) -> String {
-        format!("${name} ")
+    fn skill_insert(&self, skill: &SkillEntry) -> Option<String> {
+        Some(format!("${} ", skill.name))
     }
 
     fn spec(&self) -> &'static AgentSpec {

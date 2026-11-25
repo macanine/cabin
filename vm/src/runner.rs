@@ -1248,6 +1248,7 @@ impl Runner {
             // Native guest helpers can be needed by DNS, desktop and browser
             // operations before the daemon handshake deploys its user service.
             self.ensure_helper(runtime)?;
+            crate::shell::migrate_chrome_autostart(runtime)?;
             if let Err(error) = crate::resources::verify_boot(cfg, runtime) {
                 // Disk growth is forward-only. Leave the VM usable and retain
                 // the pending request for another attempt after a clean stop.

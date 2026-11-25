@@ -18,7 +18,8 @@ const CHROME: &str = "/opt/google/chrome/chrome";
 const CHROME_BINARY: &str = "/usr/bin/google-chrome-stable";
 const LEGACY_CONTROLLER: &str = "/opt/vmctl-fp/controller.py";
 const BROWSER_HELPER: &str = "/usr/local/libexec/cabin/cabind";
-const CHROME_WRAPPER: &str = "#!/bin/sh\n# Keep one managed Chrome/controller alive if Chrome is closed or crashes.\nexport DISPLAY=\"${DISPLAY:-:0}\"\nwhile :; do\n  /usr/local/libexec/cabin/cabind browser run\n  code=$?\n  [ \"$code\" -eq 75 ] && exit 0\n  sleep 2\ndone\n";
+const CHROME_WRAPPER: &str = "#!/bin/sh\nexport DISPLAY=\"${DISPLAY:-:0}\"\nexec /usr/local/libexec/cabin/cabind browser run\n";
+const LOOPING_NATIVE_WRAPPER: &str = "#!/bin/sh\n# Keep one managed Chrome/controller alive if Chrome is closed or crashes.\nexport DISPLAY=\"${DISPLAY:-:0}\"\nwhile :; do\n  /usr/local/libexec/cabin/cabind browser run\n  code=$?\n  [ \"$code\" -eq 75 ] && exit 0\n  sleep 2\ndone\n";
 const OLD_CHROME_WRAPPER: &str = "#!/bin/sh\n# Keep one managed Chrome/controller alive if Chrome is closed or crashes.\nexport DISPLAY=\"${DISPLAY:-:0}\"\nwhile :; do\n  /usr/bin/python3 /opt/vmctl-fp/controller.py\n  code=$?\n  [ \"$code\" -eq 75 ] && exit 0\n  sleep 2\ndone\n";
 const OLDEST_CHROME_WRAPPER: &str = "#!/bin/sh\n# Keep the managed Chrome/controller alive if Chrome is closed or crashes.\nwhile :; do\n  /usr/bin/python3 /opt/vmctl-fp/controller.py\n  sleep 2\ndone\n";
 const WAYVNC: &str = "/usr/bin/wayvnc";
@@ -584,7 +585,7 @@ fn migrate_chrome_wrapper(wrapper: &Path) -> Result<()> {
     if old == CHROME_WRAPPER {
         return Ok(());
     }
-    if !old.is_empty() && old != OLD_CHROME_WRAPPER && old != OLDEST_CHROME_WRAPPER {
+    if !old.is_empty() && old != LOOPING_NATIVE_WRAPPER && old != OLD_CHROME_WRAPPER && old != OLDEST_CHROME_WRAPPER {
         return Err(Error::Conflict("An unrecognized Chrome wrapper must not be replaced.".into()));
     }
     let temp = wrapper.with_extension("sh.native");

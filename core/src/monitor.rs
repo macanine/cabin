@@ -38,6 +38,7 @@ pub fn tcp_latency(target: &str, timeout: Duration) -> Option<u32> {
 
 pub struct Monitor {
     stop: Arc<AtomicBool>,
+    latency_stop: std::sync::mpsc::Sender<()>,
     latest: Arc<Mutex<Option<MonitorSample>>>,
     /// Kept between requests: CPU use is the change since the last refresh.
     processes: Mutex<Option<(System, Instant)>>,
@@ -87,6 +88,7 @@ impl Monitor {
         let latest = Arc::new(Mutex::new(None));
         let latency: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
 
+        let (latency_stop, latency_wait) = std::sync::mpsc::channel();
         {
             let stop = stop.clone();
             let latency = latency.clone();
@@ -96,11 +98,10 @@ impl Monitor {
                     while !stop.load(Ordering::Relaxed) {
                         let value = tcp_latency(&target(), Duration::from_secs(2));
                         *latency.locked() = value;
-                        for _ in 0..50 {
-                            if stop.load(Ordering::Relaxed) {
-                                return;
-                            }
-                            std::thread::sleep(Duration::from_millis(100));
+                        if latency_wait.recv_timeout(Duration::from_secs(5))
+                            != Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                        {
+                            break;
                         }
                     }
                 });
@@ -169,7 +170,7 @@ impl Monitor {
                 });
         }
 
-        Self { stop, latest, processes: Mutex::new(None) }
+        Self { stop, latency_stop, latest, processes: Mutex::new(None) }
     }
 
     /// The busiest processes now. The first call takes two readings a short
@@ -210,6 +211,7 @@ impl Monitor {
 impl Drop for Monitor {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        let _ = self.latency_stop.send(());
     }
 }
 

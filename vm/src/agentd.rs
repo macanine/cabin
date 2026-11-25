@@ -157,6 +157,34 @@ pub fn deploy(runtime: &Runtime, binary: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Bootstrap the unprivileged native lanes on a boot that has the new QEMU
+/// devices. This uses the existing trusted provisioning connection; no CLI
+/// request or project payload is sent through it.
+#[cfg(unix)]
+pub fn prepare_native(runtime: &Runtime, restart: bool) -> Result<()> {
+    let script = format!(r#"
+set -eu
+uid=$(id -u); gid=$(id -g)
+for lane in exec sync watch; do
+  device="/dev/virtio-ports/org.cabin.$lane"
+  target=$(readlink -f "$device")
+  case "$target" in /dev/vport[0-9]*p[0-9]*) ;; *) exit 1 ;; esac
+  test -c "$target"
+  sudo -n chown "$uid:$gid" "$target"
+  sudo -n chmod 0600 "$target"
+  unit="cabind-native-$lane.service"
+  if [ '{restart}' = 'true' ] && systemctl --user is-active --quiet "$unit"; then
+    systemctl --user restart "$unit"
+  elif ! systemctl --user is-active --quiet "$unit"; then
+    systemd-run --user --quiet --collect --unit="$unit" --property=Type=exec --property=Restart=on-failure \
+      "$HOME/{REMOTE_BIN}" native-channel "$lane" "$device"
+  fi
+done
+"#);
+    let (code, output) = runtime.ssh_capture(&format!("sh -c {}", crate::util::shell_quote(&script)), Duration::from_secs(20));
+    if code == 0 { Ok(()) } else { message(format!("Could not prepare cabind native channels: {}", output.trim())) }
+}
+
 /// Run one guest display operation with a JSON request on stdin.
 pub fn native_display(runtime: &Runtime, request: &Value, timeout: Duration) -> Result<Value> {
     let mut argv = runtime.ssh_argv(false)?;

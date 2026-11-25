@@ -182,6 +182,10 @@ impl InstancePaths {
         self.root.join("console.sock")
     }
 
+    pub fn cli_dir(&self) -> PathBuf {
+        self.root.join("cli")
+    }
+
     pub fn spice_dir(&self) -> PathBuf {
         self.root.join("spice")
     }

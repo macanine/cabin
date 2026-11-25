@@ -97,14 +97,15 @@ fn boot(cfg: &Config, ctx: &StepContext) -> Result<()> {
     } else {
         None
     };
-    Runtime::new(cfg).start(
+    let runtime = Runtime::new(cfg);
+    runtime.start(
         &ctx.log_file,
         Boot {
             phase,
             ..Boot::new(Duration::from_secs(300))
         },
     )?;
-    Ok(())
+    crate::shell::migrate_chrome_autostart(&runtime)
 }
 
 fn prepare_running(cfg: &Config, agentd_binary: &Path) -> Result<()> {
@@ -170,36 +171,9 @@ fn guest_script(
     Ok(())
 }
 
-fn verify_running(runtime: &Runtime, ctx: &StepContext) -> Result<()> {
-    ctx.log("Waiting for the Chrome controller to become ready");
-    let script = format!(r#"set -eu
-status="/run/user/$(id -u)/vmctl-fp-status.json"
-for i in $(seq 1 90); do
-  if {} browser ready 2>/dev/null; then
-    echo 'Chrome controller is ready'
-    exit 0
-  fi
-  sleep 1
-done
-echo 'Chrome did not become ready' >&2
-cat "$status" 2>/dev/null || true
-{} browser log-tail 2>/dev/null || true
-journalctl -u sway-autologin.service -n 30 --no-pager 2>/dev/null || true
-exit 1
-"#, crate::agentd::HELPER_BIN, crate::agentd::HELPER_BIN);
-    let (code, output) = runtime.ssh_capture(&script, Duration::from_secs(120));
-    ctx.log(&output);
-    if code != 0 {
-        return message(format!("Chrome did not start: {}", output.trim()));
-    }
-    desktop::wait_for_vnc(runtime)
-}
-
-/// Final acceptance after the normal VM boot, including the display server.
-pub fn verify_started(cfg: &Config, agentd_binary: &Path) -> Result<()> {
-    let ctx = StepContext::new(cfg, "chrome", "verify")?;
-    crate::agentd::ensure_helper(&Runtime::new(cfg), agentd_binary)?;
-    verify_running(&Runtime::new(cfg), &ctx)
+/// Verify the desktop after boot. The install scripts already verify the Chrome package and profile.
+pub fn verify_started(cfg: &Config) -> Result<()> {
+    desktop::wait_for_vnc(&Runtime::new(cfg))
 }
 
 pub fn can_enable_spice(cfg: &Config) -> bool {
@@ -307,11 +281,7 @@ pub fn enable_spice(old: &Config, agentd_binary: &Path) -> Result<()> {
         restarting = true;
         stop(old, &ctx)?;
         boot(&cfg, &ctx)?;
-        if cfg.desktop_chrome && cfg.browser_enabled() {
-            verify_running(&runtime, &ctx)?;
-        } else {
-            desktop::wait_for_vnc(&runtime)?;
-        }
+        desktop::wait_for_vnc(&runtime)?;
         verify_spice(&cfg, &runtime)?;
         prepare_running(&cfg, agentd_binary)?;
         save_desktop_state(&cfg, &mut desktop_ctx)?;
@@ -335,11 +305,7 @@ pub fn enable_spice(old: &Config, agentd_binary: &Path) -> Result<()> {
         if restarting {
             prepare_running(old, agentd_binary)?;
         }
-        if old.desktop_chrome && old.browser_enabled() {
-            verify_running(&old_runtime, &ctx)?;
-        } else {
-            desktop::wait_for_vnc(&old_runtime)?;
-        }
+        desktop::wait_for_vnc(&old_runtime)?;
         if let Some(request) = previous_display {
             crate::shell::browser_native_display(&old.home, &old.name, request)?;
         }
@@ -446,7 +412,7 @@ pub fn install(old: &Config, agentd_binary: &Path) -> Result<()> {
         stop(&cfg, &ctx)?;
         boot(&cfg, &ctx)?;
         crate::agentd::ensure_helper(&runtime, agentd_binary)?;
-        verify_running(&runtime, &ctx)?;
+        desktop::wait_for_vnc(&runtime)?;
         prepare_running(&cfg, agentd_binary)?;
         save_step_states(&cfg, &mut desktop_ctx, &mut browser_ctx, &data)
     })();
@@ -513,9 +479,16 @@ pub fn apply_profile(old: &Config, updated: &Config, agentd_binary: &Path) -> Re
     })();
     match result {
         Ok(()) => {
-            // Chrome reads its profile at launch: restart it on the new one.
-            let _ = crate::shell::browser_stop(&updated.home, &updated.name);
-            let _ = crate::shell::browser_open(&updated.home, &updated.name, "about:blank");
+            if crate::shell::browser_status(&old.home, &old.name)?["chrome_running"] == true {
+                let result = crate::shell::browser_stop(&updated.home, &updated.name)?;
+                if result.code != 0 {
+                    return message(result.output);
+                }
+                let result = crate::shell::browser_open(&updated.home, &updated.name, "about:blank")?;
+                if result.code != 0 {
+                    return message(result.output);
+                }
+            }
             Ok(())
         }
         Err(error) => {

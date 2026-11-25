@@ -1,6 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
@@ -132,6 +133,7 @@ pub(super) fn chrome_args(
         "--no-default-browser-check".into(),
         "--disable-dev-shm-usage".into(),
         "--disable-quic".into(),
+        "--disable-background-mode".into(),
         format!("--user-data-dir={user_data}"),
     ];
     if verify {
@@ -258,6 +260,8 @@ impl Drop for Chrome {
                 let _ = self.child.wait();
             }
         }
+        // Chromium can leave renderers in its process group when the main process exits.
+        unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
         if let Some(path) = &self.temp_dir {
             let _ = fs::remove_dir_all(path);
         }
@@ -297,6 +301,7 @@ pub(super) fn start(profile: &Profile, verify: bool, restore: bool) -> Result<Ch
         terminate_stale_chrome(&user_data);
     }
     let mut command = Command::new(chrome_binary()?);
+    command.process_group(0);
     command.args(chrome_args(profile, port, &user_data, verify, restore));
     if verify {
         command.stdout(Stdio::null()).stderr(Stdio::null());

@@ -2,7 +2,7 @@ use super::extensions::{McpCodec, json};
 use super::{AgentAdapter, AgentSpec};
 use crate::context::Context;
 use crate::error::{Error, Result};
-use crate::model::{AgentKind, McpServer, McpTransport};
+use crate::model::{AgentKind, McpServer, McpTransport, SkillEntry};
 use crate::system::CommandSpec;
 use crate::util::clean_terminal_text;
 use serde_json::Value;
@@ -25,6 +25,16 @@ static SPEC: AgentSpec = AgentSpec {
 };
 
 impl AgentAdapter for OpenCode {
+    fn skill_insert(&self, skill: &SkillEntry) -> Option<String> {
+        // OpenCode v2's skill tool takes the case-sensitive directory ID,
+        // not the display name. ACP passes the mention to the model as text.
+        let id = Path::new(&skill.path).file_name()?.to_str()?;
+        if id.chars().any(|c| c.is_whitespace() || c.is_control() || c == '@') {
+            return None;
+        }
+        Some(format!("@{id} "))
+    }
+
     fn spec(&self) -> &'static AgentSpec {
         &SPEC
     }
@@ -44,6 +54,16 @@ impl AgentAdapter for OpenCode {
 
     fn project_skills_dir(&self) -> &'static str {
         ".opencode/skill"
+    }
+
+    fn skill_dirs(&self, ctx: &Context, workspace: Option<&Path>) -> Vec<(PathBuf, &'static str)> {
+        // OpenCode resolves a project skill before a user skill with the same ID.
+        let mut dirs = Vec::new();
+        if let Some(root) = workspace {
+            dirs.push((root.join(self.project_skills_dir()), "project"));
+        }
+        dirs.push((self.skills_dir(ctx), "user"));
+        dirs
     }
 }
 

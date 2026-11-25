@@ -19,6 +19,16 @@ contracts.
 | UI and data flow | The React window consumes a startup snapshot and typed events. Host and guest report authoritative process and operation state. Visible reads refresh on entry, foreground return, updates, or bounded polling where events are unavailable. Settings use one column with the most relevant state and actions at the top. |
 | Project data | Agents work on the VM's local disk. Mac projects sync against a saved base. The VM supports 9p for optional live mounts outside project sync. |
 
+## Native host CLI
+
+The [native host CLI](docs/native-cli-prototype.md) forwards the five original
+agent executables and Two-way project sync over three private QEMU virtio-serial
+lanes. The desktop starts the guest workers during connection setup and leases
+its existing sync manager to the CLI for one project at a time. The lease ends
+on explicit close or local socket disconnect. Other desktop projects and desktop
+RPC keep their existing SSH transport. Windows CLI and multi-session native
+multiplexing are not implemented.
+
 ## Diagnostics
 
 `cabin-diagnostics` supplies one event format and file policy to the desktop, `vmctl`,

@@ -4,7 +4,7 @@ use super::extensions::{McpCodec, json};
 use super::{AgentAdapter, AgentSpec};
 use crate::context::Context;
 use crate::error::{Error, Result};
-use crate::model::{AgentKind, McpServer, McpTransport};
+use crate::model::{AgentKind, McpServer, McpTransport, SkillEntry};
 
 pub struct Pi;
 
@@ -20,8 +20,8 @@ static SPEC: AgentSpec = AgentSpec {
 };
 
 impl AgentAdapter for Pi {
-    fn skill_insert(&self, name: &str) -> String {
-        format!("/skill:{name} ")
+    fn skill_insert(&self, skill: &SkillEntry) -> Option<String> {
+        Some(format!("/skill:{} ", skill.name))
     }
 
     fn spec(&self) -> &'static AgentSpec {

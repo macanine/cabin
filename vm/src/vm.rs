@@ -126,7 +126,57 @@ fn prepare_spice_dir(cfg: &Config) -> Result<()> {
     crate::sockets::prepare_listener(&cfg.spice_socket())
 }
 
+pub const CLI_LANES: [&str; 3] = ["exec", "sync", "watch"];
+
+pub fn cli_dir(cfg: &Config) -> PathBuf {
+    InstancePaths::new(cfg.instance_dir()).cli_dir()
+}
+
+fn cli_sockets(cfg: &Config) -> impl Iterator<Item = PathBuf> {
+    let dir = cli_dir(cfg);
+    CLI_LANES.into_iter().map(move |lane| dir.join(format!("{lane}.sock")))
+}
+
+#[cfg(unix)]
+fn prepare_cli_sockets(cfg: &Config) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let dir = cli_dir(cfg);
+    match fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => {},
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+        Err(error) => return Err(error.into()),
+    }
+    let meta = fs::symlink_metadata(&dir)?;
+    if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
+        return message(format!("Native CLI socket directory is not private: {}", dir.display()));
+    }
+    for path in cli_sockets(cfg) {
+        crate::sockets::prepare_listener(&path)?;
+    }
+    Ok(())
+}
+
+fn append_cli_args(cfg: &Config, args: &mut Vec<String>) {
+    if !cfg!(unix) {
+        return;
+    }
+    args.extend(["-device".into(), "virtio-serial-pci,id=cabincli".into()]);
+    for (lane, socket) in CLI_LANES.into_iter().zip(cli_sockets(cfg)) {
+        args.extend([
+            "-chardev".into(),
+            format!("socket,id=cabin-{lane},path={},server=on,wait=off", qemu_path(&socket)),
+            "-device".into(),
+            format!("virtserialport,bus=cabincli.0,chardev=cabin-{lane},name=org.cabin.{lane}"),
+        ]);
+    }
+}
+
 pub fn validate_socket_paths(cfg: &Config) -> Result<()> {
+    if cfg!(unix) {
+        for path in cli_sockets(cfg) {
+            crate::sockets::validate_path(&path)?;
+        }
+    }
     for path in [cfg.qmp_socket(), cfg.qga_socket(), cfg.console_socket()] {
         crate::sockets::validate_path(&path)?;
     }
@@ -140,6 +190,8 @@ pub fn validate_socket_paths(cfg: &Config) -> Result<()> {
 }
 
 fn prepare_qemu_sockets(cfg: &Config) -> Result<()> {
+    #[cfg(unix)]
+    prepare_cli_sockets(cfg)?;
     for path in [cfg.qmp_socket(), cfg.qga_socket(), cfg.console_socket()] {
         crate::sockets::prepare_listener(&path)?;
     }
@@ -190,6 +242,7 @@ pub fn build_qemu_args(
             display_mode,
         )?;
         args.extend(crate::workspace::qemu_args(cfg)?);
+        append_cli_args(cfg, &mut args);
         if effective_mode == "socket-vmnet" {
             let client = Path::new(&cfg.socket_vmnet_client);
             if which(&cfg.socket_vmnet_client).is_none() {
@@ -352,6 +405,7 @@ pub fn build_qemu_args(
         ]);
     }
     args.extend(crate::workspace::qemu_args(cfg)?);
+    append_cli_args(cfg, &mut args);
     match cfg.network_mode.as_str() {
         "gateway" => {
             args.extend([

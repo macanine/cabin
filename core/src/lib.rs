@@ -11,6 +11,9 @@ pub mod fsx;
 pub mod hello;
 pub mod ipv4;
 pub mod model;
+pub mod native_channel;
+#[cfg(unix)]
+pub mod native_serve;
 pub mod paths;
 pub mod proxy;
 pub mod store;

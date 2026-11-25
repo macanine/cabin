@@ -674,7 +674,7 @@ impl Machine {
                 .and_then(|()| runner.start_vm_locked(&lock).map(|_| ()))
                 .and_then(|()| {
                     if cfg.browser_enabled() {
-                        crate::chrome_feature::verify_started(&cfg, &self.agentd_binary)
+                        crate::chrome_feature::verify_started(&cfg)
                     } else {
                         Ok(())
                     }

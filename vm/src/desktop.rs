@@ -101,19 +101,8 @@ pub fn packages(cfg: &Config) -> Vec<String> {
 }
 
 pub fn sway_config(cfg: &Config) -> String {
-    let chrome = if cfg.desktop_chrome {
-        format!(
-            "exec {}\n",
-            q(&format!(
-                "/home/{}/.config/sway/start-chrome.sh",
-                cfg.current_username()
-            ))
-        )
-    } else {
-        String::new()
-    };
     format!(
-        "# managed by vmctl desktop step\nset $mod Mod4\nfont pango:DejaVu Sans 10\nxwayland enable\noutput * bg #1e1e2e solid_color\noutput Virtual-1 resolution {}\noutput Virtual-1 scale {}\nexec_always waybar\n{chrome}\nbindsym $mod+Return exec foot\nbindsym $mod+d exec wofi --show drun\nbindsym $mod+Shift+q kill\nbindsym $mod+Shift+e exec swaynag -t warning -m 'Exit Sway?' -B 'Yes' 'swaymsg exit'\nbindsym $mod+Shift+r reload\nbindsym $mod+Shift+f fullscreen toggle\ninput * {{\n    xkb_layout us\n    tap enabled\n}}\n",
+        "# managed by vmctl desktop step\nset $mod Mod4\nfont pango:DejaVu Sans 10\nxwayland enable\noutput * bg #1e1e2e solid_color\noutput Virtual-1 resolution {}\noutput Virtual-1 scale {}\nexec_always waybar\n\nbindsym $mod+Return exec foot\nbindsym $mod+d exec wofi --show drun\nbindsym $mod+Shift+q kill\nbindsym $mod+Shift+e exec swaynag -t warning -m 'Exit Sway?' -B 'Yes' 'swaymsg exit'\nbindsym $mod+Shift+r reload\nbindsym $mod+Shift+f fullscreen toggle\ninput * {{\n    xkb_layout us\n    tap enabled\n}}\n",
         cfg.desktop_resolution,
         py_g(cfg.desktop_scale)
     )

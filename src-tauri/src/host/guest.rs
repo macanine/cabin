@@ -427,6 +427,12 @@ impl Host {
             vm_core::agentd::deploy(&runtime, &self.agentd).map_err(|error| error.to_string())?;
         };
         let deployed = self.deployment.locked().ready(&guest);
+        #[cfg(unix)]
+        if vm_core::vm::cli_dir(&runtime.cfg).join("exec.sock").exists()
+            && let Err(error) = vm_core::agentd::prepare_native(&runtime, deployed)
+        {
+            cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "cli", "guest_setup_failed", format_args!("{error}"));
+        }
         let daemon = format!(
             "cabind {version} · build {}{}",
             short_build(expected),

@@ -29,7 +29,7 @@ use serde_json::Value;
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::fsx;
-use crate::model::{AgentConfigText, AgentKind, AgentStatus, BackupEntry, ClaudeLogin, HealthReport};
+use crate::model::{AgentConfigText, AgentKind, AgentStatus, BackupEntry, ClaudeLogin, HealthReport, SkillEntry};
 use crate::ops::{Operation, Step, StepCtx};
 use crate::system::CommandSpec;
 
@@ -80,9 +80,9 @@ pub trait AgentAdapter: Send + Sync {
         Vec::new()
     }
 
-    /// Text the composer inserts for a skill (agents differ in how a skill is invoked).
-    fn skill_insert(&self, name: &str) -> String {
-        format!("/{name} ")
+    /// Text the composer inserts to reference a skill in this agent.
+    fn skill_insert(&self, skill: &SkillEntry) -> Option<String> {
+        Some(format!("/{} ", skill.name))
     }
 
     fn read_model(&self, config: &Value) -> Option<String> {
@@ -180,9 +180,13 @@ fn backup_dir(ctx: &Context, kind: AgentKind) -> PathBuf {
 
 /// Locate the agent binary on `PATH` and the usual per-user bin dirs.
 pub fn find_binary(ctx: &Context, kind: AgentKind) -> Option<PathBuf> {
+    find_binary_on_path(&ctx.paths.child_path(), kind)
+}
+
+pub(crate) fn find_binary_on_path(path: &str, kind: AgentKind) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let name = adapter(kind).spec().binary;
-    ctx.paths.child_path().split(':').find_map(|dir| {
+    path.split(':').filter(|dir| Path::new(dir).is_absolute()).find_map(|dir| {
         let candidate = Path::new(dir).join(name);
         let meta = std::fs::metadata(&candidate).ok()?;
         (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then_some(candidate)

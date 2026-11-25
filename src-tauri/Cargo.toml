@@ -3,6 +3,7 @@ name = "cabin-desktop"
 version = "0.2.0"
 description = "Desktop app for CLI agent workspaces on Ubuntu"
 edition = "2024"
+default-run = "cabin-desktop"
 
 [lib]
 # The `_lib` suffix keeps the lib name distinct from the bin name.

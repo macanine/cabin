@@ -2,6 +2,9 @@
 //! to `cabind` inside it (see `host/`).
 
 mod app_error;
+#[cfg(unix)]
+#[doc(hidden)]
+pub mod native_cli;
 mod global_network;
 mod host;
 mod host_permissions;
@@ -200,6 +203,16 @@ pub fn run() {
             let host = host::Host::new(machine, agentd)
                 .map_err(|error| std::io::Error::other(error.message))?;
             app.manage(host.clone());
+            #[cfg(unix)]
+            match native_cli::start_broker(host.sync.clone()) {
+                Ok(()) => {
+                    #[cfg(target_os = "macos")]
+                    if let Err(error) = native_cli::maintain_launcher() {
+                        cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "cli", "launcher_setup_failed", format_args!("{error}"));
+                    }
+                }
+                Err(error) => cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "cli", "broker_start_failed", format_args!("{error}")),
+            }
             lifecycle::install_tray(app.handle())?;
             #[cfg(target_os = "macos")]
             host.install_network_power_watch();

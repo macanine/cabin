@@ -329,11 +329,6 @@ pub fn browser_open(home: &Path, name: &str, url: &str) -> Result<ShellResult> {
     let data = browser_data(&cfg);
     let user_data = chrome_flag(&data);
     let quoted_url = shell_quote(url);
-    let wrapper = format!(
-        "/home/{}/.config/sway/start-chrome.sh",
-        cfg.current_username()
-    );
-    let wrapper_q = shell_quote(&wrapper);
     let script = if cfg.browser_enabled() {
         format!(
             r#"set -eu
@@ -341,21 +336,9 @@ pub fn browser_open(home: &Path, name: &str, url: &str) -> Result<ShellResult> {
 status_path="${{XDG_RUNTIME_DIR}}/vmctl-fp-status.json"
 chrome_count() {{ ps -u "$uid" -o args= | awk '$1 == "/opt/google/chrome/chrome" && $0 !~ / --type=/ {{ count++ }} END {{ print count + 0 }}'; }}
 controller_count() {{ pgrep -u "$uid" -f '^{helper} browser run$' 2>/dev/null | wc -l | tr -d ' '; }}
-kill_managed_processes() {{
-  for pattern in 'start-chrome[.]sh' '^/opt/google/chrome/chrome( |$)' 'cabin/cabind browser run'; do
-    for pid in $(pgrep -u "$uid" -f "$pattern" 2>/dev/null || true); do
-      [ "$pid" = "$$" ] || kill "$pid" 2>/dev/null || true
-    done
-  done
-}}
-# A running controller relaunches Chrome by itself (last window closed or a
-# crash); only start the managed processes when the controller is missing.
-if [ "$(controller_count)" -ne 1 ]; then
-  [ -x {wrapper_q} ] || {{ echo 'Chrome wrapper is missing' >&2; exit 4; }}
-  kill_managed_processes
-  sleep 1
+if [ "$(controller_count)" -eq 0 ]; then
   rm -f "$status_path"
-  nohup {wrapper_q} >/tmp/vmctl-chrome-start.log 2>&1 &
+  nohup {helper} browser run </dev/null >"$XDG_RUNTIME_DIR/cabin-chrome-start.log" 2>&1 &
 fi
 i=0
 while [ "$i" -lt 60 ]; do
@@ -383,7 +366,6 @@ printf 'opened %s\n' {quoted_url}
 "#,
             prefix = wayland_prefix(),
             helper = shell_quote(crate::agentd::HELPER_BIN),
-            wrapper_q = wrapper_q,
             quoted_url = quoted_url
         )
     } else {
@@ -402,6 +384,48 @@ printf 'opened %s\n' {quoted_url}
     })
 }
 
+const CHROME_STOP: &str = r#"set -eu
+uid=$(id -u)
+wrappers='^(/bin/sh|/bin/bash) (-c )?/home/[^/]+/\.config/sway/start-chrome\.sh$'
+managed='^(/usr/local/libexec/cabin/cabind browser run$|/usr/bin/python3 /opt/vmctl-fp/controller\.py$|/opt/google/chrome/(chrome|chrome_crashpad_handler)( |$))'
+stop_matching() {
+  pids=$(pgrep -u "$uid" -f "$1" || true)
+  [ -z "$pids" ] || kill -"$2" $pids 2>/dev/null || true
+}
+stop_matching "$wrappers" KILL
+stop_matching "$managed" TERM
+for i in $(seq 1 50); do
+  if ! pgrep -u "$uid" -f "$managed" >/dev/null; then
+    rm -f "/run/user/$uid/vmctl-fp-status.json"
+    exit 0
+  fi
+  [ "$i" -ne 30 ] || stop_matching "$managed" KILL
+  sleep 0.2
+done
+echo 'Chrome processes did not stop' >&2
+exit 1
+"#;
+
+/// Remove the managed autostart entry from older installations, keeping other Sway settings.
+pub fn migrate_chrome_autostart(runtime: &Runtime) -> Result<()> {
+    if !runtime.cfg.desktop_chrome {
+        return Ok(());
+    }
+    let _lock = FileLock::acquire(&InstancePaths::new(runtime.cfg.instance_dir()).browser_lock())?;
+    let script = r#"set -eu
+config="$HOME/.config/sway/config"
+entry="exec $HOME/.config/sway/start-chrome.sh"
+[ -f "$config" ] && grep -Fxq -- "$entry" "$config" || exit 0
+"#;
+    // Stop first so a failed cleanup leaves the migration retryable.
+    let script = format!("{script}if ! (\n{CHROME_STOP}\n); then exit 1; fi\ntmp=$(mktemp \"$config.cabin.XXXXXX\")\ntrap 'rm -f -- \"$tmp\"' EXIT\nawk -v entry=\"$entry\" '$0 != entry' \"$config\" >\"$tmp\"\nchmod --reference=\"$config\" \"$tmp\"\nmv -f -- \"$tmp\" \"$config\"\n");
+    let (code, output) = runtime.ssh_capture(&script, Duration::from_secs(20));
+    if code != 0 {
+        return message(format!("Could not remove legacy Chrome autostart: {}", output.trim()));
+    }
+    Ok(())
+}
+
 /// Stop the managed Chrome/controller in the guest.
 pub fn browser_stop(home: &Path, name: &str) -> Result<ShellResult> {
     let cfg = config_for(home, name)?;
@@ -410,8 +434,7 @@ pub fn browser_stop(home: &Path, name: &str) -> Result<ShellResult> {
     }
     let runtime = require_running(&cfg)?;
     let _lock = FileLock::acquire(&InstancePaths::new(cfg.instance_dir()).browser_lock())?;
-    let script = "uid=$(id -u)\nkill_pattern() {\n  for pid in $(pgrep -u \"$uid\" -f \"$1\" 2>/dev/null || true); do\n    [ \"$pid\" = \"$$\" ] && continue\n    kill \"$pid\" 2>/dev/null || true\n  done\n}\nkill_pattern '/opt/vmctl-fp/controller\\.py'\nkill_pattern 'start-chrome\\.sh'\nkill_pattern '/opt/google/chrome/chrome'\nkill_pattern 'google-chrome-stable'\necho 'chrome stopped'\n";
-    let (code, output) = runtime.ssh_capture(script, std::time::Duration::from_secs(10));
+    let (code, output) = runtime.ssh_capture(CHROME_STOP, Duration::from_secs(20));
     Ok(ShellResult {
         code,
         output: truncate_output(output),

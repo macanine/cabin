@@ -224,6 +224,19 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("native-channel") => {
+            let result = match args.as_slice() {
+                [_, lane, device] => agent_core::native_serve::serve(lane, std::path::Path::new(device), &paths),
+                _ => Err(std::io::Error::other("usage: cabind native-channel <exec|sync|watch> <device>")),
+            };
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("cabind native-channel: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("native-display") => {
             match agent_core::native_display::run(
                 &paths,

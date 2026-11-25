@@ -1574,24 +1574,29 @@ impl App {
         let root = self.session_workspace_root(workspace_id, session_id)?;
         let extensions = agents::extensions::list(&self.ctx, kind, Some(&root));
         let adapter = agents::adapter(kind);
-        // Disk skills are always listed, with each agent's own invocation
-        // syntax. The live command list wins when the agent advertises the same
-        // skill itself (see `mergeCommands`), so a fresh chat still has the
-        // downloaded skills before the agent has reported its command list.
+        // A fresh chat can offer disk skills before ACP reports live commands.
+        // Preserve the first scope when entries insert the same reference;
+        // their display names need not be unique (e.g. OpenCode's folder IDs).
+        let mut seen = std::collections::HashSet::new();
         let mut commands: Vec<crate::model::AgentCommand> = extensions
             .skills
             .iter()
-            .map(|skill| crate::model::AgentCommand {
-                name: skill.name.clone(),
-                description: Some(skill.description.clone()).filter(|d| !d.is_empty()),
-                hint: None,
-                kind: "skill".into(),
-                source: Some(skill.scope.clone()),
-                insert: adapter.skill_insert(&skill.name),
+            .filter_map(|skill| {
+                let insert = adapter.skill_insert(skill)?;
+                if !seen.insert(insert.clone()) {
+                    return None;
+                }
+                Some(crate::model::AgentCommand {
+                    name: skill.name.clone(),
+                    description: Some(skill.description.clone()).filter(|d| !d.is_empty()),
+                    hint: None,
+                    kind: "skill".into(),
+                    source: Some(skill.scope.clone()),
+                    insert,
+                })
             })
             .collect();
-        commands.sort_by(|a, b| a.name.cmp(&b.name));
-        commands.dedup_by(|a, b| a.name == b.name);
+        commands.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.insert.cmp(&b.insert)));
         let mcp = extensions
             .mcp_servers
             .iter()
@@ -2191,6 +2196,43 @@ mod tests {
         // the composer merges the two lists by token, so the disk row is the
         // fallback a fresh chat can already show.
         assert_eq!(insert(AgentKind::Claude)?, "/pdf-tools ");
+        Ok(())
+    }
+
+    #[test]
+    fn opencode_catalog_references_case_sensitive_folder_ids_not_display_names() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let app = app(dir.path());
+        let root = dir.path().join("w");
+        let kind = AgentKind::Opencode;
+        let user = agents::extensions::user_skills_dir(app.context(), kind);
+        let project = root.join(agents::adapter(kind).project_skills_dir());
+        for (parent, id, description) in [
+            (&user, "PDF-One", "User skill"),
+            (&project, "PDF-One", "Project overrides the same ID"),
+            (&project, "pdf-two", "Different ID"),
+            (&project, "invalid id", "Cannot be a mention"),
+        ] {
+            let folder = parent.join(id);
+            std::fs::create_dir_all(&folder)?;
+            std::fs::write(
+                folder.join("SKILL.md"),
+                format!("---\nname: PDF toolkit\ndescription: {description}\n---\n\nFixture\n"),
+            )?;
+        }
+        let workspace = app.create_workspace("W", &root.display().to_string())?;
+        let catalog = app.agent_catalog(&workspace.id, kind)?;
+        assert_eq!(catalog.commands.len(), 2);
+        let project_skill = &catalog.commands[0];
+        assert_eq!(project_skill.name, "PDF toolkit");
+        assert_eq!(project_skill.insert, "@PDF-One ");
+        assert_eq!(project_skill.source.as_deref(), Some("project"));
+        assert_eq!(
+            project_skill.description.as_deref(),
+            Some("Project overrides the same ID")
+        );
+        assert_eq!(catalog.commands[1].insert, "@pdf-two ");
+        assert_eq!(catalog.commands[1].source.as_deref(), Some("project"));
         Ok(())
     }
 
