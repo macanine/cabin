@@ -1,5 +1,5 @@
 import { Loader, Textarea, Tooltip } from "@mantine/core";
-import { IconArrowUp, IconPlayerStopFilled } from "@tabler/icons-react";
+import { IconArrowUp, IconArrowUpRight, IconPlayerStopFilled } from "@tabler/icons-react";
 import { useRef, type RefObject } from "react";
 import type { AgentKind, ChatConfigOption, ChatControls, ChatPermissionMode } from "../../services/ipc/generated/core";
 import type { QueuedMessage } from "../../lib/agentControls";
@@ -8,35 +8,37 @@ import { ModelPicker } from "../ModelPicker";
 import { PermissionPicker } from "../PermissionPicker";
 import { ContextMeter, OptionPicker, QueuedMessages } from "./AgentControls";
 import { ComposerMenu } from "./ComposerMenu";
-import type { useComposerMenu } from "./useComposerMenu";
+import { isComposerComposing, type useComposerMenu } from "./useComposerMenu";
 import type { useMessageQueue } from "./useMessageQueue";
 
-/** Send, queue or stop: one round button whose glyph turns into the next action. */
+/** The round action next to the session controls. */
 function ActionButton({ mode, label, loading, disabled, onClick }: {
-  mode: "send" | "stop";
+  mode: "send" | "stop" | "open";
   label: string;
   loading?: boolean;
   disabled?: boolean;
   onClick: () => void;
 }) {
   const stop = mode === "stop";
+  const Icon = stop ? IconPlayerStopFilled : mode === "open" ? IconArrowUpRight : IconArrowUp;
   return (
     <Tooltip label={label} openDelay={300}>
       <span className="inline-flex">
         <button
           type="button"
           aria-label={label}
+          aria-haspopup={mode === "open" ? "dialog" : undefined}
           disabled={disabled}
           onClick={onClick}
           className={`press grid size-8 cursor-pointer place-items-center rounded-full border-0 p-0 disabled:cursor-default ${
             stop
               ? "bg-hover text-fg hover:bg-sel"
-              : "bg-accent text-white hover:bg-accent/85 disabled:bg-hover disabled:text-faint"
+              : "bg-accent-fill text-white hover:bg-accent-fill/85 disabled:bg-hover disabled:text-faint"
           }`}
         >
           {loading ? <Loader size={14} color="white" /> : (
             <span key={mode} className="grid animate-settle place-items-center">
-              {stop ? <IconPlayerStopFilled size={13} /> : <IconArrowUp size={16} stroke={2.4} />}
+              <Icon size={stop ? 13 : 16} stroke={2.4} />
             </span>
           )}
         </button>
@@ -52,7 +54,7 @@ function ActionButton({ mode, label, loading, disabled, onClick }: {
  * line, Esc stops the turn, ↑ in an empty box recalls the last prompt.
  */
 export function ChatComposer({
-  input, text, onText, onCaret, placeholder, docked, busy, sending, canSend, canSteer,
+  input, text, onText, onCaret, placeholder, busy, sending, commandLabel, canSend, canSteer,
   menu, queue, attachments, onImages, onSend, onStop, onRecall,
   agent, workspaceId, model, live, reasoning, otherOptions, optionsDisabled, permission, controls,
   onModel, onReasoning, onPermission, onOption,
@@ -62,10 +64,9 @@ export function ChatComposer({
   onText: (text: string) => void;
   onCaret: (caret: number) => void;
   placeholder: string;
-  /** A request or plan card sits right above the box. */
-  docked: boolean;
   busy: boolean;
   sending: boolean;
+  commandLabel: string | null;
   canSend: boolean;
   canSteer: boolean;
   menu: ReturnType<typeof useComposerMenu>;
@@ -96,7 +97,7 @@ export function ChatComposer({
   const images = controls.capabilities.prompt.images;
   return (
     <div
-      className={`glass relative rounded-[var(--card-radius)] px-3 pt-2.5 pb-2 transition-colors duration-[var(--motion-fast)] has-[textarea:focus]:border-[color:var(--field-focus-border)] ${docked ? "rounded-t-none border-t-0" : ""}`}
+      className="relative px-3 pt-2.5 pb-2"
       onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
       onDrop={(event) => {
         const files = clipboardFiles(event.dataTransfer);
@@ -115,18 +116,9 @@ export function ChatComposer({
         onMove={queue.move}
         onRemove={queue.remove}
       />
-      {menu.open && menu.trigger && (
-        <ComposerMenu
-          trigger={menu.trigger}
-          items={menu.items}
-          active={menu.index}
-          loading={menu.loading}
-          error={menu.error}
-          onHover={menu.setIndex}
-          onPick={menu.pick}
-        />
-      )}
+      {menu.open && <ComposerMenu menu={menu} />}
       <Textarea
+        {...menu.inputProps}
         ref={input}
         autoFocus
         variant="unstyled"
@@ -138,7 +130,7 @@ export function ChatComposer({
         onSelect={(event) => onCaret(event.currentTarget.selectionStart ?? 0)}
         placeholder={placeholder}
         aria-label="Message"
-        classNames={{ input: "!min-h-10 !border-0 !bg-transparent !px-0.5 !py-0.5 !text-[14.5px] !leading-normal !shadow-none !outline-none" }}
+        classNames={{ input: "!min-h-9 !border-0 !bg-transparent !px-0.5 !py-0.5 !text-[14.5px] !leading-normal !shadow-none !outline-none" }}
         onCompositionStart={() => { composing.current = true; }}
         onCompositionEnd={() => { composing.current = false; }}
         onPaste={(event) => {
@@ -148,15 +140,14 @@ export function ChatComposer({
           onImages(files);
         }}
         onKeyDown={(event) => {
-          const ime = composing.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
-          if (!ime && menu.onKey(event)) return;
-          if (event.key === "Enter" && !event.shiftKey && !ime) {
+          if (isComposerComposing(event, composing.current) || menu.onKey(event)) return;
+          if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
-            onSend();
+            if (!event.repeat && (canSend || commandLabel)) onSend();
           } else if (event.key === "Escape" && busy) {
-            event.preventDefault(); // Esc stops the turn, as in the agent CLIs.
-            onStop();
-          } else if (event.key === "ArrowUp" && !text && !ime) {
+            event.preventDefault(); // A new Esc press stops after the menu has closed.
+            if (!event.repeat) onStop();
+          } else if (event.key === "ArrowUp" && !text && !event.shiftKey) {
             const previous = onRecall();
             if (previous) { event.preventDefault(); onText(previous); }
           }
@@ -183,9 +174,11 @@ export function ChatComposer({
         </div>
         <div className="flex items-center gap-1.5">
           <ContextMeter context={controls.context} />
-          {busy && hasDraft && <ActionButton key="queue" mode="send" label="Queue (Enter)" loading={sending} disabled={!canSend} onClick={onSend} />}
-          <ActionButton key="primary" mode={busy ? "stop" : "send"} label={busy ? "Stop (Esc)" : "Send (Enter)"}
-            loading={!busy && sending} disabled={!busy && !canSend} onClick={busy ? onStop : onSend} />
+          {(!busy || hasDraft) && (
+            <ActionButton mode={commandLabel ? "open" : "send"} label={commandLabel ?? (busy ? "Queue (Enter)" : "Send (Enter)")}
+              loading={!commandLabel && sending} disabled={!commandLabel && !canSend} onClick={onSend} />
+          )}
+          {busy && <ActionButton mode="stop" label="Stop (Esc)" onClick={onStop} />}
         </div>
       </div>
     </div>

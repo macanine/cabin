@@ -6,6 +6,7 @@ import type { InstallPlan, MachineInstallOptions, MirrorResult, OsChoice } from 
 import { machineIpc } from "../../services/ipc/app";
 import { MirrorPicker } from "../../components/MirrorPicker";
 import { Note } from "../../components/Boot";
+import { MachineStage } from "../../components/MachineStage";
 import { DisclosureChevron, Reveal } from "../../components/motion";
 import { ReadinessPanel } from "./ReadinessPanel";
 import { gb, MachineCard, type MachineSpec } from "./MachineCard";
@@ -133,35 +134,24 @@ export function InstallSetup({ options, spec, set, plan, choices, readiness, hos
 
   if (unsupported) {
     return (
-      <>
-        <header className="iw-header">
-          <p className="iw-eyebrow">Cabin setup</p>
-          <h1>Cabin can't install a machine here yet</h1>
-        </header>
-        <div className="iw-solo"><ReadinessPanel items={readiness} host={host} checking={checking} onChanged={onRecheck} /></div>
-      </>
+      <MachineStage eyebrow="Cabin setup" title="Cabin can't install a machine here yet"
+        main={<ReadinessPanel items={readiness} host={host} checking={checking} onChanged={onRecheck} />} />
     );
   }
 
   const ready = !blocked && problem == null && plan != null && planError == null;
-  const cardBadge = readiness == null || checking ? "Checking…" : blockers > 0 ? "Needs attention" : undefined;
+  const cardBadge = readiness == null || checking ? "Checking…" : blockers > 0 ? "Attention" : undefined;
+
+  const size = [`${options.cpus ?? 2} CPU`, gb(options.memoryMb ?? 2048), `${diskGb(options.diskSize) ?? 20} GB disk`].join(" · ");
 
   return (
-    <>
-      <header className="iw-header">
-        <p className="iw-eyebrow">Welcome to Cabin</p>
-        <h1>Set up your agent machine</h1>
-        <p className="iw-lead">
-          Claude Code, Codex, OpenCode, Pi and Antigravity work inside a private Ubuntu machine on this computer.
-          These settings were picked for this computer. Change anything you like.
-        </p>
-      </header>
-
-      <ReadinessPanel items={readiness} host={host} checking={checking} onChanged={onRecheck} />
-
-      <div className="iw-grid">
-        <div className="iw-main stagger">
-
+    <MachineStage
+      eyebrow="Welcome to Cabin"
+      title="Set up your agent machine"
+      lead="Agents work inside a private Ubuntu machine on this computer. These settings were picked for it. Change anything you like."
+      main={
+        <>
+          <ReadinessPanel items={readiness} host={host} checking={checking} onChanged={onRecheck} />
           <Group title="Size" hint="You can change it later in Machine settings">
             <div role="radiogroup" aria-label="Machine size" className="iw-options iw-options-size">
               {RESOURCE_PRESETS.map((p) => (
@@ -264,32 +254,26 @@ export function InstallSetup({ options, spec, set, plan, choices, readiness, hos
               </div>
             </Reveal>
           </section>
-        </div>
-
-        <aside className="iw-aside iw-aside-lead">
-          <MachineCard
-            tone="draft"
-            host={host}
-            badge={cardBadge}
-            caption={preset ? `${preset.label} size` : "Custom size"}
-            spec={spec}
-          >
-            {(problem || planHelp) && (
-              <Note tone="bad" role="alert">
-                {problem ?? <><strong>{planHelp?.title}</strong> · {planHelp?.advice}<br /><span className="text-faint">{planError}</span></>}
-              </Note>
+        </>
+      }
+      aside={<MachineCard tone="draft" host={host} badge={cardBadge} caption={preset ? `${preset.label} size` : "Custom size"} spec={spec} />}
+      bar={
+        <>
+          <div className="min-w-0 flex-1" role={problem || planHelp ? "alert" : undefined}>
+            {problem || planHelp ? (
+              <span className="text-sm text-bad [overflow-wrap:anywhere]">
+                {problem ?? <><strong>{planHelp?.title}</strong> · {planHelp?.advice} <span className="text-faint">{planError}</span></>}
+              </span>
+            ) : (
+              <span className="grid">
+                <strong className="truncate text-md font-semibold">{spec.osName} · {size}</strong>
+                <span className="truncate text-xs text-faint">{blockers > 0 ? "Resolve the computer checks to continue." : "Downloads Ubuntu and its packages. You can keep working while it installs."}</span>
+              </span>
             )}
-            <Button size="md" fullWidth className="iw-install" rightSection={<IconArrowRight size={17} />}
-              disabled={!ready} onClick={onInstall}>
-              Install Ubuntu
-            </Button>
-            <p className="iw-card-note">
-              {blockers > 0 ? "Resolve the computer checks to continue."
-                : "Cabin downloads Ubuntu and its packages. You can keep working while it installs."}
-            </p>
-          </MachineCard>
-        </aside>
-      </div>
-    </>
+          </div>
+          <Button size="md" className="shrink-0" rightSection={<IconArrowRight size={17} />} disabled={!ready} onClick={onInstall}>Install Ubuntu</Button>
+        </>
+      }
+    />
   );
 }

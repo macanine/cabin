@@ -12,8 +12,11 @@ import { AgentMark } from "./AgentMarks";
 import { AGENT_KINDS } from "./AgentPicker";
 import { NewWorkspaceModal } from "./NewWorkspaceModal";
 import { AttachmentList, AttachmentPicker, useChatAttachments } from "./ChatAttachments";
+import { forgetModel, lastModel, rememberModel } from "../state/modelMemory";
 import { ModelPicker } from "./ModelPicker";
 import { DEFAULT_CHAT_PERMISSION, PermissionPicker } from "./PermissionPicker";
+import { ComposerMenu } from "./chat/ComposerMenu";
+import { isComposerComposing, useComposerMenu } from "./chat/useComposerMenu";
 
 /** The project the task runs in: a quiet button with a menu. */
 function WorkspacePicker({ workspaces, value, fixed, onSelect, onCreate }: {
@@ -110,10 +113,11 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true }: { wo
   const defaultAgent = useApp((state) => state.settings?.defaultAgent ?? "claude");
   const remembered = useMemo(lastStart, []);
   const [prompt, setPrompt] = useState("");
+  const [caret, setCaret] = useState(0);
   const [workspaceId, setWorkspaceId] = useState<string | null>(fixedWorkspace ?? remembered.workspaceId ?? null);
   const [agent, setAgent] = useState<AgentKind>(remembered.agent ?? defaultAgent);
   const [mode, setMode] = useState<"ui" | "terminal">("ui");
-  const [model, setModel] = useState<string | null>(null);
+  const [model, setModel] = useState<string | null>(() => lastModel(remembered.agent ?? defaultAgent));
   const [permission, setPermission] = useState<ChatPermissionMode>(DEFAULT_CHAT_PERMISSION);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -127,6 +131,17 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true }: { wo
   const composing = useRef(false);
 
   const installed = (kind: AgentKind) => agents.find((a) => a.kind === kind)?.installed ?? false;
+  const complete = mode === "ui" && !!workspaceId && installed(agent) && !busy;
+  const menu = useComposerMenu({ text: prompt, caret, workspaceId, agent, enabled: complete, newWorktree: isolated,
+    onApply: (next, at) => {
+      setPrompt(next);
+      setCaret(at);
+      requestAnimationFrame(() => {
+        input.current?.focus();
+        input.current?.setSelectionRange(at, at);
+      });
+    },
+  });
 
   // Fall back to a valid workspace and an installed agent.
   useEffect(() => {
@@ -160,7 +175,7 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true }: { wo
 
   function chooseAgent(kind: AgentKind) {
     setAgent(kind);
-    setModel(null);
+    setModel(lastModel(kind));
     setPermission(DEFAULT_CHAT_PERMISSION);
   }
 
@@ -183,8 +198,11 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true }: { wo
       ? libraryIpc.createChat(workspaceId, agent, prompt.trim() || null, model, attachments.files, permission, isolated ? base : null)
       : libraryIpc.createSession(workspaceId, agent, prompt.trim() || null));
     setBusy(false);
+    // The remembered model may be what failed; the next visit asks again.
+    if (!session && mode === "ui") forgetModel(agent);
     if (session) {
       rememberStart(workspaceId, agent);
+      if (mode === "ui" && model) rememberModel(agent, model);
       setPrompt("");
       attachments.clear();
       uiActions.navigate({ kind: "session", id: session.id });
@@ -205,22 +223,26 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true }: { wo
         <span className="mx-1 h-3.5 w-px shrink-0 bg-line" aria-hidden />
         <AgentChoice value={agent} installed={installed} onChange={chooseAgent} />
       </div>
-      <div className="composer">
+      <div className="composer relative">
+        {menu.open && <ComposerMenu menu={menu} placement="below" />}
         <Textarea
+          {...menu.inputProps}
           ref={input}
           variant="unstyled"
           autosize
           minRows={3}
           maxRows={10}
-          placeholder={`Describe a task for ${AGENT_NAMES[agent]}, or press Enter to just open it`}
+          placeholder={complete ? "Describe a task. / Skills, @ files" : `Describe a task for ${AGENT_NAMES[agent]}`}
           value={prompt}
-          onChange={(e) => setPrompt(e.currentTarget.value)}
+          onChange={(event) => { setPrompt(event.currentTarget.value); setCaret(event.currentTarget.selectionStart); }}
+          onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
           onCompositionStart={() => { composing.current = true; }}
           onCompositionEnd={() => { composing.current = false; }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !composing.current && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
+            if (isComposerComposing(e, composing.current) || menu.onKey(e)) return;
+            if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              void start();
+              if (!e.repeat) void start();
             }
           }}
           aria-label="First task"

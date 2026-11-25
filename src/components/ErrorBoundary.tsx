@@ -1,3 +1,4 @@
+import { Button } from "@mantine/core";
 import { Component, type ReactNode } from "react";
 import { reportFrontendDiagnostic } from "../services/ipc/common";
 
@@ -25,8 +26,13 @@ export class ErrorBoundary extends Component<{ children: ReactNode; resetKey: st
     if (this.state.error) {
       return (
         <div className="page">
-          <div className="callout bad">
-            This view hit an error: {this.state.error.message}. Pick another item in the sidebar, or reload with Ctrl+R.
+          <div className="callout bad mx-auto grid max-w-[560px] gap-3" role="alert">
+            <span><strong>This view hit an error.</strong> Your tasks keep running in the machine.</span>
+            <code className="selectable text-xs [overflow-wrap:anywhere]">{this.state.error.message}</code>
+            <span className="flex gap-2">
+              <Button size="xs" onClick={() => this.setState({ error: null })}>Try again</Button>
+              <Button size="xs" variant="default" onClick={() => window.location.reload()}>Reload Cabin</Button>
+            </span>
           </div>
         </div>
       );

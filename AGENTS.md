@@ -16,7 +16,7 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 | Area | Start here | Related code and tests |
 |---|---|---|
 | Host, VM, and SSH | [host/](src-tauri/src/host/mod.rs), [machine.rs](vm/src/machine.rs), [agentd.rs](vm/src/agentd.rs) | `src-tauri/src/host/{machine,guest,network_check}.rs`, `src-tauri/src/machine_service.rs`, `vm/src/{config,vm,os,qemu_engine,platform}.rs`, `vm/src/steps/` |
-| Installer and startup | [InstallWizard.tsx](src/views/InstallWizard.tsx), [StartReportView.tsx](src/components/StartReportView.tsx) | `src/views/install/{InstallSetup,InstallProgress,MachineCard}.tsx`, `src/components/{Boot,MachineGate,Recovery}.tsx`, `src/lib/{installForm,wizard,startReport,recovery}.ts` |
+| Installer and startup | [InstallWizard.tsx](src/views/InstallWizard.tsx), [StartReportView.tsx](src/components/StartReportView.tsx), [MachineStage.tsx](src/components/MachineStage.tsx) | `src/views/install/{InstallSetup,InstallProgress,MachineCard}.tsx`, `src/components/{Boot,MachineGate,Recovery}.tsx`, `src/lib/{installForm,wizard,startReport,recovery}.ts` |
 | IPC and application state | [common.ts](src/services/ipc/common.ts), [dispatch.rs](src-tauri/src/host/dispatch.rs), [rpc.rs](core/src/rpc.rs) | `src/services/ipc/`, `src/state/{store,reducer}.ts`, `core/src/model.rs`, `src-tauri/src/lib.rs` |
 | Routes, interfaces, and subscriptions | [NetworkDashboard.tsx](src/components/network/NetworkDashboard.tsx), [global_network/](src-tauri/src/global_network/mod.rs) | `src-tauri/src/global_network/{gate,paths,health,catalog}.rs`, `src/lib/networkRoute.ts`, `src/components/network/useNetworkLive.ts`, `vm/src/network_interfaces.rs`, `vm/src/netgw/`, `core/src/proxy/`, `tests/geo.test.mjs`, `vm/tests/gateway_interface_live.rs` |
 | Network checks and exit | [network_gate/](src-tauri/src/network_gate/), [network_health.rs](src-tauri/src/network_health.rs), [network_probe.rs](core/src/network_probe.rs) | `src-tauri/src/network_gate/{report,exit,browser}.rs`, `vm/src/network_probe_targets.rs`, `src/components/network/{NetworkGatePanel,NetworkCheckModal}.tsx`, `src/state/networkMonitor.ts`, `src/lib/networkSummary.ts`, `ip-detection/` |
@@ -38,6 +38,11 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   method names and params aligned with `GuestMethod` in `src/services/ipc/common.ts`. Keep
   Tauri commands thin and put SSH and QEMU mechanics in `vm/`. Long Mac operations report
   through `Channel<TaskEvent<T>>`.
+- `Host::call_guest` times every call out: `call_timeout` lists the fast reads, and anything
+  else may install or wait on an agent. A writer thread owns the SSH pipe, so a full pipe
+  refuses calls and never holds the link lock.
+- The CSP in `tauri.conf.json` allows the loopback viewers, previews, and data images that the
+  app uses. Queued chat messages survive a reload and wait for an explicit Retry.
 - Save VM resource requests separately from the running config. Under the machine operation
   lock, a cold start can grow the standalone qcow2, verify its virtual capacity, and save the
   new allocation. The pending disk request remains until the root-owned guest helper verifies
@@ -99,7 +104,7 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   Python and uv for user workspaces.
 - `BrowserEnvironmentPanel` edits region and identity and is the destination of browser
   fixes in Network Check. Apply region changes live with `sync_environment`. Apply identity
-  changes in place and restart Chrome with `chrome_feature::apply_profile`. Record a live
+  changes in place and restart a running Chrome with `chrome_feature::apply_profile`. Record a live
   change through `steps::browser::record_live_change` so the next start sees the updated
   fingerprint. `ChromeViewer` retries quickly at first and then every eight seconds. Fit to
   window follows the viewer continuously on Wayland and applies once on other backends.
@@ -208,9 +213,11 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   progress. Respect Reduce Motion and Lite mode. Views rise in with `.view-enter`, lists
   that open with a view use `.stagger`, a moving selection glides with `--ease-spring` and
   `--motion-glide` (the sidebar indicator, segmented controls), and a running task uses
-  `.live-dot`. `StartReportView` uses the shared `Boot` parts, shows begun steps with a
-  bounded stagger, and keeps detailed logs folded until failure. The installer keeps a
-  two-phase layout for setup and live progress and reuses the `Boot` step and log controls.
+  `.live-dot`. `MachineStage` is the one layout for setup, install, start, stopped and recovery: the
+  work beside the machine card, with actions in a bar that stays in view. `StartStage` shows
+  begun steps with a bounded stagger and keeps logs folded until failure; after a failure,
+  recovery comes before steps and logs. The installer and start reuse the `Boot` step and
+  log controls.
   Use `StepProgress`, `LogView`, and `RecoveryPanel` for progress, logs, and recovery actions.
 - AppKit owns macOS traffic-light controls. `window_chrome` reads their geometry on the main
   thread. The web toolbar follows that geometry, reserves space before the first
@@ -218,8 +225,14 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   rounded content card. Use `ViewHeader` (title, quiet subtitle, actions; a Back button as
   `lead`, never a logo) for view headers and `TitleBarContent` only for custom ones such as
   the session breadcrumb. Sidebar rows share one 20px icon column, so labels align at one x.
+- The sidebar leads with New task, search and the task list; `ToolDock` and the machine's
+  state sit below. `CommandPalette` (⌘K, Ctrl+Shift+K) ranks through
+  `src/lib/commandPalette.ts`. `--accent-fill` sits under white text, `--accent` is for text
+  and marks, and `--warn` means something needs the user. In a chat, `.chat-dock` holds the
+  session rail, request or plan, queue and message box as one card. One-key approvals go
+  through `src/lib/approvalKeys.ts`: they never fire from a text field or while typing.
 - Put the primary state or action first. Use `SettingsPage` and `Section` for settings. The
-  start page shows live facts, the composer, Continue, and Projects. Use `AgentLogo`,
+  start page shows live facts, and the composer. Use `AgentLogo`,
   `AgentSelect`, `AgentChips`, and `AgentChoice` for gray agent marks. Show a mark only where it is
   the subject (the agent's own row or detail, matrix column heads, the agent picker); rows
   about tasks, usage, or models name the agent in text. `AgentChips` is a text control. `ModelPicker` and
@@ -229,15 +242,18 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   `useAutoRefresh` coalesces foreground updates and bounds visible polling. Keep the last
   result during a background refresh. Reserve buttons for actions such as granting access,
   checking a draft, or restarting a service.
-- Agents leads with Plan limits (one tile per provider window) above one row per CLI with
-  compact limit meters, direct actions, and inline Setup. Providers shows each CLI's native
-  account and limit controls. Every plan window renders through `PaceMeter` with
+- Agents lists every CLI with its state and compact limit meters, beside one agent's
+  actions and its Account and Setup. Account has the native sign-in and limit controls; Setup
+  leads with Plan limits (one tile per window). Agents, Settings, MCP and Skills share
+  `.split-page` (a list or filter rail beside the content). Settings use `SettingRow`;
+  Network leads with the gateway state, then the route and its draft bar, then the map.
+  Chrome's controls sit in the header so nothing covers the desktop. Every plan window renders through `PaceMeter` with
   `forecastLimit` from `src/lib/agentLimits.ts`: used share, the pace-projected share at
   reset, and a tick for the time passed; where the window's length and reset are known,
   `BurnChart` draws it as a line through the readings kept by `src/lib/limitHistory.ts`
   (per account and window) with the pace dotted on. Word forecasts as pace estimates and withhold them
-  early in a window or without a reset time. Usage leads with filters,
-  figures, and trend, followed by tables. The sidebar includes today's spend,
+  early in a window or without a reset time. Usage leads with filters, then
+  the total and trend beside its agent and model shares, followed by tables. The sidebar includes today's spend,
   the network status, and the CPU, RAM, swap, and load-per-core rings. Poll the busiest
   processes only while the performance details are open.
 - Use `src/lib/format.ts` for counts and prices in English. Use bundled SVGs in `Flag.tsx`
@@ -285,6 +301,8 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   `system::fake::FakeSystem` for unit tests. `src-tauri/src/sync.rs` also has end-to-end
   tests using `CABIND_TEST_BIN` or a locally built `cabind` with a local shell
   transport.
+- `npm run test:ui` opens the real app in Chromium over a fake Tauri bridge. Keep it to
+  approvals, startup, and layout at the smallest window.
 - Use real OpenCode v2 runs for live ACP checks and replay captures. Fixtures under
   `core/src/agent_runtime/acp/fixtures/` preserve recorded provider events and normalize the
   workspace path. Use offline checks for Claude Code, Codex, Pi, and Antigravity. Adapter

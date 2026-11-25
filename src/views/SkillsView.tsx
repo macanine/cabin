@@ -1,10 +1,10 @@
-import { ActionIcon, Alert, Badge, Button, Checkbox, Group, Menu, Modal, NativeSelect, SegmentedControl, Table } from "@mantine/core";
+import { ActionIcon, Alert, Badge, Button, Checkbox, Group, Menu, Modal, SegmentedControl, Table } from "@mantine/core";
 import { IconDots } from "@tabler/icons-react";
-import { useState } from "react";
-import { AGENT_KINDS, AgentChips } from "../components/AgentPicker";
-import { AgentLogo, AGENT_NAMES } from "../components/common";
+import { useEffect, useRef, useState } from "react";
+import { AGENT_KINDS } from "../components/AgentPicker";
+import { AGENT_NAMES } from "../components/common";
 import { Markdown } from "../components/chat/Markdown";
-import { AgentColumn, BindingSwitch, ExtensionSearch, ExtensionStatus, useExtensionLibrary } from "../components/extensions/LibraryParts";
+import { AgentColumn, AgentRail, BindingSwitch, ExtensionSearch, ExtensionStatus, useExtensionLibrary } from "../components/extensions/LibraryParts";
 import { SkillDiscover } from "../components/extensions/SkillDiscover";
 import { InstallSkillDialog, SkillBackupsDialog, SkillRepositoryDialog, type SkillInstallDialog } from "../components/extensions/SkillDialogs";
 import { ViewHeader } from "../components/TitleBar";
@@ -28,6 +28,13 @@ export function SkillsView({ agent }: { agent?: AgentKind }) {
   const [manageRepos, setManageRepos] = useState(false);
   const [backups, setBackups] = useState(false);
   const [detail, setDetail] = useState<SkillFile | null>(null);
+  const focusFolder = useRef<string | null>(null);
+  const rowButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (tab !== "installed" || !focusFolder.current) return;
+    rowButton.current?.focus();
+    focusFolder.current = null;
+  }, [tab]);
   const { data, busy } = library;
   const term = query.trim().toLowerCase();
   const matches = (...fields: string[]) => fields.some((value) => value.toLowerCase().includes(term));
@@ -49,7 +56,8 @@ export function SkillsView({ agent }: { agent?: AgentKind }) {
     setChecking(true);
     try {
       const found = await attempt(skillsIpc.updates());
-      if (found) setUpdates(found);
+      setUpdates(found ?? null);
+      if (!found) setUpdatesOnly(false);
     } finally { setChecking(false); }
   }
   async function update(folders: string[]) {
@@ -69,6 +77,15 @@ export function SkillsView({ agent }: { agent?: AgentKind }) {
       && binding.state === (enabled ? "disabled" : "enabled"))).map(({ skill }) => skill.folder);
     if (folders.length) void change({ type: "bind", folders, targets: [kind], enabled });
   }
+  function manage(folder: string) {
+    focusFolder.current = folder;
+    setQuery(folder);
+    setFilterAgent(null);
+    setSourceFilter("");
+    setUpdatesOnly(false);
+    setSelected([]);
+    setTab("installed");
+  }
   async function open(folder: string | LocalSkill) {
     const result = await attempt(typeof folder === "string" ? skillsIpc.read(folder) : agentsIpc.readSkill(folder.kind, folder.entry.path));
     if (result) setDetail(result);
@@ -81,7 +98,6 @@ export function SkillsView({ agent }: { agent?: AgentKind }) {
       ]} />
       <Menu position="bottom-end"><Menu.Target><Button size="compact-sm" disabled={!data || busy}>Add Skill</Button></Menu.Target>
         <Menu.Dropdown>
-          <Menu.Item onClick={() => setTab("discover")}>Discover skills</Menu.Item>
           <Menu.Item onClick={() => setDialog({ type: "zip" })}>Install from ZIP</Menu.Item>
           <Menu.Item onClick={() => setDialog({ type: "local" })}>Import from agents</Menu.Item>
         </Menu.Dropdown>
@@ -95,16 +111,27 @@ export function SkillsView({ agent }: { agent?: AgentKind }) {
         </Menu.Dropdown>
       </Menu>
     </ViewHeader>
+    <div className="split-page">
+    {data && tab === "installed" && <AgentRail label="Filter skills" value={filterAgent} onChange={setFilterAgent} total={data.installed.length}
+      count={(kind) => data.installed.filter(({ bindings }) => bindings.some((binding) => binding.kind === kind && binding.state !== "disabled")).length}>
+      {sources.length > 1 && <div className="split-label">Source</div>}
+      {sources.length > 1 && sources.map((source) => (
+        <button key={source} type="button" className="split-choice press" aria-pressed={sourceFilter === source} title={source} onClick={() => setSourceFilter(sourceFilter === source ? "" : source)}>
+          <span>{source}</span>
+        </button>
+      ))}
+      <div className="split-label">Maintenance</div>
+      <button type="button" className="split-choice press" aria-pressed={updatesOnly} disabled={checking || !data.installed.length}
+        onClick={() => updates == null ? void checkUpdates() : setUpdatesOnly(!updatesOnly)}>
+        <span>{checking ? "Checking…" : updates == null ? "Check for updates" : "Updates"}</span>{updates != null && <span className="split-count">{updates.length}</span>}
+      </button>
+    </AgentRail>}
     <section className="extension-page" aria-label="Skills library">
       {!data ? <ExtensionStatus error={library.error} /> : <>
-        {tab === "discover" ? <SkillDiscover data={data} initialAgent={filterAgent ?? undefined} busy={busy} onRepositories={() => setManageRepos(true)}
-          onInstall={(name, source, targets) => setDialog({ type: "remote", name, source, targets })} /> : <>
+        {tab === "discover" ? <SkillDiscover data={data} busy={busy} onManage={manage}
+          onInstall={(name, source) => setDialog({ type: "remote", name, source })} /> : <>
           <div className="extension-toolbar"><ExtensionSearch value={query} onChange={setQuery} placeholder="Search installed skills" />
-            <NativeSelect aria-label="Skill source" value={sourceFilter} onChange={(event) => setSourceFilter(event.currentTarget.value)}
-              data={[{value: "", label: "All sources"}, ...sources.map((source) => ({value: source, label: source}))]} />
-            <Button variant={updatesOnly ? "light" : "default"} onClick={() => setUpdatesOnly(!updatesOnly)} disabled={updates == null}>Updates {updates?.length ?? ""}</Button>
           </div>
-          <AgentChips value={filterAgent} onChange={setFilterAgent} />
           {updates?.length === 0 && <Alert color="teal">Managed skills are up to date.</Alert>}
           {marked.length > 0 && <div className="extension-toolbar extension-bulk">
             <strong>{marked.length} selected</strong>
@@ -131,7 +158,8 @@ export function SkillsView({ agent }: { agent?: AgentKind }) {
                 return <Table.Tr key={skill.folder}>
                   <Table.Td className="extension-select-cell"><Checkbox aria-label={`Select ${skill.name}`} checked={selected.includes(skill.folder)} disabled={busy}
                     onChange={(event) => setSelected(event.currentTarget.checked ? [...selected, skill.folder] : selected.filter((folder) => folder !== skill.folder))} /></Table.Td>
-                  <Table.Td><button type="button" className="extension-row-info extension-row-button" onClick={() => void open(skill.folder)}>
+                  <Table.Td><button type="button" ref={focusFolder.current === skill.folder ? rowButton : undefined}
+                    className="extension-row-info extension-row-button" onClick={() => void open(skill.folder)}>
                     <Group gap="xs" wrap="nowrap"><strong>{skill.name}</strong>{updates?.includes(skill.folder) && <Badge color="blue" variant="light" size="xs">Update</Badge>}</Group>
                     <span title={skill.description}>{[skill.origin?.repository.repository, skill.description].filter(Boolean).join(" · ") || skill.folder}</span>
                   </button></Table.Td>
@@ -148,7 +176,7 @@ export function SkillsView({ agent }: { agent?: AgentKind }) {
               })}
               {local.map((local) => <Table.Tr key={`${local.kind}:${local.entry.path}`}>
                 <Table.Td className="extension-select-cell" /><Table.Td><button type="button" className="extension-row-info extension-row-button" onClick={() => void open(local)}>
-                  <Group gap="xs" wrap="nowrap"><AgentLogo agent={local.kind} size={16} /><strong>{local.entry.name}</strong><Badge variant="light" color="gray" size="xs">Local</Badge></Group>
+                  <strong>{local.entry.name}</strong>
                   <span title={local.entry.path}>{local.entry.description || local.entry.path}</span>
                 </button></Table.Td>
                 {AGENT_KINDS.map((kind) => <Table.Td key={kind} className="extension-matrix-cell">{kind === local.kind && <span className="extension-unavailable">Local</span>}</Table.Td>)}
@@ -160,6 +188,7 @@ export function SkillsView({ agent }: { agent?: AgentKind }) {
         </>}
       </>}
     </section>
+    </div>
     {dialog && data && <InstallSkillDialog dialog={dialog} local={data.local} initialAgent={filterAgent ?? undefined} busy={busy}
       onClose={() => setDialog(null)} onInstall={async (source, targets, mode) => {
         const saved = await install(source, targets, mode);

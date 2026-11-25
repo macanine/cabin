@@ -121,20 +121,9 @@ export function OperationPill({ state }: { state: OperationState }) {
   return <span className={`pill ${operationTone(state)}`}>{STATE_LABEL[state]}</span>;
 }
 
-export function EmptyState({ icon, title, children, action }: { icon: ReactNode; title: string; children: ReactNode; action?: ReactNode }) {
-  return (
-    <div className="mx-auto grid max-w-[460px] justify-items-center gap-1.5 px-6 py-[72px] text-center">
-      <div className="glass mb-2 grid size-14 place-items-center rounded-2xl text-faint">{icon}</div>
-      <h2 className="m-0 text-lg font-semibold">{title}</h2>
-      <p className="m-0 mb-3 text-md text-muted">{children}</p>
-      {action}
-    </div>
-  );
-}
-
 export function Section({ title, hint, action, children, quiet = false }: { title: string; hint?: ReactNode; action?: ReactNode; children: ReactNode; quiet?: boolean }) {
   return (
-    <section className={`mb-4 rounded-2xl p-4 ${quiet ? "border border-line/70 bg-transparent" : "glass"}`}>
+    <section className={`mb-[18px] min-w-0 rounded-[var(--card-radius)] border border-line p-4 ${quiet ? "bg-transparent" : "bg-surface"}`}>
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="m-0 text-[13.5px] font-semibold">{title}</h3>
@@ -144,6 +133,24 @@ export function Section({ title, hint, action, children, quiet = false }: { titl
       </div>
       {children}
     </section>
+  );
+}
+
+/** Rows of settings in one card, under an optional heading. */
+export function SettingGroup({ title, children }: { title?: string; children: ReactNode }) {
+  return <>
+    {title && <h3 className="m-0 mb-2 px-1 text-sm font-medium text-muted">{title}</h3>}
+    <div className="set-group">{children}</div>
+  </>;
+}
+
+/** What it is on the left, its control on the right. */
+export function SettingRow({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children?: ReactNode }) {
+  return (
+    <div className="set-row">
+      <div className="set-row-copy"><strong>{label}</strong>{hint && <span>{hint}</span>}</div>
+      {children && <div className="set-row-control">{children}</div>}
+    </div>
   );
 }
 

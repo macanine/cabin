@@ -7,7 +7,7 @@ import { networkIpc } from "../../services/ipc/network";
 import { patchState, useApp } from "../../state/store";
 import { uiActions, useUi } from "../../state/ui";
 import { attempt, runOperation } from "../../lib/operations";
-import { Section } from "../../components/common";
+import { SettingGroup, SettingRow } from "../../components/common";
 import { SettingsPage } from "../SettingsView";
 import { syncClock } from "../../state/clockSync";
 import { NetworkDashboard } from "../../components/network/NetworkDashboard";
@@ -28,21 +28,20 @@ function MatchPill({ matches }: { matches: boolean | null }) {
   );
 }
 
-/** One region setting: label and match state, the value, then the exit's value and its fix. */
-function RegionTile({ label, matches, children, footer }: {
+/** One region setting: label and match state, then the exit's value and its fix, with the control on the right. */
+function RegionRow({ label, matches, children, footer }: {
   label: string;
   matches: boolean | null;
   children: React.ReactNode;
   footer?: React.ReactNode;
 }) {
   return (
-    <div className="grid content-start gap-2.5 rounded-xl border border-line bg-surface/60 p-3.5">
-      <div className="flex min-h-[22px] items-center justify-between gap-2">
-        <span className="text-sm font-medium">{label}</span>
-        <MatchPill matches={matches} />
+    <div className="set-row">
+      <div className="grid min-w-0 flex-[1_1_240px] gap-1">
+        <span className="flex flex-wrap items-center gap-2 text-md font-medium">{label}<MatchPill matches={matches} /></span>
+        {footer && <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">{footer}</div>}
       </div>
-      {children}
-      {footer && <div className="flex min-h-[24px] flex-wrap items-center gap-2 text-sm text-muted">{footer}</div>}
+      <div className="w-56 max-w-full">{children}</div>
     </div>
   );
 }
@@ -111,21 +110,17 @@ function Region() {
 
   const exitValue = (value: string) => <span className="mono text-fg">{value}</span>;
   return (
-    <Section
-      title="Region"
-      action={(
+    <SettingGroup title="Region">
+      <SettingRow label="Follow exit" hint="Set the machine's time zone to the verified exit's during each network check.">
         <Switch
           size="sm"
-          labelPosition="left"
-          label="Follow exit"
+          aria-label="Follow exit"
           checked={follow}
           disabled={toggling || !network.available}
           onChange={(event) => void setFollow(event.currentTarget.checked)}
         />
-      )}
-    >
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
-        <RegionTile
+      </SettingRow>
+        <RegionRow
           label="Time zone"
           matches={match.zoneMatches}
           footer={follow ? (
@@ -143,7 +138,7 @@ function Region() {
           ) : null}
         >
           {follow ? (
-            <div className="flex h-[30px] items-center truncate text-md font-semibold" title={current.timezone}>{current.timezone}</div>
+            <div className="flex h-[30px] items-center justify-end truncate text-md font-medium" title={current.timezone}>{current.timezone}</div>
           ) : (
             <Select
               size="xs"
@@ -156,8 +151,8 @@ function Region() {
               aria-label="Time zone"
             />
           )}
-        </RegionTile>
-        <RegionTile
+        </RegionRow>
+        <RegionRow
           label="Language"
           matches={match.localeMatches}
           footer={match.localeMatches === false && match.exitLocale ? (
@@ -181,10 +176,9 @@ function Region() {
             limit={200}
             aria-label="Language"
           />
-        </RegionTile>
-      </div>
+        </RegionRow>
       {(dirty || running) && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl bg-hover/60 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-b-[var(--card-radius)] border-t border-line bg-hover/60 px-4 py-2.5">
           <span className={`grow text-sm ${blocked ? "text-bad" : "text-muted"}`}>
             {blocked ?? [
               next.timezone !== current.timezone ? `Time zone → ${next.timezone}` : null,
@@ -195,7 +189,7 @@ function Region() {
           <Button size="xs" loading={running} disabled={blocked != null || !dirty} onClick={() => void apply()}>Apply</Button>
         </div>
       )}
-    </Section>
+    </SettingGroup>
   );
 }
 
@@ -212,11 +206,11 @@ export function NetworkSettings() {
   }, [focus]);
 
   return (
-    <SettingsPage title="Network" subtitle="Route VM traffic through proxy nodes.">
+    <SettingsPage wide title="Network" subtitle="How the machine reaches the internet, and the region it presents.">
       <NetworkDashboard />
       <section id="network-region" className="mt-4 scroll-mt-4 outline-none" tabIndex={-1} aria-label="Region">
         {regionReady ? <Region /> : (
-          <Section title="Region" hint="Available when the machine is connected.">{null}</Section>
+          <SettingGroup title="Region"><SettingRow label="Time zone and language" hint="Available when the machine is connected." /></SettingGroup>
         )}
       </section>
     </SettingsPage>

@@ -170,11 +170,11 @@ export function CopyAction({ text, label }: { text: string; label: string }) {
 }
 
 /** A disclosure for a turn's steps and failures. */
-export function TurnHeader({ meta, open, onToggle }: { meta: ReactNode[]; open: boolean; onToggle: () => void }) {
+export function TurnHeader({ meta, open, working, onToggle }: { meta: ReactNode[]; open: boolean; working: boolean; onToggle: () => void }) {
   return (
     <button type="button" className="press -ml-1 inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent px-1 py-0.5 text-xs text-muted hover:bg-hover hover:text-fg" aria-expanded={open} onClick={onToggle}>
       <IconChevronRight size={12} className={`text-faint transition-transform duration-[var(--motion-fast)] ease-out ${open ? "rotate-90" : ""}`} aria-hidden />
-      <span>Activity</span>
+      <span>{working ? "Working" : "Activity"}</span>
       {meta.length > 0 && (
         <span className="text-faint tabular-nums">
           {meta.map((piece, index) => <Fragment key={index}> · {piece}</Fragment>)}

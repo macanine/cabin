@@ -16,7 +16,7 @@ const PRESETS = {
 
 export function McpLibraryEditor({ initial, rows, agents, disabled, busy, onClose, onSave }: {
   initial: McpServer | null; rows: McpRow[]; agents: McpAgent[]; disabled: AgentKind[]; busy: boolean;
-  onClose: () => void; onSave: (change: McpChange) => Promise<boolean>;
+  onClose: () => void; onSave: (change: McpChange, onError: (message: string) => void) => Promise<boolean>;
 }) {
   const row = rows.find((row) => row.name === initial?.name);
   const [tab, setTab] = useState<string | null>("form");
@@ -83,7 +83,7 @@ export function McpLibraryEditor({ initial, rows, agents, disabled, busy, onClos
         : { type: "http", url: url.trim(), headers: parsePairs(headers, ":"), sse: transport === "sse" },
     }];
     const selected = targets.filter((target) => !blocked.includes(target));
-    const saved = await onSave({ type: "save", servers, targets: selected, replace: Boolean(initial) || replace, description: description.trim() });
+    const saved = await onSave({ type: "save", servers, targets: selected, replace: Boolean(initial) || replace, description: description.trim() }, setError);
     if (saved) onClose();
   }
 

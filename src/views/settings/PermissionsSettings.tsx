@@ -1,5 +1,4 @@
-import { Badge } from "@mantine/core";
-import { Section } from "../../components/common";
+import { SettingGroup, SettingRow } from "../../components/common";
 import { FolderAccessHelp } from "../../components/sync/FolderAccessHelp";
 import type { FolderAccessState } from "../../services/ipc/generated/common";
 import { refreshMacPermissions, useMacPermissions } from "../../state/macPermissions";
@@ -12,29 +11,32 @@ const ACCESS: Record<FolderAccessState, string> = {
 
 export function PermissionsSettings() {
   const { projects, checking, error } = useMacPermissions();
-  const ordered = projects?.slice().sort((a, b) => Number(a.access.state === "available") - Number(b.access.state === "available"));
+  const needs = projects?.filter(({ access }) => access.state !== "available") ?? [];
+  const ready = projects?.filter(({ access }) => access.state === "available") ?? [];
+  const group = (title: string, rows: typeof needs) => rows.length > 0 && (
+    <SettingGroup title={title}>
+      {rows.map(({ id, name, path, needsWrite, access }) => (
+        <div key={id} className="set-row !grid !grid-cols-1 !gap-2.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+            <div className="set-row-copy"><strong>{name}</strong><span><code className="[overflow-wrap:anywhere]">{path}</code> · {needsWrite ? "Read and write" : "Read"}</span></div>
+            <span className={`pill ${access.state === "available" ? "ok" : "warn"}`}>{ACCESS[access.state]}</span>
+          </div>
+          {access.message && <FolderAccessHelp path={path} needsWrite={needsWrite} message={access.message}
+            privacy={access.privacySettings} onCheck={() => void refreshMacPermissions()} />}
+        </div>
+      ))}
+    </SettingGroup>
+  );
 
   return (
     <SettingsPage title="Folder permissions" subtitle="Access to the local folders you use for project sync.">
-      <Section title="Project folders">
-        {error && <p className="m-0 text-sm text-bad" role="alert">{error}</p>}
-        {!projects && checking && <p className="m-0 text-sm text-muted" role="status">Checking access…</p>}
-        {projects?.length === 0 && <p className="m-0 text-sm text-muted">No local folders are configured for project sync.</p>}
-        {ordered?.map(({ id, name, path, needsWrite, access }) => (
-          <div key={id} className="grid gap-2 border-b border-line/60 py-3 first:pt-0 last:border-b-0 last:pb-0">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <strong className="min-w-0 text-md font-medium">{name}</strong>
-              <Badge variant="light" color={access.state === "available" ? "teal" : "yellow"} size="sm">{ACCESS[access.state]}</Badge>
-            </div>
-            <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs text-muted">
-              <code className="min-w-0 [overflow-wrap:anywhere]">{path}</code>
-              <span>{needsWrite ? "Read and write" : "Read"}</span>
-            </div>
-            {access.message && <FolderAccessHelp path={path} needsWrite={needsWrite} message={access.message}
-              privacy={access.privacySettings} onCheck={() => void refreshMacPermissions()} />}
-          </div>
-        ))}
-      </Section>
+      {error && <p className="callout bad mt-0" role="alert">{error}</p>}
+      {!projects && checking && <p className="m-0 text-sm text-muted" role="status">Checking access…</p>}
+      {projects?.length === 0 && (
+        <SettingGroup><SettingRow label="No project folders" hint="Folders you sync with a project appear here with their access." /></SettingGroup>
+      )}
+      {group("Needs access", needs)}
+      {group("Available", ready)}
     </SettingsPage>
   );
 }

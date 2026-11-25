@@ -77,7 +77,7 @@ export function BurnChart({ window, forecast, scope, now, height = 56, axis = fa
       {axis && (
         <div className="burn-axis">
           <span>{stamp(resetsAt - span)}</span>
-          {nowX > 0.14 && nowX < 0.86 && <span className="burn-axis-now" style={{ left: `${nowX * 100}%` }}>now</span>}
+          {nowX > 0.24 && nowX < 0.72 && <span className="burn-axis-now" style={{ left: `${nowX * 100}%` }}>now</span>}
           <span>{stamp(resetsAt)}</span>
         </div>
       )}

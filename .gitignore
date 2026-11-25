@@ -13,3 +13,4 @@ src-tauri/target/
 vm/target/
 src-tauri/gen/
 build/
+.claude/

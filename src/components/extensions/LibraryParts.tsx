@@ -1,7 +1,7 @@
 import { useAutoRefresh } from "../../lib/useAutoRefresh";
 import { Checkbox, Loader, Switch, TextInput, Tooltip } from "@mantine/core";
 import { IconSearch } from "@tabler/icons-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { AgentKind, OperationRecord } from "../../services/ipc/generated/core";
 import { toIpcError } from "../../services/ipc/common";
 import { invalidateCatalogs } from "../../state/agentCatalog";
@@ -27,23 +27,26 @@ export function useExtensionLibrary<T>(load: () => Promise<T>) {
   useAutoRefresh(() => { if (!running.current) return reload(); }, { interval: 30_000 });
   useEffect(() => () => { generation.current++; }, [reload]);
 
-  async function change(action: () => Promise<OperationRecord>): Promise<boolean> {
+  async function change(action: () => Promise<OperationRecord>, onError?: (message: string) => void): Promise<boolean> {
     if (running.current) return false;
     running.current = true;
     setBusy(true);
     const toast = uiActions.toast("Updating extensions…", "loading");
+    function fail(message: string) {
+      if (onError) {
+        uiActions.dismissToast(toast);
+        onError(message);
+      } else uiActions.updateToast(toast, { tone: "error", message });
+      return false;
+    }
     try {
       const record = await action();
-      if (record.state !== "succeeded") {
-        uiActions.updateToast(toast, { tone: "error", message: record.error ?? record.title });
-        return false;
-      }
+      if (record.state !== "succeeded") return fail(record.error ?? record.title);
       uiActions.updateToast(toast, { tone: "success", message: record.title });
       invalidateCatalogs();
       return true;
     } catch (cause) {
-      uiActions.updateToast(toast, { tone: "error", message: toIpcError(cause).message });
-      return false;
+      return fail(toIpcError(cause).message);
     } finally {
       await reload();
       running.current = false;
@@ -98,4 +101,30 @@ export function BindingSwitch({ kind, name, state, wanted, disabled, onChange, n
     <span className="extension-switch"><Switch size="xs" aria-label={label} checked={active} disabled={disabled}
       onChange={(event) => onChange(event.currentTarget.checked)} />{active !== wanted && !disabled && <span className="extension-drift" />}</span>
   </Tooltip>;
+}
+
+/** Filter a library by agent: everything, or what one agent has enabled. */
+export function AgentRail({ value, total, count, onChange, children, label }: {
+  value: AgentKind | null;
+  total: number;
+  count: (kind: AgentKind) => number;
+  onChange: (kind: AgentKind | null) => void;
+  label: string;
+  /** More filters under the agents. */
+  children?: ReactNode;
+}) {
+  return (
+    <nav className="split-list !w-[208px] max-[860px]:!w-auto" aria-label={label}>
+      <button type="button" className="split-choice press" aria-current={value == null ? "true" : undefined} onClick={() => onChange(null)}>
+        <span>All</span><span className="split-count">{total}</span>
+      </button>
+      <div className="split-label">Enabled for</div>
+      {AGENT_KINDS.map((kind) => (
+        <button key={kind} type="button" className="split-choice press" aria-current={value === kind ? "true" : undefined} onClick={() => onChange(value === kind ? null : kind)}>
+          <span>{AGENT_NAMES[kind]}</span><span className="split-count">{count(kind)}</span>
+        </button>
+      ))}
+      {children}
+    </nav>
+  );
 }

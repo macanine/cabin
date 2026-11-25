@@ -17,7 +17,7 @@ export function Stepper({ steps, step, onGo }: { steps: readonly string[]; step:
           className="relative z-10 grid cursor-pointer justify-items-center gap-1.5 border-0 bg-transparent p-0 text-xs disabled:cursor-default"
         >
           <span className={`press grid size-7 place-items-center rounded-full border text-xs font-semibold ${
-            index < step ? "border-accent bg-accent text-white" : index === step ? "border-accent bg-surface text-accent shadow-[0_0_0_4px_var(--accent-soft)]" : "border-line bg-surface text-faint"
+            index < step ? "border-accent-fill bg-accent-fill text-white" : index === step ? "border-accent bg-surface text-accent shadow-[0_0_0_4px_var(--accent-soft)]" : "border-line bg-surface text-faint"
           }`}>
             {index < step ? <IconCheck size={14} stroke={3} /> : index + 1}
           </span>

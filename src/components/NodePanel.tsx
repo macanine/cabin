@@ -6,6 +6,7 @@ import type { NodeSource, NodeState } from "../services/ipc/generated/core";
 import { nodeIpc } from "../services/ipc/node";
 import { runOperation } from "../lib/operations";
 import { majorOf } from "../lib/nodeVersions";
+import { SettingRow } from "./common";
 import { NodeVersionWizard } from "./NodeVersionWizard";
 
 const SOURCE_LABEL: Record<NodeSource, string> = {
@@ -51,75 +52,55 @@ export function NodePanel({ openSignal, onChanged }: { openSignal: number; onCha
 
   return (
     <>
-      <div className="list" style={{ marginBottom: 16 }}>
-        <div className="list-row">
-          <IconBrandNodejs size={20} color={active && !tooOld ? "var(--ok)" : "var(--warn)"} />
-          <div className="grow">
-            {state == null ? (
-              <span className="row muted">
-                <Loader size="xs" /> Reading Node.js…
-              </span>
-            ) : active ? (
-              <>
-                <div>
-                  Node.js <strong>{active.version}</strong>
-                  {active.npm && <span className="muted"> · npm {active.npm}</span>}{" "}
-                  <span className={`pill ${tooOld ? "warn" : active.source === "managed" ? "ok" : ""}`}>
-                    {tooOld ? "End-of-life" : SOURCE_LABEL[active.source]}
-                  </span>
-                </div>
-                <div className="muted mono fs-12">{active.path}</div>
-              </>
-            ) : (
-              <div>No Node.js on PATH</div>
-            )}
-          </div>
-          <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setWizard(true)} disabled={state == null}>
-            {active && !tooOld ? "Install or switch…" : `Install Node.js ${state?.recommendedMajor ?? ""} LTS…`}
-          </Button>
-        </div>
-        {state?.installed.map((item) => (
-          <div className="list-row" key={item.version} style={{ paddingLeft: 46 }}>
-            <div className="grow">
-              <span className="mono">{item.version}</span>
-              {item.current && <span className="pill ok" style={{ marginLeft: 8 }}>Default</span>}
-            </div>
-            {!item.current && (
-              <>
-                <Button
-                  size="xs"
-                  variant="default"
-                  loading={busy === item.version}
-                  disabled={busy != null}
-                  onClick={() => act(item.version, () => runOperation(nodeIpc.use(item.version), `Node.js ${item.version} is now the default`))}
-                >
-                  Make default
-                </Button>
-                <Menu position="bottom-end" withinPortal>
-                  <Menu.Target>
-                    <Button size="xs" variant="subtle" color="gray" aria-label={`More for ${item.version}`} disabled={busy != null}>
-                      <IconDots size={14} />
-                    </Button>
-                  </Menu.Target>
-                  <Menu.Dropdown>
-                    <Menu.Item
-                      color="red"
-                      onClick={() => act(item.version, () => runOperation(nodeIpc.remove(item.version), `Removed Node.js ${item.version}`))}
-                    >
-                      Remove {item.version}
-                    </Menu.Item>
-                  </Menu.Dropdown>
-                </Menu>
-              </>
-            )}
-          </div>
-        ))}
-        {state?.system && active?.source !== "system" && (
-          <div className="list-row faint" style={{ paddingLeft: 46, fontSize: 13 }}>
-            Ubuntu's node {state.system.version} is also installed ({state.system.path}) but not used.
-          </div>
-        )}
-      </div>
+      <SettingRow
+        label={state == null ? <span className="inline-flex items-center gap-2 text-muted"><Loader size="xs" /> Reading Node.js…</span>
+          : <span className="inline-flex flex-wrap items-center gap-2">
+            <IconBrandNodejs size={18} color={active && !tooOld ? "var(--ok)" : "var(--warn)"} />
+            {active ? <>Node.js {active.version}{active.npm && <span className="text-muted">npm {active.npm}</span>}
+              <span className={`pill ${tooOld ? "warn" : active.source === "managed" ? "ok" : ""}`}>{tooOld ? "End-of-life" : SOURCE_LABEL[active.source]}</span>
+            </> : "No Node.js on PATH"}
+          </span>}
+        hint={active ? <span className="mono">{active.path}</span> : "Some agent CLIs require Node.js. Official builds are installed into /opt/node."}
+      >
+        <Button size="xs" variant={active && !tooOld ? "default" : "filled"} leftSection={<IconPlus size={14} />} onClick={() => setWizard(true)} disabled={state == null}>
+          {active && !tooOld ? "Install or switch…" : `Install Node.js ${state?.recommendedMajor ?? ""} LTS…`}
+        </Button>
+      </SettingRow>
+      {state?.installed.map((item) => (
+        <SettingRow key={item.version} label={<span className="inline-flex items-center gap-2"><span className="mono">{item.version}</span>{item.current && <span className="pill ok">Default</span>}</span>}>
+          {!item.current ? (
+            <span className="flex items-center gap-1">
+              <Button
+                size="xs"
+                variant="default"
+                loading={busy === item.version}
+                disabled={busy != null}
+                onClick={() => act(item.version, () => runOperation(nodeIpc.use(item.version), `Node.js ${item.version} is now the default`))}
+              >
+                Make default
+              </Button>
+              <Menu position="bottom-end" withinPortal>
+                <Menu.Target>
+                  <Button size="xs" variant="subtle" color="gray" aria-label={`More for ${item.version}`} disabled={busy != null}>
+                    <IconDots size={14} />
+                  </Button>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <Menu.Item
+                    color="red"
+                    onClick={() => act(item.version, () => runOperation(nodeIpc.remove(item.version), `Removed Node.js ${item.version}`))}
+                  >
+                    Remove {item.version}
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </Menu>
+            </span>
+          ) : undefined}
+        </SettingRow>
+      ))}
+      {state?.system && active?.source !== "system" && (
+        <SettingRow label="Ubuntu's Node.js" hint={`${state.system.version} is also installed (${state.system.path}) but not used.`} />
+      )}
       <NodeVersionWizard opened={wizard} state={state} onClose={() => setWizard(false)} onChanged={changed} />
     </>
   );

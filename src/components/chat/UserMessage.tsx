@@ -55,7 +55,7 @@ export function UserMessage({ row }: { row: Extract<TimelineRow, { kind: "user" 
           </div>
         )}
         {item.text && (
-          <div className="selectable rounded-[var(--card-radius)] bg-accent-soft px-4 py-2.5 leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">{item.text}</div>
+          <div className="selectable rounded-2xl rounded-br-md border border-line/60 bg-surface px-4 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">{item.text}</div>
         )}
         <div className={`items-center gap-2 text-[11px] text-faint tabular-nums ${note ? "flex" : "hidden group-hover/user:flex"}`}>
           {item.status === "failed" && <span className="text-bad">Not sent: {item.detail}</span>}

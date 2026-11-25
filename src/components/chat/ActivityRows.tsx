@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import type { ChatAsyncTask, ChatItem, SubagentTask, ToolAction } from "../../services/ipc/generated/core";
 import { subagentElapsed, taskStateLabel, taskTone } from "../../lib/chatTasks";
 import {
-  actionOf, elapsedLabel, entryLabel, isToolItem, thoughtLine,
+  actionOf, elapsedLabel, entryLabel, groupSteps, isToolItem, thoughtLine,
 } from "../../lib/chatTimeline";
 import { formatDuration } from "../../lib/format";
 import { useChat } from "./context";
@@ -363,10 +363,6 @@ function StepRow({ item }: { item: ChatItem }) {
   return <NoticeRow item={item} />;
 }
 
-function isCommandItem(item: ChatItem): boolean {
-  return isToolItem(item) && actionOf(item) === "command";
-}
-
 /** Consecutive shell commands read as one step: "Ran 5 commands · all passed". */
 function CommandGroup({ items, current }: { items: ChatItem[]; current: boolean }) {
   const running = items.some((item) => item.status === "running" || item.status === "pending");
@@ -396,26 +392,38 @@ function CommandGroup({ items, current }: { items: ChatItem[]; current: boolean 
   );
 }
 
-/** The turn's steps in order; consecutive commands fold into one group. */
+const plural = (count: number, word: string, many: string) => (count ? `${count} ${count === 1 ? word : many}` : null);
+
+/** Looking around reads as one step too; the newest target shows while it runs. */
+function ExploreGroup({ items }: { items: ChatItem[] }) {
+  const active = items.filter((item) => item.status === "running" || item.status === "pending").pop();
+  const status = active ? "running" : "completed";
+  const reads = items.filter((item) => actionOf(item) === "read").length;
+  const summary = [plural(reads, "file", "files"), plural(items.length - reads, "search", "searches")].filter(Boolean).join(", ");
+  return (
+    <ActivityRow
+      status={status}
+      marker={<RailMark status={status}><IconSearch size={12} /></RailMark>}
+      label={<>
+        <span className="shrink-0 font-medium">{active ? "Exploring" : "Explored"} {summary}</span>
+        {active && <span className="min-w-0 truncate text-muted">{toolSubject(active)}</span>}
+      </>}
+      trailing={active ? <Duration item={active} live /> : null}
+      expandable
+    >
+      <ul className="m-0 grid list-none gap-0.5 p-0">
+        {items.map((item) => <ToolRow key={item.id} item={item} />)}
+      </ul>
+    </ActivityRow>
+  );
+}
+
+/** The turn's steps in order; runs of commands and of reads fold into groups. */
 export function ActivitySteps({ items, current }: { items: ChatItem[]; current: boolean }) {
-  const nodes: ReactNode[] = [];
-  let index = 0;
-  while (index < items.length) {
-    const item = items[index];
-    if (isCommandItem(item)) {
-      const group = [item];
-      while (index + 1 < items.length && isCommandItem(items[index + 1])) {
-        group.push(items[++index]);
-      }
-      nodes.push(
-        group.length > 1
-          ? <CommandGroup key={group[0].id} items={group} current={current} />
-          : <ToolRow key={item.id} item={item} />,
-      );
-    } else {
-      nodes.push(<StepRow key={item.id} item={item} />);
-    }
-    index++;
-  }
-  return <>{nodes}</>;
+  return <>{groupSteps(items).map((group) => {
+    const key = group.items[0].id;
+    if (group.kind === "commands") return <CommandGroup key={`group:${key}`} items={group.items} current={current} />;
+    if (group.kind === "explore") return <ExploreGroup key={`group:${key}`} items={group.items} />;
+    return <StepRow key={key} item={group.items[0]} />;
+  })}</>;
 }

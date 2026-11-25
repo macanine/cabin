@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ApprovalDecisionView, ChatItem, ChatQuestion } from "../../services/ipc/generated/core";
 import { toIpcError } from "../../services/ipc/common";
 import { libraryIpc } from "../../services/ipc/library";
+import { answerKey, approvalArm } from "../../lib/approvalKeys";
 import { uiActions } from "../../state/ui";
 import { FileChanges } from "./FileChanges";
 import { Markdown } from "./Markdown";
@@ -22,16 +23,6 @@ const baseDecision = (decision: string) => decision.split(":")[0];
 const isNegative = (decision: string) => ["decline", "declineAlways", "cancel"].includes(baseDecision(decision));
 /** One key per decision, shown on its button. */
 const KEYS: Record<string, string> = { accept: "y", acceptForSession: "s", acceptAlways: "a", decline: "n", declineAlways: "d" };
-
-/** A key press that should answer the card: no modifier, and not typing into a field that has text. */
-function answerKey(event: KeyboardEvent): string | null {
-  if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return null;
-  const target = event.target as HTMLElement | null;
-  if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-    if ((target as HTMLInputElement).value) return null;
-  }
-  return event.key.toLowerCase();
-}
 
 function Question({ question, value, onChange }: { question: ChatQuestion; value: string[]; onChange: (values: string[]) => void }) {
   const custom = value.filter((v) => !question.options.includes(v)).join(", ");
@@ -79,6 +70,7 @@ export function PendingRequest({ sessionId, item }: { sessionId: string; item: C
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [sending, setSending] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
+  const card = useRef<HTMLDivElement>(null);
   const questions = item.questions;
   const isQuestion = questions.length > 0;
   const decisions = item.approval?.decisions ?? BASIC_DECISIONS;
@@ -88,21 +80,37 @@ export function PendingRequest({ sessionId, item }: { sessionId: string; item: C
     setDetails(false);
   }, [item.id]);
 
+  // An empty message box hands its focus to the request, so a key answers the
+  // card; clicking back into the box types again. A draft keeps its focus.
+  useEffect(() => {
+    const field = document.activeElement;
+    if (field instanceof HTMLTextAreaElement && field.closest("[data-chat-dock]") && !field.value) card.current?.focus({ preventScroll: true });
+  }, [item.id]);
+
   // One-key approvals: Y allows, N denies, A/S remember, as the buttons show.
+  const decisionsRef = useRef(decisions);
+  decisionsRef.current = decisions;
   const respondRef = useRef<(decision: string) => void>(() => undefined);
   respondRef.current = (decision) => void respond(decision);
   useEffect(() => {
     if (isQuestion) return;
+    const arm = approvalArm(performance.now());
     function onKey(event: KeyboardEvent) {
-      const key = answerKey(event);
-      const decision = key && decisions.find((d) => KEYS[d.decision] === key);
+      // Any key, typed anywhere, counts against the quiet moment.
+      const armed = arm.press(performance.now());
+      if (event.defaultPrevented || !armed) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      // Dialogs and menus over the chat keep their own keys.
+      if (target?.closest("[role=dialog], [role=menu], [role=listbox]")) return;
+      const key = answerKey(event, target != null && (target.matches("input, textarea, select") || target.isContentEditable));
+      const decision = key && decisionsRef.current.find((d) => KEYS[d.decision] === key);
       if (!decision) return;
       event.preventDefault();
       respondRef.current(decision.decision);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [item.id, isQuestion, decisions]);
+  }, [item.id, isQuestion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function respond(decision: string) {
     if (!item.requestId || sending) return;
@@ -119,7 +127,7 @@ export function PendingRequest({ sessionId, item }: { sessionId: string; item: C
   const complete = questions.every((question) => (answers[question.id]?.length ?? 0) > 0);
 
   return (
-    <div className="glass-strong mb-0 animate-fade rounded-t-[20px] rounded-b-none border-b-0 px-4 pt-3.5 pb-3" role="region" aria-label={isQuestion ? "Question from the agent" : "Approval needed"}>
+    <div ref={card} tabIndex={-1} className="animate-fade border-b border-line px-4 pt-3.5 pb-3 outline-none" data-request role="region" aria-label={isQuestion ? "Question from the agent" : "Approval needed"}>
       <div className="mb-2.5 flex items-center gap-2.5">
         <span className={`grid size-7 shrink-0 place-items-center rounded-lg ${isQuestion ? "bg-info/13 text-info" : "bg-warn/14 text-warn"}`}>
           {isQuestion ? <IconMessageQuestion size={16} /> : <IconShieldCheck size={16} />}
@@ -141,7 +149,7 @@ export function PendingRequest({ sessionId, item }: { sessionId: string; item: C
       <div className="grid gap-2.5">
         {item.text && (item.approval?.kind === "plan"
           ? <div className="markdown selectable max-h-60 overflow-auto rounded-xl border border-line bg-surface/60 px-3.5 py-2.5"><Markdown text={item.text} /></div>
-          : <pre className="selectable m-0 max-h-40 overflow-auto rounded-xl border border-line bg-surface/60 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-fg [overflow-wrap:anywhere]">{item.text}</pre>)}
+          : <pre className="selectable m-0 max-h-40 overflow-auto rounded-xl bg-hover px-3 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-fg [overflow-wrap:anywhere]">{item.text}</pre>)}
         {item.changes.length > 0 && <FileChanges changes={item.changes} title="Proposed change" open />}
         {details && <pre className="selectable m-0 max-h-40 animate-fade overflow-auto rounded-xl bg-hover px-3 py-2 font-mono text-xs whitespace-pre-wrap text-muted [overflow-wrap:anywhere]">{item.detail}</pre>}
         {questions.map((question) => (

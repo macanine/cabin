@@ -125,7 +125,6 @@ export function MachineDetailsPanel({ machine, details, observation }: {
             ["QEMU started", date(details.startedAt)],
           ]} />
         </Section>
-        <MachineResources machine={machine} observation={observation} />
         <Section title="Network and region" hint={`${summary.title} · ${summary.detail}`}>
           <Facts rows={[
             ["VM network mode", details.networkMode], ["SSH endpoint", mono(details.sshEndpoint)], ["MAC address", mono(details.mac)],

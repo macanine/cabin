@@ -5,7 +5,8 @@ import { createPortal } from "react-dom";
 import { type ChromeLayout, chromeLayout, createWindowChromeRefresh, MAC_DEFAULT } from "../lib/windowChrome";
 import { onWindowGeometryChange, windowChrome } from "../services/ipc/window";
 import { uiActions, useUi } from "../state/ui";
-import { IS_MAC, SidebarToggle } from "./Sidebar";
+import { IS_MAC } from "../lib/platform";
+import { SidebarToggle } from "./Sidebar";
 
 let applied: ChromeLayout | null = null;
 

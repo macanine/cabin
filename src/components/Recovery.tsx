@@ -69,7 +69,7 @@ export function RecoveryPanel({ message, compact = false, retry = true }: { mess
           </Button>
         )}
         {recovery.actions.includes("restart") && (
-          <Button size="xs" variant={recovery.actions.length === 1 ? "filled" : "default"} leftSection={<IconRefresh size={14} />} loading={running === "restart"} disabled={busy || running != null} onClick={() => void run("restart")}>
+          <Button size="xs" variant={recovery.actions.length === 1 && !compact ? "filled" : "default"} leftSection={<IconRefresh size={14} />} loading={running === "restart"} disabled={busy || running != null} onClick={() => void run("restart")}>
             Restart machine
           </Button>
         )}

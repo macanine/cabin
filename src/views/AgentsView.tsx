@@ -1,5 +1,5 @@
 import { ActionIcon, Button, Loader, Tooltip } from "@mantine/core";
-import { IconChevronDown, IconChevronRight, IconDownload, IconRefresh } from "@tabler/icons-react";
+import { IconDownload, IconRefresh } from "@tabler/icons-react";
 import { useCallback, useRef, useState } from "react";
 import { AcpRuntimePanel } from "../components/AcpRuntimePanel";
 import { AGENT_KINDS } from "../components/AgentPicker";
@@ -13,7 +13,7 @@ import { forecastLimit, formatSpan, shortLimitLabel, type LimitForecast, type Li
 import { PaceMeter } from "../components/PaceMeter";
 import { BurnChart, burnable } from "../components/BurnChart";
 import { useMinute } from "../lib/useNow";
-import { agentState, attentionCount, currentClaudeAccount, defaultSection, nodeProblem, type AgentSection, type AgentState } from "../lib/agentsHub";
+import { AGENT_SECTIONS, agentState, attentionCount, currentClaudeAccount, defaultSection, nodeProblem, type AgentSection, type AgentState } from "../lib/agentsHub";
 import { attempt, runOperation } from "../lib/operations";
 import { useAutoRefresh } from "../lib/useAutoRefresh";
 import { agentsIpc } from "../services/ipc/agents";
@@ -23,7 +23,7 @@ import { libraryIpc } from "../services/ipc/library";
 import { nodeIpc } from "../services/ipc/node";
 import { useApp } from "../state/store";
 import { uiActions } from "../state/ui";
-import { AgentProviders, PROVIDER_NAMES } from "./agents/AgentProviders";
+import { AgentAccount, PROVIDER_NAMES } from "./agents/AgentAccount";
 
 function useAgentSetup() {
   const [node, setNode] = useState<NodeState | null>(null);
@@ -115,27 +115,31 @@ export function AgentsView({ agent, section }: { agent?: AgentKind; section?: Ag
   return <MachineGate><AgentsContent selected={agent} section={section} /></MachineGate>;
 }
 
-function showAgents(agent?: AgentKind) {
-  uiActions.navigate(agent ? { kind: "agents", agent, section: "setup" } : { kind: "agents" });
+/** The agent to open on when none was asked for: one that needs you, else the first installed. */
+function firstAgent(agents: AgentStatus[]): AgentKind {
+  const by = (test: (agent: AgentStatus) => boolean) => AGENT_KINDS.find((kind) => agents.some((agent) => agent.kind === kind && test(agent)));
+  return by((agent) => agent.installed && ["warn", "bad"].includes(agentState(agent).tone)) ?? by((agent) => agent.installed) ?? AGENT_KINDS[0];
 }
 
-function showProviders(agent?: AgentKind) {
-  uiActions.navigate(agent ? { kind: "agents", agent, section: "account" } : { kind: "agents", section: "account" });
-}
+const show = (agent: AgentKind, section?: AgentSection) => uiActions.navigate({ kind: "agents", agent, section });
 
 function AgentsContent({ selected, section }: { selected?: AgentKind; section?: AgentSection }) {
   const agents = useApp((state) => state.agents);
   const setup = useAgentSetup();
   const terminal = useAgentTerminal();
-  const status = agents.find((agent) => agent.kind === selected);
-  const page = section ?? (selected ? defaultSection(status) : "setup");
-  const limits = useAgentLimits(agents, page === "setup");
+  // Chosen once the agents are known, so finishing a sign-in does not switch agents.
+  const [initial, setInitial] = useState<AgentKind | null>(null);
+  if (initial == null && agents.length > 0) setInitial(firstAgent(agents));
+  const kind = selected ?? initial ?? AGENT_KINDS[0];
+  const limits = useAgentLimits(agents, true);
   const installed = agents.filter((agent) => agent.installed).length;
   const attention = attentionCount(agents);
 
   return (
     <>
-      <ViewHeader title="Agents & providers">
+      <ViewHeader title="Agents" subtitle={agents.length > 0 ? <>
+        {installed} of {AGENT_KINDS.length} installed{attention > 0 && <span className="text-warn"> · {attention} need{attention === 1 ? "s" : ""} attention</span>}
+      </> : undefined}>
         <Tooltip label="Check agent status">
           <ActionIcon size="md" variant="subtle" color="gray" aria-label="Check agent status"
             disabled={setup.installing != null} loading={setup.checking} onClick={() => void setup.check()}>
@@ -143,43 +147,38 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
           </ActionIcon>
         </Tooltip>
       </ViewHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-12 max-sm:px-3">
-        <div className="agents-workspace mx-auto max-w-[1120px]">
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-x-4 gap-y-2 border-b border-line">
-            <nav className="flex gap-4" aria-label="Agent management">
-              <button type="button" className="agents-nav-button" aria-current={page === "setup" ? "page" : undefined}
-                onClick={() => showAgents()}>Agents</button>
-              <button type="button" className="agents-nav-button" aria-current={page === "account" ? "page" : undefined}
-                onClick={() => showProviders(status?.kind)}>Providers</button>
-            </nav>
-            {page === "setup" && agents.length > 0 && <p className="m-0 pb-2.5 text-sm text-muted">
-              {installed} of {AGENT_KINDS.length} installed
-              {attention > 0 && <span className="ml-3 text-warn">{attention} need{attention === 1 ? "s" : ""} attention</span>}
-            </p>}
-          </div>
-          {setup.checkError && <p className="callout warn mb-3" role="status">Couldn’t check agent status. Use Check agent status to retry.</p>}
-          {page === "account" ? (
-            <AgentProviders agents={agents} selected={selected} onSelect={showProviders} onSetup={showAgents}
-              onOpenTerminal={terminal.open} starting={terminal.starting} />
-          ) : (
-            <>
-              {setup.problem && (
-                <div className="callout warn mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <span>{setup.problem}</span>
-                  <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "settings", tab: "tools" })}>Set up Node.js</Button>
-                </div>
-              )}
-              <LimitsOverview limits={limits} />
-              <div className="ag-list">
-                <ul className="m-0 list-none p-0" aria-label="Agents">
-                  {AGENT_KINDS.map((kind) => (
-                    <AgentRow key={kind} kind={kind} status={agents.find((entry) => entry.kind === kind)}
-                      limits={limits[kind]} setup={setup} expanded={selected === kind} onOpenTerminal={terminal.open} starting={terminal.starting} />
-                  ))}
-                </ul>
+      <div className="split-page">
+        <nav className="split-list" aria-label="Agents">
+          {AGENT_KINDS.map((entry) => {
+            const status = agents.find((agent) => agent.kind === entry);
+            const state = agentState(status);
+            return (
+              <button key={entry} type="button" className="ag-choice press" aria-current={entry === kind ? "true" : undefined} onClick={() => show(entry)}>
+                <span className="ag-mark"><AgentLogo agent={entry} size={20} /></span>
+                <span className="grid min-w-0 flex-1 gap-0.5">
+                  <strong className="truncate text-md font-medium">{AGENT_NAMES[entry]}</strong>
+                  <span className="ag-status">
+                    <span className={`ag-dot ${status ? DOT[state.tone] : "bg-faint/60"}`} aria-hidden="true" />
+                    <span className={status ? LABEL[state.tone] : "text-faint"}>{status ? state.label : "Checking…"}</span>
+                  </span>
+                  {(limits[entry]?.windows.length ?? 0) > 0 && <RowLimits windows={limits[entry]!.windows} />}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+        <div className="split-detail">
+          <div className="split-inner">
+            {setup.checkError && <p className="callout warn m-0" role="status">Couldn’t check agent status. Use Check agent status to retry.</p>}
+            {setup.problem && (
+              <div className="callout warn flex flex-wrap items-center justify-between gap-2">
+                <span>{setup.problem}</span>
+                <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "settings", tab: "tools" })}>Set up Node.js</Button>
               </div>
-            </>
-          )}
+            )}
+            <AgentDetail key={kind} kind={kind} section={section} status={agents.find((entry) => entry.kind === kind)}
+              limits={limits[kind]} setup={setup} onOpenTerminal={terminal.open} starting={terminal.starting} />
+          </div>
         </div>
       </div>
       {terminal.picker}
@@ -187,47 +186,34 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
   );
 }
 
-type Reading = { kind: AgentKind; scope: string; window: Window; forecast: LimitForecast };
-
-/** Every plan window the agents report, with its pace forecast, tightest first per agent. */
-function useReadings(limits: Partial<Record<AgentKind, Limits | null>>): { now: number; readings: Reading[] } {
-  const now = useMinute();
-  const readings = AGENT_KINDS.flatMap((kind) => {
-    const entry = limits[kind];
-    return entry ? entry.windows.map((window) => ({ kind, scope: entry.scope, window, forecast: forecastLimit(window, now) })) : [];
-  });
-  return { now, readings };
-}
-
 const LEFT = (forecast: LimitForecast) => Math.max(0, Math.round(100 - forecast.used));
 
-/** Plan limits across agents: what is left, when it resets, and where the pace lands. */
-function LimitsOverview({ limits }: { limits: Partial<Record<AgentKind, Limits | null>> }) {
-  const { now, readings } = useReadings(limits);
-  if (readings.length === 0) return null;
+/** The agent's plan limits: what is left, when it resets, and where the pace lands. */
+function PlanLimits({ kind, limits }: { kind: AgentKind; limits: Limits }) {
+  const now = useMinute();
   return (
     <section className="ag-limits" aria-label="Plan limits">
       <header className="ag-limits-head">
-        <h2>Plan limits</h2>
+        <h3>Plan limits</h3>
         <span>Forecasts assume the pace since each window opened</span>
       </header>
       <div className="ag-limit-tiles stagger">
-        {readings.map(({ kind, scope, window, forecast }) => {
+        {limits.windows.map((window) => {
+          const forecast = forecastLimit(window, now);
           const name = `${AGENT_NAMES[kind]} · ${shortLimitLabel(window.label)}`;
           return (
-            <button key={`${kind}-${window.label}`} type="button" className="ag-tile" data-tone={forecast.tone}
-              onClick={() => showProviders(kind)} aria-label={`${name}: ${LEFT(forecast)}% left. ${forecast.text}`}>
-              <span className="ag-tile-name">{name}</span>
+            <div key={window.label} className="ag-tile" data-tone={forecast.tone} role="group" aria-label={`${name}: ${LEFT(forecast)}% left. ${forecast.text}`}>
+              <span className="ag-tile-name">{shortLimitLabel(window.label)}</span>
               <span className="ag-tile-figure">
                 <strong>{LEFT(forecast)}<small>%</small></strong>
                 <span>left</span>
                 {forecast.resetsIn != null && <span className="ag-tile-reset">resets in {formatSpan(forecast.resetsIn)}</span>}
               </span>
               {burnable(window, now)
-                ? <BurnChart window={window} forecast={forecast} scope={scope} now={now} height={54} />
+                ? <BurnChart window={window} forecast={forecast} scope={limits.scope} now={now} height={54} />
                 : <PaceMeter forecast={forecast} label={name} />}
               <span className="ag-tile-forecast">{forecast.text}</span>
-            </button>
+            </div>
           );
         })}
       </div>
@@ -262,12 +248,13 @@ const LABEL: Record<AgentState["tone"], string> = {
   ok: "text-muted", info: "text-info", warn: "text-warn", bad: "text-bad", off: "text-faint",
 };
 
-function AgentRow({ kind, status, limits, setup, expanded, onOpenTerminal, starting }: {
+/** One agent: its state and actions, its plan limits, then its account or setup. */
+function AgentDetail({ kind, section, status, limits, setup, onOpenTerminal, starting }: {
   kind: AgentKind;
+  section?: AgentSection;
   status?: AgentStatus;
   limits?: Limits | null;
   setup: Setup;
-  expanded: boolean;
   onOpenTerminal: (kind: AgentKind) => void;
   starting: AgentKind | null;
 }) {
@@ -275,57 +262,51 @@ function AgentRow({ kind, status, limits, setup, expanded, onOpenTerminal, start
   const nodeBlocked = (status?.requiresNode ?? true) && setup.problem != null;
   const canOperate = status?.cliChecked && status.installed && !!status.version;
   const needsInstall = status && (!status.installed || (status.cliChecked && !status.version));
-  const detailId = `agent-setup-${kind}`;
   const account = currentClaudeAccount(status);
   const provider = account?.provider || PROVIDER_NAMES[kind];
-
+  const tab = section ?? defaultSection(status);
   return (
-    <li aria-label={AGENT_NAMES[kind]} className="ag-item" data-expanded={expanded || undefined}>
-      <div className="ag-row">
-        <div className="ag-id">
-          <span className="ag-mark"><AgentLogo agent={kind} size={22} /></span>
-          <div className="grid min-w-0 gap-0.5">
-            <strong className="text-md font-semibold">{AGENT_NAMES[kind]}</strong>
-            <span className="ag-status">
-              <span className={`ag-dot ${status ? DOT[state.tone] : "bg-faint/60"}`} aria-hidden="true" />
-              <span className={status ? LABEL[state.tone] : "text-faint"}>{status ? state.label : "Checking…"}</span>
-              {status?.version && <span className="text-faint tabular-nums">v{status.version}</span>}
-            </span>
-          </div>
+    <>
+      <header className="ag-head">
+        <span className="ag-head-mark"><AgentLogo agent={kind} size={28} /></span>
+        <div className="min-w-0 flex-1">
+          <h2>{AGENT_NAMES[kind]}</h2>
+          <p>
+            <span className={status ? LABEL[state.tone] : "text-faint"}>{status ? state.label : "Checking…"}</span>
+            {status?.version && <span className="tabular-nums"> · v{status.version}</span>}
+            {status?.installed && <> · {provider}{limits?.plan && ` ${limits.plan}`}</>}
+          </p>
         </div>
-        <div className="ag-provider">
-          {status?.installed && <button type="button" className="ag-provider-link"
-            aria-label={`Manage ${AGENT_NAMES[kind]} account`} onClick={() => showProviders(kind)}>
-            <span className="ag-provider-name">
-              <span>{provider}</span>
-              {limits?.plan && <span className="ag-plan">{limits.plan}</span>}
-              <IconChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
-            </span>
-            {limits && limits.windows.length > 0 && <RowLimits windows={limits.windows} />}
-          </button>}
-        </div>
-        <div className="ag-actions">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {canOperate && <Button size="xs" variant="default" loading={setup.installing === kind}
+            disabled={setup.installing != null || nodeBlocked} onClick={() => void setup.install(status)}>Update CLI</Button>}
           {needsInstall && <Button size="xs" leftSection={<IconDownload size={14} />}
             loading={setup.installing === kind} disabled={setup.installing != null || nodeBlocked}
             onClick={() => void setup.install(status)}>{status.installed ? "Reinstall" : "Install"}</Button>}
-          {canOperate && state.tone === "warn" && <Button size="xs" variant="light" loading={starting === kind}
+          {canOperate && state.tone === "warn" && <Button size="xs" loading={starting === kind}
             disabled={starting != null} onClick={() => onOpenTerminal(kind)}>Sign in</Button>}
-          {canOperate && <Button size="xs" variant="subtle" color="gray" loading={setup.installing === kind}
-            disabled={setup.installing != null || nodeBlocked} onClick={() => void setup.install(status)}>Update CLI</Button>}
-          <Button size="xs" variant="subtle" color="gray" aria-expanded={expanded} aria-controls={expanded ? detailId : undefined}
-            aria-label={`${AGENT_NAMES[kind]} setup`} rightSection={<IconChevronDown size={13} className={`transition-transform duration-[var(--motion-reveal)] ${expanded ? "rotate-180" : ""}`} />}
-            onClick={() => showAgents(expanded ? undefined : kind)}>Setup</Button>
         </div>
+      </header>
+      {/* The account shows the same windows with its own controls. */}
+      {tab === "setup" && limits && limits.windows.length > 0 && <PlanLimits kind={kind} limits={limits} />}
+      <div className="ag-panel">
+        <nav className="ag-tabs" aria-label={`${AGENT_NAMES[kind]} sections`}>
+          {AGENT_SECTIONS.map(({ value, label }) => (
+            <button key={value} type="button" className="agents-nav-button" aria-current={tab === value ? "page" : undefined} onClick={() => show(kind, value)}>{label}</button>
+          ))}
+        </nav>
+        {tab === "account"
+          ? <AgentAccount kind={kind} status={status} onOpenTerminal={onOpenTerminal} starting={starting} />
+          : <AgentSetupDetails kind={kind} status={status} setup={setup} />}
       </div>
-      {expanded && <AgentSetupDetails id={detailId} kind={kind} status={status} setup={setup} />}
-    </li>
+    </>
   );
 }
 
-function AgentSetupDetails({ id, kind, status, setup }: { id: string; kind: AgentKind; status?: AgentStatus; setup: Setup }) {
+function AgentSetupDetails({ kind, status, setup }: { kind: AgentKind; status?: AgentStatus; setup: Setup }) {
   const runtime = setup.runtimes.find((entry) => entry.agent === kind);
   return (
-    <section id={id} aria-label={`${AGENT_NAMES[kind]} setup`} className="ag-setup grid min-w-0 gap-4 px-4 py-4 sm:px-5">
+    <section aria-label={`${AGENT_NAMES[kind]} setup`} className="grid min-w-0 gap-5 p-5 max-sm:p-4">
       {!status ? <Loader size="xs" aria-label="Checking installation" /> : <>
         <div className="grid gap-1 text-sm text-muted">
           <span className="[overflow-wrap:anywhere]">Package <code className="ml-1 text-fg">{status.package}</code></span>

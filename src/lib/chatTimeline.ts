@@ -302,3 +302,31 @@ export function pendingRequest(items: ChatItem[]): ChatItem | null {
       && item.requestId != null,
   ) ?? null;
 }
+
+export type StepGroup = { kind: "commands" | "explore" | "single"; items: ChatItem[] };
+
+/** Fewer reads and searches than this are clearer as their own rows. */
+const EXPLORE_MIN = 3;
+
+function groupKind(item: ChatItem): "commands" | "explore" | null {
+  // Delegated work and failures keep their own row.
+  if (!isToolItem(item) || item.taskId) return null;
+  const action = actionOf(item);
+  if (action === "command") return "commands";
+  return (action === "read" || action === "code-search") && item.status !== "failed" ? "explore" : null;
+}
+
+/** Runs of shell commands, and of reads and searches, each read as one step. */
+export function groupSteps(items: ChatItem[]): StepGroup[] {
+  const groups: StepGroup[] = [];
+  for (let index = 0; index < items.length;) {
+    const kind = groupKind(items[index]);
+    let end = index + 1;
+    while (kind && end < items.length && groupKind(items[end]) === kind) end++;
+    const run = items.slice(index, end);
+    if (kind && run.length >= (kind === "commands" ? 2 : EXPLORE_MIN)) groups.push({ kind, items: run });
+    else for (const item of run) groups.push({ kind: "single", items: [item] });
+    index = end;
+  }
+  return groups;
+}

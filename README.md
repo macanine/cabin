@@ -38,7 +38,9 @@ shows progress and logs with cancel and retry controls.
   or exclude it from sync. Windows Two-way still checks the full included tree before
   applying changes; Cabin's temporary files do not trigger sync.
 - **Tasks.** Choose a workspace and agent in **New Task**, then enter a prompt. The sidebar
-  groups tasks by project, session, recency, or unread state. For a Git workspace,
+  groups tasks by project, session, recency, or unread state and lists tasks that need you
+  first. Press ⌘K (Ctrl+Shift+K elsewhere) to find a task or open a page. New Task remembers
+  the last model you picked for each agent. For a Git workspace,
   **Worktree** starts from the selected committed ref in a detached checkout inside the VM.
   The session shows its path and offers cleanup while stopped. Cleanup requires a clean
   worktree and commits retained by a branch or tag. Archiving a session keeps its checkout.
@@ -48,17 +50,45 @@ shows progress and logs with cancel and retry controls.
   or Command/Ctrl with `+`, `-`, or `0` to change or reset its saved text size. Paste an image
   with Command-V to save it as a guest attachment and paste its path. The session workbench opens
   files, shows Git changes, and previews a guest loopback service.
-- **Commands, skills, and MCP.** Use `/` for the agent's commands, `$` for skills, and `@`
-  for workspace files. The **MCP** page imports or creates servers and updates each agent's
-  native config with backups. **Skills** manages shared installs from GitHub, skills.sh,
-  ZIPs, and existing agent folders. Find project skills under **Agents → Setup**.
+- **Commands, skills, and MCP.** In Chat, use `/` to find skills, agent commands, and
+  Cabin's session commands. Use `$` as a shortcut for dollar-style skills and `@` for files.
+  Before a session starts, the picker offers skills and files. Enter or Tab chooses a suggestion,
+  and Esc closes the picker. Run `/cabin:status` or `/cabin:context` with Enter to open a
+  read-only panel without sending a message to the agent. When a session offers `/mcp`,
+  the agent adapter reports its status and supported actions in the conversation. The **MCP**
+  page manages each agent's user-level config with backups. **Skills**
+  manages shared installs from GitHub, skills.sh, ZIPs, and existing agent folders. Find
+  project skills under **Agents → Setup**.
+
+## Host CLI (macOS)
+
+Start Cabin desktop and its VM, then run `cabin claude`, `cabin codex`, `cabin agy`,
+`cabin opencode`, or `cabin pi` from a local project. Existing Two-way mappings,
+including subdirectories, are reused. On the first interactive run, Cabin shows
+both paths and asks before creating a Two-way binding under `~/projects/` in
+Ubuntu. It uses the containing Git root, or the current directory if there is
+none. Use `cabin bind` to opt in explicitly before running a script, or supply
+an absolute guest destination with `cabin bind /home/<guest-user>/projects/<name>`.
+`cabin unbind` removes the mapping without deleting either copy of the files.
+
+On macOS, desktop startup refreshes the managed `~/.local/bin/cabin` launcher
+without replacing another command of that name or changing shell settings. If
+your shell does not search `~/.local/bin`, run `~/.local/bin/cabin` directly or
+add that directory to your `PATH`. The CLI and desktop must use the same
+`CABIN_HOME` if you override the default. A VM upgrading from before the native
+channel was added needs one cold restart.
+
+The desktop manages the VM and the project sync lease. During the command,
+terminal and file payloads go directly through private QEMU virtio-serial lanes
+to `cabind`; neither uses SSH. The desktop still uses SSH for machine setup and
+its existing RPC. Agent credentials, sessions and CLI paths remain in the VM.
+[Transport design and benchmark](docs/native-cli-prototype.md)
 
 ## Agents and usage
 
-**Agents & providers** shows each CLI's version and sign-in state, its provider, and available
-plan limits. Install or update a CLI from its row, or expand **Setup** to manage its chat runtime
-and extensions. Select a provider from the row or the **Providers** tab to see its accounts and
-limits. Sign-in uses the native CLI. All chats use the
+**Agents** lists each CLI with its sign-in state and available plan limits. Select one to
+install or update it, open **Account** for its provider, accounts and limits, or open **Setup**
+to manage its chat runtime and extensions. Sign-in uses the native CLI. All chats use the
 [Agent Client Protocol](https://agentclientprotocol.com).
 
 | Agent | Chat runtime | Sign-in and limits |
@@ -110,7 +140,8 @@ zone and language.
 
 Install **Chrome** to open a Sway desktop inside the app. **Apps** launches each installed
 GUI app in its own Sway workspace. **Environment** sets Chrome's region and identity. Region
-changes apply live and identity changes restart Chrome. VNC over SSH is the default display.
+changes apply live and identity changes restart a running Chrome. Select **Open Chrome** to
+start the browser. Quitting Chrome leaves it stopped. VNC over SSH is the default display.
 Machines without the device profile can enable SPICE, which adds a virtual GPU on the next
 restart. Both viewers use the same desktop.
 
@@ -159,6 +190,7 @@ account names, and URL credentials. Review raw excerpts before sharing a report.
 | Run the desktop app (macOS or Windows) | `npm run app:dev` |
 | Build the app (`.app` on macOS, NSIS installer on Windows) | `npm run app:build` (add `-- --debug` for a debug build) |
 | Run frontend tests | `npm test` |
+| Run the UI smoke test (needs Chromium; `CHROME` picks one) | `npm run test:ui` |
 | Type-check and bundle the frontend | `npm run build` |
 | Run Rust tests | `cargo test --manifest-path <crate>/Cargo.toml` for `core`, `diagnostics`, `usage`, `vm`, `src-tauri`, and `ip-detection` |
 | Build the Linux ARM64 guest daemon | `npm run build:agentd` |
@@ -201,7 +233,7 @@ the serial console, and the QEMU gateway stream. The loopback SSH relay starts a
 by default and tries successive ports until it can listen. Inside the gateway, connected loopback
 UDP sockets carry IP packets to the shoes proxy stack. If setup reports that a VM socket
 path is too long, set `CABIN_HOME` to a shorter local data directory before restarting Cabin.
-Windows uses system routing. Adapter binding and SPICE require a supported Unix host. `tauri.windows.conf.json` builds
+SPICE requires a supported Unix host. `tauri.windows.conf.json` builds
 the NSIS installer with the daemon and VM resources bundled. See
 [host platform contracts](AGENTS.md#host-platforms).
 

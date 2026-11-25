@@ -90,7 +90,7 @@ export function PlanReviewDock({
     <div
       ref={root}
       tabIndex={-1}
-      className="glass-strong grid animate-fade gap-2.5 rounded-t-[20px] rounded-b-none border-b-0 px-4 pt-3.5 pb-3 outline-none"
+      className="grid animate-fade gap-2.5 border-b border-line px-4 pt-3.5 pb-3 outline-none"
       role="group"
       aria-label="Plan awaiting your decision"
     >

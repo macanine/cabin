@@ -6,9 +6,8 @@
   flex-direction: column;
   gap: var(--space-3);
   width: 100%;
-  max-width: 1040px;
-  margin: 0 auto;
-  padding: var(--space-5) var(--space-5) 40px;
+  min-width: 0;
+  padding: 18px clamp(14px, 2.4vw, 28px) 40px;
 }
 
 .extension-toolbar {
@@ -27,13 +26,10 @@
   min-width: 8rem;
 }
 
-.extension-install-to { margin-inline-start: auto; }
-.extension-install-to > span, .extension-target-hint, .extension-page-count { color: var(--muted); font-size: var(--text-sm); }
-
 .extension-table-wrap, .extension-discovery-list, .extension-picker {
-  border: 1px solid var(--glass-edge);
+  border: 1px solid var(--border);
   border-radius: var(--card-radius);
-  background: var(--glass);
+  background: var(--surface);
   overflow: auto;
 }
 

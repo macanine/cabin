@@ -39,6 +39,21 @@ function BreakdownRow({ entry, capacity }: { entry: StorageEntry; capacity: stri
   </div>;
 }
 
+/** The entries as one bar, largest first. The list below names every size. */
+function StorageBar({ entries }: { entries: StorageEntry[] }) {
+  const sized = entries.filter((entry) => entry.bytes > 0).sort((a, b) => b.bytes - a.bytes);
+  const total = sized.reduce((sum, entry) => sum + entry.bytes, 0);
+  if (!total) return null;
+  return (
+    <div className="storage-bar" aria-hidden>
+      {sized.map((entry, index) => (
+        <span key={entry.kind} title={`${labels[entry.kind][0]} · ${formatBytes(entry.bytes)}`}
+          style={{ flexGrow: entry.bytes / total, opacity: Math.max(0.22, 1 - index * 0.2) }} />
+      ))}
+    </div>
+  );
+}
+
 export function StorageSettings() {
   const state = useApp((app) => app.machine?.state);
   const connected = useApp((app) => app.machine?.connection === "connected");
@@ -137,7 +152,8 @@ export function StorageSettings() {
           })}
         </div>
       </Section>
-      <Section title="Breakdown" hint="Sizes use allocated disk space. Space reclaimed can vary with the filesystem.">
+      <Section title="What takes space" hint="Sizes use allocated disk space. Space reclaimed can vary with the filesystem.">
+        <StorageBar entries={runtimeEntries} />
         <dl className="storage-breakdown">
           {runtimeEntries.map((entry) => <BreakdownRow key={entry.kind} entry={entry} capacity={report.diskCapacity} />)}
         </dl>

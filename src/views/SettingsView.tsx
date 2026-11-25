@@ -3,6 +3,7 @@ import { useMacPermissions } from "../state/macPermissions";
 import { PermissionsSettings } from "./settings/PermissionsSettings";
 import type { ReactNode } from "react";
 import { MachineGate } from "../components/MachineGate";
+import { ViewHeader } from "../components/TitleBar";
 import { selectNetworkSummary } from "../lib/networkSummary";
 import { useApp } from "../state/store";
 import { SETTINGS_TABS, type SettingsTab, uiActions } from "../state/ui";
@@ -59,21 +60,17 @@ export function SettingsView({ tab = "general" }: { tab?: SettingsTab }) {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 max-[760px]:flex-col">
-      <nav className="flex w-52 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-line/70 px-2.5 py-6 max-[760px]:w-auto max-[760px]:flex-row max-[760px]:flex-wrap max-[760px]:border-r-0 max-[760px]:border-b max-[760px]:py-2.5" aria-label="Settings">
-        <h1 className="mx-2.5 mb-2.5 text-[13px] font-semibold text-muted max-[760px]:hidden">Settings</h1>
+    <>
+    <ViewHeader title="Settings" />
+    <div className="split-page">
+      <nav className="split-list !w-[226px] max-[860px]:!w-auto" aria-label="Settings">
         {SETTINGS_TABS.map((key) => {
           const { label, icon: Icon } = TABS[key];
-          const active = key === tab;
           return (
-            <button
-              key={key}
-              className={`press flex w-full cursor-pointer items-center gap-2.5 rounded-lg border px-2.5 py-[7px] text-left text-md whitespace-nowrap text-fg max-[760px]:w-auto ${active ? "glass font-medium" : "border-transparent bg-transparent hover:bg-hover"}`}
-              aria-current={active ? "page" : undefined}
-              onClick={() => uiActions.navigate({ kind: "settings", tab: key })}
-            >
-              <Icon size={16} stroke={1.7} className={`shrink-0 transition-colors duration-200 ${active ? "text-accent" : "text-muted"}`} />
-              <span className="min-w-0 flex-1">{label}</span>
+            <button key={key} type="button" className="split-choice press" aria-current={key === tab ? "page" : undefined}
+              onClick={() => uiActions.navigate({ kind: "settings", tab: key })}>
+              <Icon size={16} stroke={1.7} />
+              <span>{label}</span>
               {attention[key] && <span className="dot warn" aria-label="Needs attention" />}
             </button>
           );
@@ -83,19 +80,21 @@ export function SettingsView({ tab = "general" }: { tab?: SettingsTab }) {
         {guest ? <MachineGate>{content}</MachineGate> : content}
       </div>
     </div>
+    </>
   );
 }
 
 /** Header + body of one settings tab: a readable column, the title and its actions first. */
-export function SettingsPage({ title, subtitle, actions, children }: {
+export function SettingsPage({ title, subtitle, actions, children, wide = false }: {
   title: string;
   subtitle?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
+  wide?: boolean;
 }) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-[clamp(16px,4cqi,32px)] pt-7 pb-8 [scrollbar-gutter:stable_both-edges]">
-      <div className="mx-auto w-full max-w-[760px]">
+      <div className={`mx-auto w-full ${wide ? "max-w-[940px]" : "max-w-[760px]"}`}>
         <header className="mb-5 flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h2 className="m-0 text-2xl font-semibold tracking-tight">{title}</h2>

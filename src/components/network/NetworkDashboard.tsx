@@ -10,6 +10,7 @@ import { uiActions } from "../../state/ui";
 import { attempt } from "../../lib/operations";
 import { flag, flagInName, hopRole, insertAt, linkStates, placeLabel, resolveHopPlaces, sameRoute } from "../../lib/geo";
 import { RecoveryPanel } from "../Recovery";
+import { SettingRow } from "../common";
 import { NodeDrawer } from "./NodeDrawer";
 import { NetworkCheckButton } from "./NetworkGatePanel";
 import { PointCard, type PointInfo } from "./PointCard";
@@ -158,78 +159,38 @@ export function NetworkDashboard() {
     setApplying(false);
   }
 
+  const tone = gateway === "Internet open" ? " ok" : status.error || status.gate === "closed" && status.running && !status.paused ? " bad" : "";
   return (
     <>
-      <div className="mb-3"><NetworkCheckButton /></div>
-      <div className="net-card">
-        <div className="net-stage">
-          <WorldMap links={links} points={points} selected={selected} draft={dirty} onSelect={selectPoint}
-            onDismiss={() => setSelection(panelPoint)} hopDetail={hasHopPopover && <PointCard info={pointInfo(selected)} />} />
-          <div className="net-float net-float-controls">
-            <div className="net-switch">
-              <Switch
-                size="sm"
-                checked={draft.enabled}
-                onChange={(event) => editRoute({ ...draft, enabled: event.currentTarget.checked })}
-                label="Route via proxy"
-                disabled={!status.available}
-              />
-            </div>
+      <div className="net-card net-head">
+        <span className={`net-dot${tone}`} aria-hidden />
+        <div className="net-head-copy" role="status">
+          <strong>{gateway}</strong>
+          <span className="truncate" title={activePath}>{status.gate === "open" ? "Active route" : "Saved route"}: {activePath} · System route</span>
+        </div>
+        <NetworkCheckButton />
+      </div>
+      {status.error && (
+          <div className="net-card net-alert">
+            <RecoveryPanel compact message={`The machine's network gateway is not running: ${status.error}`} />
           </div>
-          <div className="net-float net-float-actions">
+        )}
+      <div className="net-card">
+        <div className="net-route" id="network-route" tabIndex={-1}>
+          <div className="net-route-head">
+            <strong>{dirty ? "Draft route" : "Route"}</strong>
+            <span className="grow" />
             {draft.enabled && draft.chain.length > 0 && (
               <Tooltip label={dirty ? "Test draft chain" : "Test active chain"} openDelay={300}>
-                <button type="button" className="net-float-button" onClick={() => void live.recheck()} disabled={checking || blocked != null} aria-label={dirty ? "Test draft chain" : "Test active chain"}>
+                <button type="button" className="net-tool press" onClick={() => void live.recheck()} disabled={checking || blocked != null} aria-label={dirty ? "Test draft chain" : "Test active chain"}>
                   {checking ? <Loader size={13} /> : <IconRoute size={15} />}
                 </button>
               </Tooltip>
             )}
-            <button type="button" className="net-float-button text" onClick={() => setDrawer((open) => !open)} aria-expanded={drawer}>
+            <button type="button" className="net-tool press" onClick={() => setDrawer((open) => !open)} aria-expanded={drawer}>
               <IconLayoutGrid size={15} /> Nodes
             </button>
           </div>
-          <div className="net-map-status" aria-live="polite">
-            {dirty && <span>Draft path</span>}
-            {unmapped > 0 && <span>{unmapped} {unmapped === 1 ? "hop location" : "hop locations"} unknown</span>}
-          </div>
-          <div className="net-float-exit">
-            <PointCard info={pointInfo(footerPoint)} />
-          </div>
-        </div>
-
-        {status.error && (
-          <div className="net-alert">
-            <RecoveryPanel compact message={`The machine's network gateway is not running: ${status.error}`} />
-          </div>
-        )}
-
-        <div className="net-route" id="network-route" tabIndex={-1}>
-          <div className="net-route-current">
-            <span className={`net-dot${gateway === "Internet open" ? " ok" : status.error || status.gate === "closed" && status.running && !status.paused ? " bad" : ""}`} aria-hidden />
-            <strong>{status.gate === "open" ? "Active route" : "Saved route"}</strong>
-            <span className="grow truncate" title={activePath}>{activePath} · System route</span>
-            <span>{gateway}</span>
-          </div>
-          <div className="net-interface">
-            <div className="max-w-64">
-              <Select
-                size="xs"
-                className="min-w-0"
-                label="Exit IP policy"
-                data={[{ value: "static", label: "Static IP" }, { value: "dynamicResidential", label: "Dynamic residential IP" }]}
-                value={draft.exitPolicy ?? "static"}
-                onChange={(value) => {
-                  if (value === "static" || value === "dynamicResidential") editRoute({ ...draft, exitPolicy: value });
-                }}
-                allowDeselect={false}
-                disabled={!status.available || applying}
-              />
-            </div>
-            <p className="mt-1.5 mb-0 text-xs text-faint">
-              {draft.exitPolicy === "dynamicResidential" ? "IP changes must stay in the approved country and continent." : "Any verified IP change blocks internet access."}
-            </p>
-          </div>
-          {dirty && <div className="net-draft-title">Draft route</div>}
           <RoutePipeline
             chain={draft.chain}
             enabled={draft.enabled}
@@ -251,6 +212,28 @@ export function NetworkDashboard() {
           )}
           {!draft.enabled && draft.chain.length > 0 && <div className="net-chain-note">Routing is off. The saved chain stays available.</div>}
         </div>
+        <SettingRow label="Route via proxy" hint={draft.enabled ? "VM traffic goes through the nodes above." : "VM traffic follows this computer's own route."}>
+          <Switch
+            size="sm"
+            checked={draft.enabled}
+            onChange={(event) => editRoute({ ...draft, enabled: event.currentTarget.checked })}
+            aria-label="Route via proxy"
+            disabled={!status.available}
+          />
+        </SettingRow>
+        <SettingRow label="Exit IP policy" hint={draft.exitPolicy === "dynamicResidential" ? "IP changes must stay in the approved country and continent." : "Any verified IP change blocks internet access."}>
+              <Select
+                size="xs"
+                aria-label="Exit IP policy"
+                data={[{ value: "static", label: "Static IP" }, { value: "dynamicResidential", label: "Dynamic residential IP" }]}
+                value={draft.exitPolicy ?? "static"}
+                onChange={(value) => {
+                  if (value === "static" || value === "dynamicResidential") editRoute({ ...draft, exitPolicy: value });
+                }}
+                allowDeselect={false}
+                disabled={!status.available || applying}
+              />
+        </SettingRow>
         {dirty && (
           <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 border-t border-line bg-hover/35 px-4 py-3" data-route-actions>
             {blocked && <p className="m-0 min-w-0 basis-48 grow text-sm break-words text-bad" role="status">{blocked}</p>}
@@ -260,6 +243,20 @@ export function NetworkDashboard() {
             </Button>
           </div>
         )}
+      </div>
+
+      <div className="net-card net-where">
+        <div className="net-stage">
+          <WorldMap links={links} points={points} selected={selected} draft={dirty} onSelect={selectPoint}
+            onDismiss={() => setSelection(panelPoint)} hopDetail={hasHopPopover && <PointCard info={pointInfo(selected)} />} />
+          <div className="net-map-status" aria-live="polite">
+            {dirty && <span>Draft path</span>}
+            {unmapped > 0 && <span>{unmapped} {unmapped === 1 ? "hop location" : "hop locations"} unknown</span>}
+          </div>
+        </div>
+        <div className="net-where-point">
+          <PointCard info={pointInfo(footerPoint)} />
+        </div>
       </div>
 
       <NodeDrawer opened={drawer} onClose={() => setDrawer(false)} catalog={catalog}

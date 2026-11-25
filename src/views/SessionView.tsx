@@ -70,9 +70,10 @@ export function SessionView({ id }: { id: string }) {
             </Menu>
           )}
         </div>
-        {chat && activity === "waiting" && (
-          <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-warn" role="status">
-            <span className="size-1.5 rounded-full bg-current" aria-hidden />Needs you
+        {chat && activity && (
+          <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${activity === "waiting" ? "bg-warn/12 text-warn" : "bg-hover text-muted"}`} role="status">
+            <span className={`size-1.5 rounded-full ${activity === "waiting" ? "bg-warn" : "live-dot bg-ok"}`} aria-hidden />
+            {activity === "waiting" ? "Needs you" : "Working"}
           </span>
         )}
         <PanelToggles git={git} />

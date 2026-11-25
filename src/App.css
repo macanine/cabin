@@ -24,7 +24,6 @@
 @import "./styles/sync.css" layer(components);
 @import "./styles/markdown.css" layer(components);
 @import "./styles/chat.css" layer(components);
-@import "./styles/chat-activity.css" layer(components);
 @import "./styles/diff.css" layer(components);
 @import "./styles/chat-composer.css" layer(components);
 @import "./styles/chrome.css" layer(components);

@@ -1,19 +1,42 @@
 import { Button } from "@mantine/core";
-import { IconDeviceDesktopOff, IconDownload, IconPlayerPlay } from "@tabler/icons-react";
+import { IconArrowRight, IconPlayerPlay } from "@tabler/icons-react";
 import type { ReactNode } from "react";
 import type { MachineStatus } from "../services/ipc/generated/core";
 import { machineIpc } from "../services/ipc/app";
 import { useApp } from "../state/store";
 import { uiActions } from "../state/ui";
+import { diskGb } from "../lib/installForm";
 import { attempt } from "../lib/operations";
-import { EmptyState } from "./common";
+import { type CardTone, MachineCard } from "../views/install/MachineCard";
 import { BootHero, BootPage } from "./Boot";
-import { StartReportView } from "./StartReportView";
-import { RecoveryPanel } from "./Recovery";
+import { MachineStage } from "./MachineStage";
+import { StartStage } from "./StartReportView";
+import { CopyDiagnosticsButton, RecoveryPanel } from "./Recovery";
 
-function MachineSettingsButton() {
-  return <Button variant="subtle" onClick={() => uiActions.navigate({ kind: "settings", tab: "machine" })}>Machine recovery</Button>;
+const openMachineSettings = () => uiActions.navigate({ kind: "settings", tab: "machine" });
+
+/** "ubuntu-24.04" → "Ubuntu 24.04 LTS", without asking a machine that may be down. */
+function osName(os: string | null | undefined): string {
+  const version = /^ubuntu-(.+)$/.exec(os ?? "")?.[1];
+  return version ? `Ubuntu ${version} LTS` : "Your machine";
 }
+
+function Card({ machine, tone, screen }: { machine: MachineStatus; tone: CardTone; screen?: string | null }) {
+  return (
+    <MachineCard host={null} tone={tone} screen={screen} spec={{
+      osName: osName(machine.os),
+      cpus: machine.cpus,
+      memoryMb: machine.memoryMb,
+      diskGb: diskGb(machine.diskSize),
+      username: machine.username ?? "dev",
+      hostname: machine.hostname ?? "dev-vm",
+    }} />
+  );
+}
+
+const StartButton = ({ label, busy }: { label: string; busy: boolean }) => (
+  <Button size="md" leftSection={<IconPlayerPlay size={16} />} disabled={busy} onClick={() => attempt(machineIpc.start())}>{label}</Button>
+);
 
 /** Shown instead of a VM-backed view until cabind is connected. */
 export function MachineGate({ children }: { children?: ReactNode }) {
@@ -22,102 +45,86 @@ export function MachineGate({ children }: { children?: ReactNode }) {
   const start = useApp((state) => state.start);
   if (guestReady && start?.state !== "running" && start?.state !== "failed") return <>{children}</>;
   if (!machine) return <div className="page" />;
+  const busy = machine.busy != null;
 
   // A start in progress (or one that just failed): show what it is doing.
-  if (start && (start.state === "running" || (start.state === "failed" && !machine.busy && machine.error))) {
+  if (start && (start.state === "running" || (start.state === "failed" && !busy && machine.error))) {
+    const failed = start.state === "failed";
     return (
-      <BootPage>
-        <StartReportView key={start.startedAt} report={start}>
-          {start.state === "failed" && (
-            <div className="grid gap-3">
-              {start.error && <RecoveryPanel message={start.error} compact retry={machine.state === "running"} />}
-              <div className="flex flex-wrap justify-end gap-2.5">
-                <Button variant="default" onClick={() => uiActions.navigate({ kind: "install" })}>
-                  Repair installation
-                </Button>
-                <Button leftSection={<IconPlayerPlay size={16} />} onClick={() => attempt(machineIpc.start())}>
-                  Try again
-                </Button>
-              </div>
-            </div>
-          )}
-        </StartReportView>
-      </BootPage>
+      <StartStage
+        key={start.startedAt}
+        report={start}
+        card={(screen) => <Card machine={machine} tone={failed ? "failed" : "starting"} screen={screen} />}
+        recovery={failed && start.error ? <RecoveryPanel message={start.error} compact retry={machine.state === "running"} /> : undefined}
+        actions={failed ? <>
+          <CopyDiagnosticsButton />
+          <Button variant="default" onClick={openMachineSettings}>Machine settings</Button>
+          <span className="flex-1" />
+          <Button variant="default" onClick={() => uiActions.navigate({ kind: "install" })}>Repair installation</Button>
+          <StartButton label="Try again" busy={busy} />
+        </> : undefined}
+      />
     );
   }
 
   if (machine.busy) {
     return (
       <BootPage>
-          <BootHero
-            tone="running"
-            progress={null}
-            title={`${machine.busy}…`}
-            subtitle="This can take a few minutes."
-            aside={
-              machine.busy === "Installing the machine" ? (
-                <Button variant="default" size="xs" onClick={() => uiActions.navigate({ kind: "install" })}>Show progress</Button>
-              ) : undefined
-            }
-          />
+        <BootHero
+          tone="running"
+          progress={null}
+          title={`${machine.busy}…`}
+          subtitle="This can take a few minutes."
+          aside={
+            machine.busy === "Installing the machine" ? (
+              <Button className="mt-2" variant="default" size="xs" onClick={() => uiActions.navigate({ kind: "install" })}>Show progress</Button>
+            ) : undefined
+          }
+        />
       </BootPage>
     );
   }
   if (machine.state === "notInstalled") {
     return (
-      <div className="page">
-        <EmptyState
-          icon={<IconDownload size={36} stroke={1.4} />}
-          title="Install the machine first"
-          action={<Button onClick={() => uiActions.navigate({ kind: "install" })}>Set up the machine</Button>}
-        >
-          Cabin runs Claude Code, Codex, OpenCode, Pi and Antigravity inside one Ubuntu VM on this computer.
-        </EmptyState>
-      </div>
+      <MachineStage
+        center
+        title="Set up your agent machine"
+        lead="Claude Code, Codex, OpenCode, Pi and Antigravity run inside one private Ubuntu machine on this computer."
+        main={<div><Button size="md" rightSection={<IconArrowRight size={16} />} onClick={() => uiActions.navigate({ kind: "install" })}>Set up the machine</Button></div>}
+      />
     );
   }
   if (machine.state === "stopped") {
     return (
-      <div className="page">
-        <EmptyState
-          icon={<IconDeviceDesktopOff size={36} stroke={1.4} />}
-          title="The machine is stopped"
-          action={
-            <div className="row">
-              <Button leftSection={<IconPlayerPlay size={16} />} onClick={() => attempt(machineIpc.start())}>
-                Start the machine
-              </Button>
-              <MachineSettingsButton />
-            </div>
-          }
-        >
-          Workspaces, sessions and agents live inside the VM. Start it to continue.
-        </EmptyState>
-        {machine.error && <RecoveryPanel compact message={machine.error} retry={false} />}
-      </div>
+      <MachineStage
+        center
+        title="Your machine is stopped"
+        lead="Workspaces, tasks and agents are saved on its disk. Start it to pick up where you left off."
+        main={<>
+          {machine.error && <RecoveryPanel compact message={machine.error} retry={false} />}
+          <div className="flex flex-wrap items-center gap-2">
+            <StartButton label="Start machine" busy={busy} />
+            <Button size="md" variant="default" onClick={openMachineSettings}>Machine settings</Button>
+          </div>
+        </>}
+        aside={<Card machine={machine} tone={machine.error ? "failed" : "stopped"} />}
+      />
     );
   }
+  const updating = machine.connection === "updating";
   return (
-    <BootPage>
-      <BootHero
-        tone={machine.error ? "bad" : "running"}
-        progress={null}
-        title={machine.connection === "updating" ? "Updating Cabin's service…" : "Connecting to your machine…"}
-        subtitle={
-          machine.connection === "updating"
-            ? "Installing the build that matches this app. Sessions resume after."
-            : machine.error
-              ? "The app will keep trying to connect."
-              : "This usually takes a few seconds."
-        }
-      />
-      {machine.error && (
-        <div className="grid gap-3">
-          <RecoveryPanel message={machine.error} />
-          <div className="flex justify-end"><MachineSettingsButton /></div>
-        </div>
-      )}
-    </BootPage>
+    <MachineStage
+      center
+      title={updating ? "Updating Cabin's service" : "Connecting to your machine"}
+      lead={updating
+        ? "Installing the build that matches this app. Sessions resume after."
+        : machine.error ? "The app will keep trying to connect." : "This usually takes a few seconds."}
+      main={machine.error
+        ? <RecoveryPanel message={machine.error} />
+        : <div className="stage-progress" data-indeterminate role="progressbar" aria-label={updating ? "Updating" : "Connecting"}><span /></div>}
+      aside={<Card machine={machine} tone={machine.error ? "failed" : "starting"} screen={updating ? "updating cabind…" : "waiting for cabind…"} />}
+      bar={machine.error ? <><CopyDiagnosticsButton /><span className="flex-1" /><Button variant="default" onClick={openMachineSettings}>Machine settings</Button></> : undefined}
+    />
   );
 }
 

@@ -2,20 +2,20 @@ import { useAutoRefresh } from "../../lib/useAutoRefresh";
 import { Alert, Badge, Button, Group, Loader, Menu, SegmentedControl } from "@mantine/core";
 import { IconArrowLeft, IconArrowRight } from "@tabler/icons-react";
 import { useEffect, useRef, useState } from "react";
-import { AgentSelect } from "../AgentPicker";
 import { formatInteger } from "../../lib/format";
 import { toIpcError } from "../../services/ipc/common";
 import { skillsIpc } from "../../services/ipc/extensions";
-import type { AgentKind, DiscoveredSkill, SkillInstall, SkillLibrary, SkillRegistry, SkillRepository } from "../../services/ipc/generated/core";
+import type { DiscoveredSkill, SkillInstall, SkillLibrary, SkillRegistry, SkillRepository } from "../../services/ipc/generated/core";
 import { ExtensionSearch } from "./LibraryParts";
 
 const REPO_PAGE_SIZE = 40;
 
 function sourceId(source: SkillRepository) { return `${source.repository}/${source.branch}/${source.directory}`; }
 
-export function SkillDiscover({ data, initialAgent, busy, onInstall, onRepositories }: {
-  data: SkillLibrary; initialAgent?: AgentKind; busy: boolean;
-  onInstall: (name: string, source: SkillInstall, targets: AgentKind[]) => void; onRepositories: () => void;
+export function SkillDiscover({ data, busy, onInstall, onManage }: {
+  data: SkillLibrary; busy: boolean;
+  onInstall: (name: string, source: Extract<SkillInstall, { type: "repository" | "registry" }>) => void;
+  onManage: (folder: string) => void;
 }) {
   const [tab, setTab] = useState("repositories");
   const [query, setQuery] = useState("");
@@ -26,7 +26,6 @@ export function SkillDiscover({ data, initialAgent, busy, onInstall, onRepositor
   const [registry, setRegistry] = useState<{ query: string; offset: number; data: SkillRegistry } | null>(null);
   const [registryBusy, setRegistryBusy] = useState(false);
   const [registryError, setRegistryError] = useState("");
-  const [agent, setAgent] = useState<AgentKind>(initialAgent ?? "claude");
   const [reload, setReload] = useState(0);
   useAutoRefresh(() => setReload((n) => n + 1), { enabled: tab === "repositories", initial: false, interval: 300_000, minGap: 60_000 });
   const repositories = data.repositories;
@@ -80,8 +79,6 @@ export function SkillDiscover({ data, initialAgent, busy, onInstall, onRepositor
     <div className="extension-toolbar">
       <SegmentedControl aria-label="Discovery source" value={tab} onChange={setTab}
         data={[{ value: "repositories", label: "Repositories" }, { value: "registry", label: "skills.sh" }]} />
-      <Group gap="xs" className="extension-install-to"><span>Install to</span><AgentSelect value={agent} onChange={setAgent} width={170} /></Group>
-      <Button variant="default" onClick={onRepositories}>Manage repositories</Button>
     </div>
     {tab === "repositories" ? <>
       <div className="extension-toolbar">
@@ -97,7 +94,8 @@ export function SkillDiscover({ data, initialAgent, busy, onInstall, onRepositor
         {visible.map((skill) => <DiscoveryRow key={`${sourceId(skill.origin.repository)}/${skill.origin.path}`}
           name={skill.name} detail={[skill.origin.repository.repository, skill.description || skill.origin.path].filter(Boolean).join(" · ")}
           status={repoStatus(skill)} busy={busy}
-          onInstall={() => onInstall(skill.folder, { type: "repository", origin: skill.origin }, [agent])} />)}
+          onManage={() => onManage(skill.folder)}
+          onInstall={() => onInstall(skill.name, { type: "repository", origin: skill.origin })} />)}
         {repoLoading ? <div className="extension-empty"><Loader size="xs" aria-label="Loading repositories" /></div>
           : !skills.length && <div className="extension-empty">{repositories.length ? "No matching repository skills" : "Add a GitHub repository to discover skills."}</div>}
         {lastPage > 0 && <Group justify="flex-end" p="sm">
@@ -115,7 +113,8 @@ export function SkillDiscover({ data, initialAgent, busy, onInstall, onRepositor
       {registry && <div className="extension-discovery-list">
         {registry.data.skills.map((skill) => <DiscoveryRow key={skill.id} name={skill.name}
           detail={`${skill.source} · ${formatInteger(skill.installs)} installs`} status={installed.has(skill.skillId) ? installed.get(skill.skillId)?.repository.repository === skill.source.toLowerCase() ? "Installed" : "Name in use" : null} busy={busy}
-          onInstall={() => onInstall(skill.name, { type: "registry", repository: skill.source, skillId: skill.skillId }, [agent])} />)}
+          onManage={() => onManage(skill.skillId)}
+          onInstall={() => onInstall(skill.name, { type: "registry", repository: skill.source, skillId: skill.skillId })} />)}
         {!registry.data.skills.length && <div className="extension-empty">No skills found for “{registry.query}”.</div>}
         {(registry.offset > 0 || registry.data.skills.length >= 30) && <Group justify="flex-end" p="sm">
           <Button variant="default" leftSection={<IconArrowLeft size={14} />} disabled={registryBusy || registry.offset === 0}
@@ -128,11 +127,14 @@ export function SkillDiscover({ data, initialAgent, busy, onInstall, onRepositor
   </>;
 }
 
-function DiscoveryRow({ name, detail, status, busy, onInstall }: {
-  name: string; detail: string; status: "Installed" | "Name in use" | null; busy: boolean; onInstall: () => void;
+function DiscoveryRow({ name, detail, status, busy, onInstall, onManage }: {
+  name: string; detail: string; status: "Installed" | "Name in use" | null; busy: boolean;
+  onInstall: () => void; onManage: () => void;
 }) {
   return <div className="extension-discovery-row">
     <div className="extension-row-info"><strong>{name}</strong><span title={detail}>{detail}</span></div>
-    {status ? <Badge variant="light" color={status === "Installed" ? "teal" : "yellow"}>{status}</Badge> : <Button size="compact-sm" variant="light" disabled={busy} onClick={onInstall}>Install</Button>}
+    {status === "Name in use" ? <Badge variant="light" color="yellow">Name in use</Badge>
+      : status === "Installed" ? <Button size="compact-sm" variant="subtle" color="gray" aria-label={`Manage installed skill ${name}`} disabled={busy} onClick={onManage}>Manage</Button>
+      : <Button size="compact-sm" variant="light" aria-label={`Install ${name}`} disabled={busy} onClick={onInstall}>Install</Button>}
   </div>;
 }

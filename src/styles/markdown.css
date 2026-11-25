@@ -21,15 +21,15 @@
 
 /* Fenced code: a header with the language, copy at the top right, Shiki
    colours (light in --sdm-c, dark in --shiki-dark). */
-.markdown [data-streamdown="code-block"] { position: relative; min-width: 0; max-width: 100%; margin: 0.8em 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--hover); }
-.markdown [data-streamdown="code-block-header"] { display: flex; align-items: center; min-height: 32px; padding: 0 40px 0 12px; border-bottom: 1px solid var(--border); color: var(--muted); font: var(--text-xs) var(--mono); }
+.markdown [data-streamdown="code-block"] { position: relative; min-width: 0; max-width: 100%; margin: 0.8em 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.markdown [data-streamdown="code-block-header"] { display: flex; align-items: center; min-height: 34px; padding: 0 40px 0 14px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); color: var(--muted); font: var(--text-xs) var(--mono); }
 .markdown [data-streamdown="code-block-header"] > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .markdown [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) { position: absolute; top: 4px; right: 5px; z-index: 1; }
 .markdown [data-streamdown="code-block-copy-button"] { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; }
 .markdown [data-streamdown="code-block-copy-button"] svg { width: 14px; height: 14px; }
 .markdown [data-streamdown="code-block-copy-button"]:hover { background: var(--hover); color: var(--text); }
 .markdown [data-streamdown="code-block-copy-button"]:disabled { opacity: 0.4; cursor: default; }
-.markdown [data-streamdown="code-block-body"] { overflow: auto; padding: 10px 12px; }
+.markdown [data-streamdown="code-block-body"] { overflow: auto; padding: 11px 14px; }
 .markdown [data-streamdown="code-block-body"] pre { margin: 0; font: var(--text-sm)/1.55 var(--mono); white-space: pre; tab-size: 2; }
 .markdown [data-streamdown="code-block-body"] code { font-size: inherit; }
 .markdown [data-streamdown="code-block-body"] code > span { display: block; min-height: 1.55em; }
@@ -42,9 +42,9 @@
 /* Tables. */
 .markdown [data-streamdown="table-wrapper"] { margin: 0.8em 0; max-width: 100%; overflow: auto; }
 .markdown [data-streamdown="table"] { border-collapse: collapse; font-size: 0.95em; }
-.markdown :is([data-streamdown="table-header-cell"], [data-streamdown="table-cell"]) { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; overflow-wrap: break-word; }
+.markdown :is([data-streamdown="table-header-cell"], [data-streamdown="table-cell"]) { border: 0; border-bottom: 1px solid var(--border); padding: 7px 14px 7px 0; text-align: left; vertical-align: top; overflow-wrap: break-word; }
 .markdown [data-streamdown="table-header-cell"] { white-space: nowrap; }
-.markdown [data-streamdown="table-header-cell"] { background: var(--hover); font-weight: 600; }
+.markdown [data-streamdown="table-header-cell"] { color: var(--muted); font-size: 0.92em; font-weight: 600; }
 
 /* Images. */
 .markdown [data-streamdown="image"] { max-width: 100%; border-radius: 6px; }

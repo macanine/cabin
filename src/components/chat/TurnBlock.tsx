@@ -82,7 +82,7 @@ export function TurnBlock({
 
   return (
     <div className="grid min-w-0 gap-3">
-      {foldable && <TurnHeader meta={meta} open={open} onToggle={() => setManual({ epoch: foldEpoch, open: !open })} />}
+      {foldable && <TurnHeader meta={meta} open={open} working={working} onToggle={() => setManual({ epoch: foldEpoch, open: !open })} />}
       {progress.length > 0 && (
         <Reveal open={foldable ? open : true} className="-mx-1.5 -mt-1">
           <ol className="m-0 grid list-none gap-0.5 px-1.5 pt-1 pb-1">

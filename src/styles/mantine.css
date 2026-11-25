@@ -62,6 +62,7 @@
 /* Mantine keeps validation colors and lets unstyled fields delegate focus to their wrapper. */
 .mantine-Input-wrapper[data-variant="default"]:not([data-error], [data-success]) {
   --input-bd: var(--border);
+  --input-bg: var(--surface);
 }
 .mantine-Input-wrapper:not([data-variant="unstyled"]) {
   --input-bd-focus: var(--field-focus-border);

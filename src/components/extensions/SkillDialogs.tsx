@@ -12,7 +12,7 @@ import { AgentTargets, ExtensionSearch } from "./LibraryParts";
 export type SkillInstallDialog =
   | { type: "zip" }
   | { type: "local" }
-  | { type: "remote"; name: string; source: SkillInstall; targets: AgentKind[] };
+  | { type: "remote"; name: string; source: Extract<SkillInstall, { type: "repository" | "registry" }> };
 
 const readZip = (file: File): Promise<string> => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -28,7 +28,7 @@ export function InstallSkillDialog({ dialog, local, busy, initialAgent, onClose,
   dialog: SkillInstallDialog; local: LocalSkill[]; busy: boolean; initialAgent?: AgentKind;
   onClose: () => void; onInstall: (source: SkillInstall, targets: AgentKind[], mode: SkillMode) => Promise<boolean>;
 }) {
-  const [targets, setTargets] = useState<AgentKind[]>(dialog.type === "remote" ? dialog.targets : initialAgent ? [initialAgent] : []);
+  const [targets, setTargets] = useState<AgentKind[]>(initialAgent ? [initialAgent] : []);
   const [mode, setMode] = useState<SkillMode>("link");
   const [zip, setZip] = useState<File | null>(null);
   const [selected, setSelected] = useState<LocalSkill | null>(null);
@@ -60,6 +60,8 @@ export function InstallSkillDialog({ dialog, local, busy, initialAgent, onClose,
   return <Modal opened onClose={onClose} withCloseButton={!locked} closeOnClickOutside={!locked} closeOnEscape={!locked} centered size="lg"
     title={dialog.type === "remote" ? `Install ${dialog.name}` : dialog.type === "zip" ? "Install skill from ZIP" : "Import an agent’s skill"}>
     <Stack gap="md">
+      {dialog.type === "remote" && <div className="text-sm text-muted break-words">{dialog.source.type === "repository"
+        ? `${dialog.source.origin.repository.repository} / ${dialog.source.origin.path}` : dialog.source.repository}</div>}
       {dialog.type === "zip" && <FileInput label="Skill ZIP" accept=".zip,application/zip" placeholder="Choose a ZIP" value={zip} onChange={setZip} disabled={locked} clearable />}
       {dialog.type === "local" && <>
         <ExtensionSearch value={query} onChange={setQuery} placeholder="Find an agent’s skill" />
@@ -72,7 +74,7 @@ export function InstallSkillDialog({ dialog, local, busy, initialAgent, onClose,
         </div>
       </>}
       <AgentTargets targets={targets.filter((kind) => kind !== selected?.kind)} onChange={setTargets} disabled={selected ? [selected.kind] : []}
-        hint={selected ? `The original stays in ${AGENT_NAMES[selected.kind]}.` : undefined} />
+        hint={selected ? `The original stays in ${AGENT_NAMES[selected.kind]}.` : "Leave every agent off to install into the library only."} />
       <NativeSelect label="Agent folders" value={mode} disabled={locked} data={[
         { value: "link", label: "Link to the managed skill" }, { value: "copy", label: "Keep a copy in each agent folder" },
       ]} onChange={(event) => setMode(event.currentTarget.value === "copy" ? "copy" : "link")} />

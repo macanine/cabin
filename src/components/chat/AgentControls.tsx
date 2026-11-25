@@ -110,7 +110,7 @@ export function AgentPlan({ plan }: { plan: ChatPlanEntry[] }) {
         <button type="button" className={PILL}>
           <PlanRing share={share} />
           <span className="font-medium text-fg tabular-nums">{progress.done}/{progress.total}</span>
-          <span className="max-w-[200px] truncate max-sm:hidden">{progress.current ? progress.current.content : "All steps done"}</span>
+          <span className="max-w-[180px] truncate max-sm:hidden">{progress.current ? progress.current.content : "All steps done"}</span>
         </button>
       }
     >

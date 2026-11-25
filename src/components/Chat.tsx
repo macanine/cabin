@@ -5,7 +5,7 @@ import type {
 } from "../services/ipc/generated/core";
 import { toIpcError } from "../services/ipc/common";
 import { libraryIpc } from "../services/ipc/library";
-import { deriveTimeline, pendingRequest } from "../lib/chatTimeline";
+import { activeTurn, deriveTimeline, pendingRequest } from "../lib/chatTimeline";
 import { toolCounts, usageByTurn } from "../lib/chatStats";
 import { isTaskActive, tasksByItem } from "../lib/chatTasks";
 import { loadDraft, saveDraft } from "../lib/chatDrafts";
@@ -13,6 +13,7 @@ import { useNow } from "../lib/useNow";
 import { guestNow } from "../lib/clock";
 import { actionablePlan, hasOpenPlan, mergePlan, planKey, visiblePlans } from "../lib/chatPlans";
 import { liveModel, reasoningOption, sessionOptions } from "../lib/agentControls";
+import { sessionCommandFor, type SessionCommand } from "../lib/sessionCommands";
 import { useApp } from "../state/store";
 import { uiActions } from "../state/ui";
 import { useChatAttachments } from "./ChatAttachments";
@@ -26,7 +27,10 @@ import { Suggestions } from "./chat/AgentControls";
 import { SubagentConversation } from "./chat/SubagentConversation";
 import { GoalCard } from "./chat/GoalCard";
 import { ChatComposer } from "./chat/ChatComposer";
+import { SessionCommandDialog } from "./chat/SessionCommandDialog";
+import { AGENT_NAMES } from "./common";
 import { ChatEmpty } from "./chat/ChatEmpty";
+import { PromptRail } from "./chat/PromptRail";
 import { SessionStrip } from "./chat/SessionStrip";
 import { useChatSession } from "./chat/useChatSession";
 import { useAutoTitle } from "./chat/useAutoTitle";
@@ -37,8 +41,8 @@ import { MENTION_EVENT, type MentionDetail } from "./workbench/mention";
 
 function placeholder(state: ChatState["state"], waiting: boolean, planLocked: boolean, hasModel: boolean, empty: boolean): string {
   if (waiting) return "Answer the request above";
-  if (state === "running") return "Queue a follow-up";
   if (planLocked) return "Review the plan above";
+  if (state === "running") return "Queue a follow-up";
   const idle = state === "ready" || state === "stopped" || state === "error";
   if (!hasModel && idle) return "Choose a model to start";
   switch (state) {
@@ -76,6 +80,7 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
   const [subagentSelected, setSubagentSelected] = useState<string | null>(null);
   const [text, setText] = useState(() => loadDraft(sessionId));
   const [caret, setCaret] = useState(0);
+  const [commandDialog, setCommandDialog] = useState<{ command: SessionCommand; opened: boolean } | null>(null);
   const attachments = useChatAttachments();
   const input = useRef<HTMLTextAreaElement>(null);
 
@@ -109,9 +114,22 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
 
   const rows = useMemo(() => deriveTimeline({ items, state: state.state }), [items, state.state]);
   const pending = useMemo(() => pendingRequest(items), [items]);
+  const turn = useMemo(() => {
+    const active = activeTurn(items, state.state);
+    return active && pending ? { ...active, waiting: true } : active;
+  }, [items, state.state, pending]);
   const dockPlan = conflictPlan ?? actionablePlan(plans, resumedPlan);
   const planLocked = hasOpenPlan(plans) || conflictPlan != null;
-  const planHistory = useMemo(() => visiblePlans(plans), [plans]);
+  // The plan under review is in the dock; the transcript lists the others.
+  const dockKey = dockPlan ? planKey(dockPlan) : null;
+  const planHistory = useMemo(() => visiblePlans(plans).filter((plan) => planKey(plan) !== dockKey), [plans, dockKey]);
+
+  // Answering a request gives the keyboard back to the message box.
+  const answered = useRef(false);
+  useEffect(() => {
+    if (answered.current && !pending && (document.activeElement === document.body || document.activeElement == null)) input.current?.focus();
+    answered.current = pending != null;
+  }, [pending]);
 
   const scroll = useFollowScroll([items, state, pending, plans, subagents, dockPlan], rows.length);
 
@@ -135,13 +153,17 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
   const queue = useMessageQueue({
     sessionId, state: state.state, blocked: pending != null || planLocked, onSent: scroll.resume,
   });
+  const hasAttachments = attachments.loading || attachments.files.length > 0;
+  const command = sessionCommandFor(text, hasAttachments);
   const menu = useComposerMenu({
     text, caret, workspaceId, agent, sessionId, worktree: session?.worktree?.path ?? null, controls,
+    includeSessionCommands: !hasAttachments,
     onApply: (next, at) => { setText(next); setCaret(at); focusAt(input.current, at); },
   });
 
   function clearComposer() {
     setText("");
+    setCaret(0);
     draft.current = "";
     saveDraft(sessionId, "");
   }
@@ -151,8 +173,13 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
   }
 
   async function send() {
+    if (command) {
+      setCommandDialog({ command, opened: true });
+      clearComposer();
+      return;
+    }
     const message = text.trim();
-    if ((!message && !attachments.files.length) || queue.sending || attachments.loading || planLocked) return;
+    if (!canSend) return;
     if (busy) {
       // While the agent works, a send waits in the queue.
       if (attachments.files.length) { uiActions.toast("Attachments can be sent when the agent is idle", "info"); return; }
@@ -161,8 +188,6 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
       return;
     }
     // A stopped chat is idle: sending reconnects its agent and resumes the conversation.
-    if (!idle) return;
-    if (!hasModel) { uiActions.toast("Choose a model first", "info"); return; }
     const finish = queue.startDirect();
     if (!finish) return;
     try {
@@ -238,7 +263,8 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
     now,
   }), [sessionId, usageMap, tools, subagentMap, taskMap, now, items]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const canSend = (text.trim().length > 0 || attachments.files.length > 0) && !attachments.loading && (idle || busy) && hasModel && !planLocked;
+  const canSend = (text.trim().length > 0 || attachments.files.length > 0) && !attachments.loading
+    && (idle || busy) && hasModel && !pending && !planLocked && !queue.sending;
 
   return (
     <ChatContext.Provider value={context}>
@@ -253,16 +279,17 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
               <PlanHistory plans={planHistory} onResume={(plan) => setResumedPlan(planKey(plan))} />
               {state.state === "error" && state.message && (
                 <div className="mt-3 flex animate-fade items-center gap-3 rounded-xl border border-bad/30 bg-bad/8 px-3.5 py-2.5 text-sm text-bad" role="status">
-                  <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{state.message}</span>
+                  <span className="grid min-w-0 flex-1 gap-0.5 [overflow-wrap:anywhere]">{state.message}<span className="text-xs text-muted">Your conversation is saved. Send a message to reconnect the agent.</span></span>
                 </div>
               )}
             </div>
           </div>
+          <PromptRail rows={rows} scrollRef={scroll.ref} />
           <SelectionBubble containerRef={scroll.ref} onQuote={quoteSelection} />
-          <div className="relative mx-auto w-[min(100%,768px)] px-6 pt-2.5 pb-[18px] before:pointer-events-none before:absolute before:inset-x-0 before:-top-7 before:h-7 before:bg-linear-to-t before:from-bg before:to-transparent">
+          <div className="relative mx-auto w-[min(100%,792px)] px-6 pt-2 pb-4 before:pointer-events-none before:absolute before:inset-x-0 before:-top-7 before:h-7 before:bg-linear-to-t before:from-bg before:to-transparent">
             {!scroll.atEnd && (
               <button
-                className={`press glass absolute -top-12 left-1/2 z-10 inline-flex h-8 -translate-x-1/2 cursor-pointer items-center gap-1.5 rounded-full px-3 text-xs ${scroll.unseen ? "!border-accent/40 text-accent" : "text-muted hover:text-fg"}`}
+                className={`press glass-strong absolute -top-11 left-1/2 z-10 inline-flex h-8 -translate-x-1/2 cursor-pointer items-center gap-1.5 rounded-full px-3 text-xs ${scroll.unseen ? "!border-accent/40 text-accent" : "text-muted hover:text-fg"}`}
                 onClick={scroll.jump}
                 aria-label="Jump to the latest message"
               >
@@ -270,57 +297,70 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
                 {scroll.unseen > 0 && <span className="font-medium">New messages</span>}
               </button>
             )}
-            {controls.goal && (
-              <GoalCard goal={controls.goal} onControl={(action) => {
-                void libraryIpc.chatGoalControl(sessionId, action).catch((error) => uiActions.toast(toIpcError(error).message, "error"));
-              }} />
-            )}
-            <SessionStrip
-              plan={controls.plan} rows={rows} subagents={subagents} tasks={tasks} onStopTask={stopTask} now={now} session={session} agent={agent}
-              open={subagentOpen} onOpenChange={setSubagentOpen}
-              onSelect={(id) => { setSubagentOpen(false); setSubagentSelected(id); }}
-            />
-            {dockPlan && (
-              <PlanReviewDock sessionId={sessionId} plan={dockPlan} conflict={conflictPlan != null} onPlan={applyPlanDecision} onDismiss={() => setConflictPlan(null)} />
-            )}
-            {pending && <PendingRequest sessionId={sessionId} item={pending} />}
             {idle && !pending && !text && (
               <Suggestions items={controls.suggestions} onPick={(next) => { setText(next); input.current?.focus(); }} />
             )}
-            <ChatComposer
-              input={input}
-              text={text}
-              onText={setText}
-              onCaret={setCaret}
-              placeholder={placeholder(state.state, pending != null, planLocked, hasModel, items.length === 0)}
-              docked={pending != null || dockPlan != null}
-              busy={busy}
-              sending={queue.sending}
-              canSend={canSend}
-              canSteer={controls.canSteer && busy && !queue.sending && !pending && !planLocked}
-              menu={menu}
-              queue={{ ...queue, onEdit: (message) => { queue.remove(message); setText(message.text); focusAt(input.current); } }}
-              attachments={attachments}
-              onImages={addImages}
-              onSend={() => void send()}
-              onStop={interrupt}
-              onRecall={() => [...items].reverse().find((item) => item.kind === "user_message" && item.text)?.text ?? null}
-              agent={agent}
-              workspaceId={workspaceId}
-              model={model}
-              live={live}
-              reasoning={reasoning}
-              otherOptions={otherOptions}
-              optionsDisabled={state.state === "starting" || state.state === "stopped" || state.state === "error"}
-              permission={permission}
-              controls={controls}
-              onModel={chat.setModel}
-              onReasoning={reasoning ? (value) => libraryIpc.chatSetOption(sessionId, reasoning.id, value) : undefined}
-              onPermission={chat.changePermission}
-              onOption={(id, value) => libraryIpc.chatSetOption(sessionId, id, value)}
-            />
+            <div className="chat-dock" data-chat-dock>
+              {controls.goal && (
+                <GoalCard goal={controls.goal} onControl={(action) => {
+                  void libraryIpc.chatGoalControl(sessionId, action).catch((error) => uiActions.toast(toIpcError(error).message, "error"));
+                }} />
+              )}
+              <SessionStrip
+                turn={turn}
+                plan={controls.plan} rows={rows} subagents={subagents} tasks={tasks} onStopTask={stopTask} now={now} session={session} agent={agent}
+                open={subagentOpen} onOpenChange={setSubagentOpen}
+                onSelect={(id) => { setSubagentOpen(false); setSubagentSelected(id); }}
+              />
+              {dockPlan && (
+                <PlanReviewDock sessionId={sessionId} plan={dockPlan} conflict={conflictPlan != null} onPlan={applyPlanDecision} onDismiss={() => setConflictPlan(null)} />
+              )}
+              {pending && <PendingRequest sessionId={sessionId} item={pending} />}
+              <ChatComposer
+                input={input}
+                text={text}
+                onText={setText}
+                onCaret={setCaret}
+                placeholder={placeholder(state.state, pending != null, planLocked, hasModel, items.length === 0)}
+                busy={busy}
+                sending={queue.sending}
+                commandLabel={command === "status" ? "Open session status" : command === "context" ? "Open context window" : null}
+                canSend={canSend}
+                canSteer={controls.canSteer && busy && !queue.sending && !pending && !planLocked}
+                menu={menu}
+                queue={{ ...queue, onEdit: (message) => { queue.remove(message); setText(message.text); focusAt(input.current); } }}
+                attachments={attachments}
+                onImages={addImages}
+                onSend={() => void send()}
+                onStop={interrupt}
+                onRecall={() => [...items].reverse().find((item) => item.kind === "user_message" && item.text)?.text ?? null}
+                agent={agent}
+                workspaceId={workspaceId}
+                model={model}
+                live={live}
+                reasoning={reasoning}
+                otherOptions={otherOptions}
+                optionsDisabled={state.state === "starting" || state.state === "stopped" || state.state === "error"}
+                permission={permission}
+                controls={controls}
+                onModel={chat.setModel}
+                onReasoning={reasoning ? (value) => libraryIpc.chatSetOption(sessionId, reasoning.id, value) : undefined}
+                onPermission={chat.changePermission}
+                onOption={(id, value) => libraryIpc.chatSetOption(sessionId, id, value)}
+              />
+            </div>
           </div>
         </div>
+        {commandDialog && (
+          <SessionCommandDialog
+            command={commandDialog.command} opened={commandDialog.opened}
+            onClose={() => setCommandDialog({ ...commandDialog, opened: false })}
+            onExited={() => focusAt(input.current)}
+            state={state} agentName={controls.agentName ?? AGENT_NAMES[agent]}
+            model={live?.choices.find((choice) => choice.value === (model ?? live.current))?.name ?? model ?? live?.current ?? null}
+            permission={permission} context={controls.context}
+          />
+        )}
         {selectedSubagent && (
           <SubagentConversation task={selectedSubagent} onQuote={quoteSelection} onClose={() => setSubagentSelected(null)} />
         )}

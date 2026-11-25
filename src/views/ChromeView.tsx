@@ -14,12 +14,12 @@ import { confirmAction } from "../services/ipc/dialogs";
 import { useApp } from "../state/store";
 import { uiActions, useUi } from "../state/ui";
 import { BrowserEnvironmentPanel } from "../components/BrowserEnvironmentPanel";
+import { ViewHeader } from "../components/TitleBar";
 import { StepProgress } from "../components/StepProgress";
 import { ChromeViewer, type ViewerState } from "../components/ChromeViewer";
 import { DISPLAY_ZOOMS, matchDisplay, zoomScale } from "../lib/chromeDisplay";
 
 const INSTALLING = "Installing Chrome";
-const RESTART_GRACE_MS = 10_000;
 const PROTOCOL_KEY = "cabin.chromeDisplayProtocol";
 const FIT_KEY = "cabin.chromeFitWindow";
 /** Resize settles this long before the desktop follows the window. */
@@ -40,7 +40,7 @@ function preferredProtocol(): DisplayProtocol {
 
 /**
  * The Chrome page: the browser, and its environment panel (opened from the
- * dock, or from the Network Check's browser fixes).
+ * header, or from the Network Check's browser fixes).
  */
 export function ChromePage() {
   const panelOpen = useUi((ui) => ui.browserPanelOpen);
@@ -54,7 +54,7 @@ export function ChromePage() {
 }
 
 /**
- * Chrome inside the machine, shown full size. One small dock in the corner
+ * Chrome inside the machine, shown full size. The header
  * holds what people use (apps, fit to window, environment, restart); the rest (display
  * protocol, scale, setup log, quit) is in its "More" menu. The display
  * reconnects on its own, and with "Fit to window" on, the desktop follows
@@ -70,9 +70,7 @@ export function ChromeView() {
   const [nativeDisplay, setNativeDisplay] = useState<NativeDisplayStatus | null>(null);
   const [nativeError, setNativeError] = useState<string | null>(null);
   const [showInstallLog, setShowInstallLog] = useState(false);
-  const [closedLong, setClosedLong] = useState(false);
   const [fit, setFit] = useState(readFit);
-  const autoStarted = useRef(false);
   const statusRequest = useRef<Promise<ChromeStatus> | null>(null);
   const screen = useRef<HTMLDivElement>(null);
 
@@ -89,18 +87,16 @@ export function ChromeView() {
   }, []);
 
   useEffect(() => {
-    if (machine?.state !== "running") autoStarted.current = false;
     if (machine && machine.state !== "notInstalled") void load();
   }, [machine?.state, machine?.connection, machine?.busy, load]);
 
   const installing = working === "install" || machine?.busy === INSTALLING;
-  const settling = machine?.state === "running" && (machine.connection !== "connected"
-    || (status?.configured && status.installed !== false && status.running !== true && !closedLong));
+  const watchStatus = machine?.state === "running" && status?.configured;
   useEffect(() => {
-    if (!installing && !settling) return;
-    const timer = window.setInterval(() => void load(true), installing ? 750 : 2500);
+    if (!installing && !watchStatus) return;
+    const timer = window.setInterval(() => void load(true), installing ? 750 : 5000);
     return () => window.clearInterval(timer);
-  }, [installing, settling, load]);
+  }, [installing, watchStatus, load]);
 
   const run = useCallback(async (kind: Work, task: () => Promise<unknown>) => {
     setError(null);
@@ -117,20 +113,6 @@ export function ChromeView() {
       setWorking(null);
     }
   }, [load]);
-
-  useEffect(() => {
-    if (autoStarted.current || working || machine?.busy || machine?.state !== "running") return;
-    if (!status?.configured || status.installed !== true || status.running === null) return;
-    autoStarted.current = true;
-    if (!status.running) void run("open", chromeIpc.open);
-  }, [status, working, machine?.busy, machine?.state, run]);
-
-  useEffect(() => {
-    setClosedLong(false);
-    if (status?.running !== false || working === "open" || working === "restart") return;
-    const timer = window.setTimeout(() => setClosedLong(true), RESTART_GRACE_MS);
-    return () => window.clearTimeout(timer);
-  }, [status?.running, working]);
 
   const desktopRunning = status?.configured && status.installed !== false && machine?.state === "running" && !installing;
   const nativeAvailable = desktopRunning && machine?.connection === "connected" && working !== "spice";
@@ -154,7 +136,6 @@ export function ChromeView() {
     if (!accepted) return;
     await run("install", async () => {
       await chromeIpc.install();
-      autoStarted.current = true;
       uiActions.toast("Chrome is ready", "success");
     });
   }
@@ -277,55 +258,8 @@ export function ChromeView() {
   };
   return (
     <div className="chrome-page">
-      <div ref={screen} className="chrome-screen">
-        {working !== "spice" && <ChromeViewer key={protocol} protocol={protocol} onState={setViewer} onError={setError} />}
-        {working === "spice" || viewer.phase === "connecting" ? (
-          <div className="chrome-connecting" role="status">
-            <Loader size="sm" color="gray" />
-            {working === "spice" ? "Turning on SPICE…" : "Connecting to the desktop…"}
-          </div>
-        ) : viewer.phase === "failed" && (
-          <div className="chrome-connecting">
-            <div className="chrome-center" role="alert">
-              <Loader size="sm" color="gray" />
-              <h2>Reconnecting to the desktop…</h2>
-              <p>{viewer.message}</p>
-              <div className="chrome-details-actions">
-                {protocol === "vnc" && status.viewerReady === false && (
-                  <Button size="xs" variant="default" onClick={() => void install()}>Repair Chrome</Button>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {ready && status.running === false && !error && (
-        <div className="chrome-toast" role="status">
-          {closedLong ? (
-            <><span>Chrome is closed</span><Button variant="subtle" size="compact-xs" onClick={() => void run("open", chromeIpc.open)}>Open Chrome</Button></>
-          ) : (
-            <><Loader size={13} color="gray" /><span>Chrome is starting…</span></>
-          )}
-        </div>
-      )}
-      {(error || nativeError) && (
-        <div className="chrome-toast" role="alert">
-          <IconAlertTriangle size={15} aria-hidden="true" />
-          <span>{error ?? nativeError}</span>
-          <ActionIcon variant="subtle" color="gray" size="sm" aria-label="Dismiss" onClick={() => { setError(null); setNativeError(null); }}><IconX size={14} /></ActionIcon>
-        </div>
-      )}
-
-      {ready && (
-        <FitFollower
-          enabled={fit && !!canResize && !!nativeDisplay?.chromeWayland}
-          target={screen}
-          onSettle={() => void changeDisplay("match", nativeZoom, true)}
-        />
-      )}
-
-      <div className={`chrome-dock${ready ? "" : " dock-hidden"}`} role="toolbar" aria-label="Chrome">
+      <ViewHeader title="Chrome" subtitle={!ready ? (viewer.phase === "failed" ? "Reconnecting…" : "Connecting…") : status.running === false ? "Closed" : status.version ?? undefined}>
+        <div className={`chrome-tools${ready ? "" : " dock-hidden"}`} role="toolbar" aria-label="Chrome" inert={!ready}>
         <AppLauncher onError={setError} />
         <Tooltip label={fit ? "Fit to window: on" : "Fit the desktop to this window"} withinPortal>
           <ActionIcon variant={fit ? "light" : "subtle"} color={fit ? undefined : "gray"} aria-pressed={fit} aria-label="Fit to window"
@@ -344,7 +278,7 @@ export function ChromeView() {
             <IconRefresh size={16} />
           </ActionIcon>
         </Tooltip>
-        <Menu position="top-end" withinPortal shadow="md" width={230} offset={8}>
+        <Menu position="bottom-end" withinPortal shadow="md" width={230} offset={8}>
           <Menu.Target>
             <ActionIcon variant="subtle" color="gray" aria-label="More"><IconDots size={16} /></ActionIcon>
           </Menu.Target>
@@ -379,7 +313,55 @@ export function ChromeView() {
             <Menu.Item color="red" leftSection={<IconPower size={14} />} disabled={working === "stop"} onClick={() => void run("stop", () => chromeIpc.stop())}>Quit Chrome</Menu.Item>
           </Menu.Dropdown>
         </Menu>
+        </div>
+      </ViewHeader>
+      <div ref={screen} className="chrome-screen">
+        {working !== "spice" && <ChromeViewer key={protocol} protocol={protocol} onState={setViewer} onError={setError} />}
+        {working === "spice" || viewer.phase === "connecting" ? (
+          <div className="chrome-connecting" role="status">
+            <Loader size="sm" color="gray" />
+            {working === "spice" ? "Turning on SPICE…" : "Connecting to the desktop…"}
+          </div>
+        ) : viewer.phase === "failed" && (
+          <div className="chrome-connecting">
+            <div className="chrome-center" role="alert">
+              <Loader size="sm" color="gray" />
+              <h2>Reconnecting to the desktop…</h2>
+              <p>{viewer.message}</p>
+              <div className="chrome-details-actions">
+                {protocol === "vnc" && status.viewerReady === false && (
+                  <Button size="xs" variant="default" onClick={() => void install()}>Repair Chrome</Button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+
+      {ready && status.running === false && !error && (
+        <div className="chrome-toast" role="status">
+          {working === "open" || working === "restart" ? (
+            <><Loader size={13} color="gray" /><span>Chrome is starting…</span></>
+          ) : (
+            <><span>Chrome is closed</span><Button variant="subtle" size="compact-xs" disabled={working !== null} onClick={() => void run("open", chromeIpc.open)}>Open Chrome</Button></>
+          )}
+        </div>
+      )}
+      {(error || nativeError) && (
+        <div className="chrome-toast" role="alert">
+          <IconAlertTriangle size={15} aria-hidden="true" />
+          <span>{error ?? nativeError}</span>
+          <ActionIcon variant="subtle" color="gray" size="sm" aria-label="Dismiss" onClick={() => { setError(null); setNativeError(null); }}><IconX size={14} /></ActionIcon>
+        </div>
+      )}
+
+      {ready && (
+        <FitFollower
+          enabled={fit && !!canResize && !!nativeDisplay?.chromeWayland}
+          target={screen}
+          onSettle={() => void changeDisplay("match", nativeZoom, true)}
+        />
+      )}
 
       <Modal opened={showInstallLog} onClose={() => setShowInstallLog(false)} title="Chrome setup log" size="lg">
         {status.install && (
@@ -493,7 +475,7 @@ function AppLauncher({ onError }: { onError: (message: string) => void }) {
   }
 
   return (
-    <Popover opened={opened} onChange={setOpened} position="top-start" shadow="md" width={280} withinPortal offset={8}>
+    <Popover opened={opened} onChange={setOpened} position="bottom-end" shadow="md" width={280} withinPortal offset={8}>
       <Popover.Target>
         <ActionIcon variant={opened ? "light" : "subtle"} color={opened ? undefined : "gray"} aria-label="Apps" title="Apps" onClick={() => setOpened((v) => !v)}>
           <IconApps size={16} />

@@ -2,7 +2,7 @@ import { Button } from "@mantine/core";
 import { IconGitBranch } from "@tabler/icons-react";
 import { useState } from "react";
 import type { AgentKind, ChatAsyncTask, ChatPlanEntry, Session, SubagentTask } from "../../services/ipc/generated/core";
-import type { TimelineRow } from "../../lib/chatTimeline";
+import type { ActiveTurn, TimelineRow } from "../../lib/chatTimeline";
 import { sessionChanges } from "../../lib/chatTimeline";
 import { toIpcError } from "../../services/ipc/common";
 import { libraryIpc } from "../../services/ipc/library";
@@ -11,6 +11,7 @@ import { uiActions } from "../../state/ui";
 import { AgentPlan } from "./AgentControls";
 import { ChangeSummary } from "./ChangeSummary";
 import { SubagentStrip } from "./SubagentStrip";
+import { LiveLine } from "./LiveLine";
 import { AsyncTasks } from "./AsyncTasks";
 import { PILL, StripPopover } from "./strip";
 
@@ -42,9 +43,10 @@ function WorktreePill({ session, agent }: { session: Session; agent: AgentKind }
   );
 }
 
-/** One quiet row of what the session is carrying: plan, changes, subagents,
- * background tasks, worktree. */
-export function SessionStrip({ plan, rows, subagents, tasks, onStopTask, now, session, agent, open, onOpenChange, onSelect }: {
+/** The rail on top of the dock: what the agent is doing, then what the session
+ * is carrying (plan, changes, subagents, background tasks, worktree). */
+export function SessionStrip({ turn, plan, rows, subagents, tasks, onStopTask, now, session, agent, open, onOpenChange, onSelect }: {
+  turn: ActiveTurn | null;
   plan: ChatPlanEntry[];
   rows: TimelineRow[];
   subagents: SubagentTask[];
@@ -58,7 +60,8 @@ export function SessionStrip({ plan, rows, subagents, tasks, onStopTask, now, se
   onSelect: (id: string) => void;
 }) {
   return (
-    <div className="mb-1.5 flex flex-wrap items-start gap-1.5 empty:hidden">
+    <div className="flex flex-wrap items-center gap-0.5 border-b border-line px-2 py-1 empty:hidden">
+      {turn && <span className="mr-auto flex min-w-0 flex-[1_1_180px]"><LiveLine turn={turn} now={now} /></span>}
       <AgentPlan plan={plan} />
       <ChangeSummary changes={sessionChanges(rows)} />
       <SubagentStrip tasks={subagents} now={now} open={open} onOpenChange={onOpenChange} onSelect={onSelect} />

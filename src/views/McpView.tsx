@@ -3,7 +3,7 @@ import { IconCopy, IconDots, IconDownload } from "@tabler/icons-react";
 import { useState } from "react";
 import { AGENT_KINDS } from "../components/AgentPicker";
 import { AGENT_NAMES } from "../components/common";
-import { AgentColumn, BindingSwitch, ExtensionSearch, ExtensionStatus, useExtensionLibrary } from "../components/extensions/LibraryParts";
+import { AgentColumn, AgentRail, BindingSwitch, ExtensionSearch, ExtensionStatus, useExtensionLibrary } from "../components/extensions/LibraryParts";
 import { McpLibraryEditor } from "../components/extensions/McpLibraryEditor";
 import { ViewHeader } from "../components/TitleBar";
 import { attempt } from "../lib/operations";
@@ -18,9 +18,11 @@ function available(row: McpRow, kind: AgentKind, blocked: AgentKind[]) {
     && (binding?.state === "enabled" || binding?.state === "disabled"));
 }
 
-export function McpView({ agent }: { agent?: AgentKind }) {
+export function McpView({ agent: initialAgent }: { agent?: AgentKind }) {
+  const [agent, setAgent] = useState<AgentKind | null>(initialAgent ?? null);
   const library = useExtensionLibrary(mcpIpc.list);
   const [query, setQuery] = useState("");
+  const [writeError, setWriteError] = useState<{ title: string; message: string } | null>(null);
   const [editor, setEditor] = useState<{ server: McpServer | null; opened: boolean; revision: number } | null>(null);
   const [undo, setUndo] = useState<{ kind: AgentKind; names: string[]; enabled: boolean } | null>(null);
   const pi = useApp((state) => state.agents.find((entry) => entry.kind === "pi"));
@@ -32,9 +34,14 @@ export function McpView({ agent }: { agent?: AgentKind }) {
     && [row.name, row.endpoint, row.description].some((value) => value.toLowerCase().includes(term))) ?? [];
   const importable = data?.rows.some((row) => !row.managed && !row.conflict && row.transport);
 
-  function change(action: McpChange) {
+  function change(action: McpChange, onError?: (message: string) => void) {
     setUndo(null);
-    return library.change(() => mcpIpc.change(action));
+    setWriteError(null);
+    return library.change(() => mcpIpc.change(action), onError ?? ((message) => {
+      const subject = action.type === "bind" ? action.targets.map((kind) => AGENT_NAMES[kind]).join(", ") : "MCP configuration";
+      const names = action.type === "bind" && action.names.length === 1 ? ` for ${action.names[0]}` : "";
+      setWriteError({ title: `Could not update ${subject}${names}`, message });
+    }));
   }
   async function column(kind: AgentKind, enabled: boolean) {
     const names = visible.filter((row) => available(row, kind, blocked) && row.bindings.some((binding) => binding.kind === kind
@@ -52,7 +59,7 @@ export function McpView({ agent }: { agent?: AgentKind }) {
     if (server) openEditor(server);
   }
   async function copy(name?: string) {
-    const ok = await confirmAction("Copy this MCP configuration to the clipboard? It can contain environment variables and authorization headers.", "Copy JSON");
+    const ok = await confirmAction("Copy server definitions to the clipboard? This can include secrets, but does not include which agents have the servers enabled.", "Copy JSON");
     if (ok) await attempt(mcpIpc.export(name).then(clipboard.write), "MCP configuration copied");
   }
   async function remove(row: McpRow) {
@@ -62,7 +69,7 @@ export function McpView({ agent }: { agent?: AgentKind }) {
   }
 
   return <>
-    <ViewHeader title="MCP" subtitle={data ? `${data.rows.length} server${data.rows.length === 1 ? "" : "s"}` : null}>
+    <ViewHeader title="MCP" subtitle="User-level configuration for agents">
       <Button size="compact-sm" onClick={() => openEditor(null)} disabled={busy || !data}>Add MCP</Button>
       <Menu position="bottom-end"><Menu.Target><ActionIcon variant="subtle" color="gray" aria-label="MCP actions"><IconDots size={17} /></ActionIcon></Menu.Target>
         <Menu.Dropdown>
@@ -72,16 +79,22 @@ export function McpView({ agent }: { agent?: AgentKind }) {
         </Menu.Dropdown>
       </Menu>
     </ViewHeader>
+    <div className="split-page">
+    {data && <AgentRail label="Filter servers" value={agent} onChange={setAgent} total={data.rows.length}
+      count={(kind) => data.rows.filter((row) => row.bindings.some((binding) => binding.kind === kind && (binding.state === "enabled" || binding.wanted))).length} />}
     <section className="extension-page" aria-label="MCP servers">
       {!data ? <ExtensionStatus error={library.error} /> : <>
         <div className="extension-toolbar">
           <ExtensionSearch value={query} onChange={setQuery} placeholder="Search servers, commands or URLs" />
-          {agent && <Badge variant="light">{AGENT_NAMES[agent]}</Badge>}
         </div>
         {data.agents.filter((agent) => agent.error).map((agent) => <Alert color="yellow" key={agent.kind} title={`${AGENT_NAMES[agent.kind]} MCP config could not be read`}>
           {agent.path && <span className="extension-path">{agent.path}</span>} {agent.error}
         </Alert>)}
         {legacyPi && <Alert color="gray">Native MCP requires Pi 1.0 or newer.</Alert>}
+        {writeError && <Alert color="red" role="alert" title={writeError.title}
+          withCloseButton closeButtonLabel="Dismiss configuration error" onClose={() => setWriteError(null)}>
+          {writeError.message}
+        </Alert>}
         {undo && <Alert color="blue"><Group justify="space-between">Updated {undo.names.length} servers for {AGENT_NAMES[undo.kind]}
           <Button variant="subtle" size="compact-sm" onClick={() => void change({ type: "bind", names: undo.names, targets: [undo.kind], enabled: undo.enabled })}>Undo</Button>
         </Group></Alert>}
@@ -124,6 +137,7 @@ export function McpView({ agent }: { agent?: AgentKind }) {
         </div>
       </>}
     </section>
+    </div>
     <Drawer opened={editor?.opened ?? false} onClose={closeEditor}
       onExitTransitionEnd={() => setEditor((current) => current?.opened ? current : null)}
       title={editor?.server ? `Edit ${editor.server.name}` : "Add MCP server"}

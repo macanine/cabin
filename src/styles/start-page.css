@@ -1,17 +1,11 @@
 /* -------------------------------------------------------- start page */
 
-.start {
-  width: 100%;
-  max-width: 700px;
-  margin-top: 14vh;
-}
-
 .composer {
   border: 1px solid var(--border);
   background: var(--surface);
-  border-radius: 14px;
+  border-radius: 16px;
   padding: 12px 14px 10px;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.03), 0 4px 16px -6px rgb(0 0 0 / 0.08);
+  box-shadow: var(--shadow-float);
   transition: border-color var(--motion-fast) var(--ease-out);
 }
 

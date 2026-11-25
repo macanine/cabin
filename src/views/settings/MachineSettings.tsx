@@ -51,12 +51,20 @@ function useInspection<T>(load: () => Promise<T>, request: string | null, keepLa
   return request != null && (keepLast || result?.request === request) ? result : undefined;
 }
 
+const PAGES = [
+  { value: "resources", label: "Resources" },
+  { value: "details", label: "Details" },
+  { value: "recovery", label: "Diagnostics and recovery" },
+] as const;
+type MachinePage = (typeof PAGES)[number]["value"];
+
 export function MachineSettings() {
   const machine = useApp((state) => state.machine);
   const start = useApp((state) => state.start);
   const request = machine ? `${machine.state}:${machine.connection}:${machine.busy ?? ""}:${machine.display}:${machine.browser}:${machine.device}` : null;
   const installed = machine != null && machine.state !== "notInstalled";
   const connected = machine?.connection === "connected";
+  const [chosen, setChosen] = useState<MachinePage | null>(null);
   const [resourceRevision, setResourceRevision] = useState(0);
   const inspection = useInspection(machineIpc.details, installed ? `${request}:${resourceRevision}` : null, true);
   const observation = useInspection(machineIpc.observation, connected ? request : null);
@@ -76,6 +84,9 @@ export function MachineSettings() {
   const recoveryNeeded = machine.error != null || startFailed;
   const cannotReadConfig = installed && inspection != null && !inspection.value;
 
+  // A failure opens on the way out, until a section is chosen.
+  const page = chosen ?? (startFailed ? "recovery" : "resources");
+
   const facts = [
     installed && machine.cpus != null ? `${formatInteger(machine.cpus)} vCPUs` : null,
     installed && machine.memoryMb != null ? `${formatBytes(machine.memoryMb * 1024 ** 2)} RAM` : null,
@@ -87,7 +98,7 @@ export function MachineSettings() {
 
   return (
     <SettingsPage title="Machine">
-      <section className="glass mb-4 rounded-2xl p-5" aria-label="Machine status">
+      <section className="mb-4 rounded-[var(--card-radius)] border border-line bg-surface p-5" aria-label="Machine status">
         <div className="flex flex-wrap items-center gap-4">
           <span className={`relative grid size-12 shrink-0 place-items-center rounded-2xl ${tone === "ok" ? "bg-ok/13 text-ok" : tone === "warn" ? "bg-warn/14 text-warn" : tone === "bad" ? "bg-bad/13 text-bad" : "bg-hover text-muted"}`}>
             <IconServer size={22} />
@@ -118,23 +129,28 @@ export function MachineSettings() {
       </section>
 
       {machine.error && <RecoveryPanel compact message={machine.error} />}
+      <nav className="mb-4 flex gap-[18px] border-b border-line" aria-label="Machine sections">
+        {PAGES.map(({ value, label }) => (
+          <button key={value} type="button" className="agents-nav-button" aria-current={page === value ? "page" : undefined} onClick={() => setChosen(value)}>{label}</button>
+        ))}
+      </nav>
+      {page === "resources" && <>
       {installed && inspection?.value && <MachineResourceEditor machine={machine} details={inspection.value}
         onSaved={() => setResourceRevision((revision) => revision + 1)} />}
-      {installed && (inspection?.value ? (
-        <MachineDetailsPanel machine={machine} details={inspection.value} observation={observation?.value ?? null} />
-      ) : (
-        <>
-          <p className="muted" role="status">{inspection?.error ?? (inspection ? "Saved machine configuration is unavailable" : "Reading machine configuration…")}</p>
-          <MachineResources machine={machine} observation={observation?.value ?? null} />
-        </>
-      ))}
+        {installed ? <MachineResources machine={machine} observation={observation?.value ?? null} />
+          : <p className="muted machine-note">Install the machine to set its resources.</p>}
       {connected && observation?.error && <p className="muted machine-note" role="status">Guest observation unavailable · {observation.error}</p>}
 
+      </>}
+      {page === "details" && (inspection?.value && installed
+        ? <MachineDetailsPanel machine={machine} details={inspection.value} observation={observation?.value ?? null} />
+        : <p className="muted machine-note" role="status">{!installed ? "Install the machine to see its details." : inspection?.error ?? (inspection ? "Saved machine configuration is unavailable" : "Reading machine configuration…")}</p>)}
+      {page === "recovery" && <>
       <Section title="Startup and diagnostics" action={<CopyDiagnosticsButton />}>
         {start ? (
           <details className="machine-expander" open={startFailed || start.state === "running" || undefined}>
             <summary>{startFailed ? "Start failed" : start.state === "running" ? "Start in progress" : `Last start · ${formatDuration(reportElapsed(start, Date.now()))}`}</summary>
-            <StartReportView key={start.startedAt} report={start} compact />
+            <StartReportView key={start.startedAt} report={start} />
           </details>
         ) : <p className="muted machine-note">No startup report in this app session</p>}
         <details className="machine-expander" open={blocking || undefined}>
@@ -164,6 +180,7 @@ export function MachineSettings() {
           <Button variant="light" color="red" leftSection={<IconTrash size={14} />} disabled={busy} onClick={() => void destroy()}>Erase machine…</Button>
         </div>
       </Section>}
+      </>}
     </SettingsPage>
   );
 }

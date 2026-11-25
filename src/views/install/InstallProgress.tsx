@@ -12,6 +12,7 @@ import { MirrorPicker } from "../../components/MirrorPicker";
 import { type StateTone } from "../../components/common";
 import { StepProgress } from "../../components/StepProgress";
 import { CopyDiagnosticsButton } from "../../components/Recovery";
+import { MachineStage } from "../../components/MachineStage";
 import { BootDetails, BootStep, Note, Ticker } from "../../components/Boot";
 import { useAutoOpen } from "../../components/motion";
 import { Celebration } from "../../components/Celebration";
@@ -160,30 +161,40 @@ export function InstallProgress({
     : installing || starting ? (runningDownload ? `${runningDownload.verifying ? "verifying" : "downloading"} ${downloadSummary(runningDownload).text}` : stageTicker(steps, WIZARD_STEPS[current]) ?? `${WIZARD_STEPS[current].title.toLowerCase()}…`)
       : null;
   const leaving = installing && machine.busy === "Installing the machine";
-  const cardActions = justInstalled ? (noAgents ? (
-    <Button size="md" fullWidth className="iw-install" onClick={() => uiActions.navigate({ kind: "agents" })}>Install your agents</Button>
-  ) : (
-    <Button size="md" fullWidth className="iw-install" leftSection={<IconPlayerPlay size={16} />} onClick={() => uiActions.navigate({ kind: "new" })}>Start a task</Button>
-  )) : leaving ? (
+  const retryable = help != null || (cancelled != null && !installed);
+  const bar = justInstalled ? (
     <>
-      <p className="iw-card-note">You can leave this page; the install continues.</p>
-      <Button size="xs" variant="subtle" color="red" onClick={cancel}>Cancel install</Button>
+      <span className="min-w-0 flex-1 text-sm text-muted">{noAgents ? "Next, choose the agents to install." : "Everything is in place."}</span>
+      {noAgents
+        ? <Button size="md" onClick={() => uiActions.navigate({ kind: "agents" })}>Install your agents</Button>
+        : <Button size="md" leftSection={<IconPlayerPlay size={16} />} onClick={() => uiActions.navigate({ kind: "new" })}>Start a task</Button>}
     </>
-  ) : null;
+  ) : leaving ? (
+    <>
+      <span className="min-w-0 flex-1 text-sm text-muted">You can leave this page; the install continues.</span>
+      <Button variant="subtle" color="red" onClick={cancel}>Cancel install</Button>
+    </>
+  ) : retryable ? (
+    <>
+      {help && <CopyDiagnosticsButton installError={failure} installOptions={installed ? undefined : installOptions} />}
+      <span className="flex-1" />
+      {!installed && <>
+        <Button variant="default" leftSection={<IconArrowLeft size={14} />} onClick={onEdit}>Change settings</Button>
+        <Button leftSection={<IconRotateClockwise size={14} />} onClick={onRetry}>{cancelled ? "Install again" : "Retry"}</Button>
+      </>}
+    </>
+  ) : undefined;
   const showMeter = installing || starting || failed || justInstalled;
   const tone: CardTone = justInstalled ? "ready" : failed ? "failed" : installing || starting ? "building" : installed ? "idle" : "draft";
 
   return (
-    <>
-      <header className="iw-header">
-        {justInstalled && <div className="iw-celebrate"><Celebration size={44} /></div>}
-        <p className="iw-eyebrow">{installed && !installing && !justInstalled && !starting ? "Machine settings" : "Cabin setup"}</p>
-        <h1><span role="status">{title}</span></h1>
-        {subtitle && <p className="iw-lead" key={subtitle}>{subtitle}</p>}
-      </header>
-
-      <div className="iw-grid">
-        <div className="iw-main">
+    <MachineStage
+      eyebrow={installed && !installing && !justInstalled && !starting ? "Machine settings" : "Cabin setup"}
+      title={title}
+      lead={subtitle}
+      lede={justInstalled ? <Celebration size={44} /> : undefined}
+      main={
+        <>
           {showMeter && (
             <div className="iw-progress" data-tone={tone}>
               <div className="iw-progress-head">
@@ -215,16 +226,6 @@ export function InstallProgress({
               {failure && <code>{failure}</code>}
             </div>
           )}
-          {(help || (cancelled && !installed)) && (
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              {help && <CopyDiagnosticsButton installError={failure} installOptions={installed ? undefined : installOptions} />}
-              {!installed && <>
-                <Button variant="default" leftSection={<IconArrowLeft size={14} />} onClick={onEdit}>Change settings</Button>
-                <Button leftSection={<IconRotateClockwise size={14} />} onClick={onRetry}>{cancelled ? "Install again" : "Retry"}</Button>
-              </>}
-            </div>
-          )}
-
           <ol className="iw-stages" aria-label="Installation stages">
             {WIZARD_STEPS.map((def, index) => {
               const state = justInstalled ? "done" : states[index];
@@ -276,16 +277,11 @@ export function InstallProgress({
               />
             </BootDetails>
           )}
-        </div>
-
-        <aside className="iw-aside">
-          <MachineCard spec={spec} host={host} tone={tone}
-            caption={justInstalled && machine.guestVersion ? `Cabin ${machine.guestVersion} connected` : undefined}
-            screen={screenLine}>
-            {cardActions}
-          </MachineCard>
-        </aside>
-      </div>
-    </>
+        </>
+      }
+      aside={<MachineCard spec={spec} host={host} tone={tone} screen={screenLine}
+        caption={justInstalled && machine.guestVersion ? `Cabin ${machine.guestVersion} connected` : undefined} />}
+      bar={bar}
+    />
   );
 }

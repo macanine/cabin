@@ -4,17 +4,6 @@
   width: var(--sidebar-collapsed-width);
 }
 
-.search {
-  width: 100%;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  border-radius: 7px;
-  padding: 6px 10px;
-  font: inherit;
-  font-size: 13px;
-}
-
 .dot {
   width: 7px;
   height: 7px;
@@ -35,15 +24,6 @@
   background: var(--bad);
 }
 
-/* ------------------------------------------------- sidebar: start, search */
-
-.kbd {
-  font-size: 10.5px;
-  color: var(--faint);
-  opacity: 0;
-  transition: opacity 0.12s;
-}
-
 /* ------------------------------------------------------- sidebar (tasks) */
 
 .sidebar {
@@ -59,59 +39,6 @@
   transition: width 0.18s ease;
   user-select: none;
   -webkit-user-select: none;
-}
-
-.kbd {
-  font-size: 11px;
-  color: var(--faint);
-  font-family: var(--font);
-}
-
-.project {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 4px 0 6px;
-  border-radius: 7px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text);
-  cursor: pointer;
-}
-
-.project:hover {
-  background: var(--hover);
-}
-
-.task {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 32px;
-  padding: 0 4px 0 8px;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.task:hover {
-  background: var(--hover);
-}
-
-.task.active {
-  background: var(--selected);
-}
-
-.task:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
 }
 
 /* The ring follows the sampled value and its warning level. */
@@ -225,33 +152,4 @@
 .proc-figures strong { font-size: var(--text-sm); }
 .proc-figures small { color: var(--faint); font-size: 10.5px; }
 .proc.skeleton { height: 40px; background: var(--hover); }
-
-.account {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px 10px;
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.sidebar.collapsed .account {
-  flex-direction: column;
-}
-
-.avatar {
-  display: grid;
-  place-items: center;
-  border: none;
-  padding: 0;
-  border-radius: 50%;
-  overflow: hidden;
-  cursor: pointer;
-  flex-shrink: 0;
-  background: transparent;
-}
-
-.avatar img {
-  object-fit: cover;
-}
 

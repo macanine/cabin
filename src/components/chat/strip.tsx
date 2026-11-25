@@ -1,9 +1,9 @@
 import { Popover } from "@mantine/core";
 import type { ReactNode } from "react";
 
-/** A quiet glass pill in the strip above the composer. */
+/** A quiet chip in the rail at the top of the composer dock. */
 export const PILL =
-  "press glass inline-flex min-h-[30px] shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-3 text-xs text-muted hover:text-fg aria-expanded:border-accent/40 aria-expanded:text-fg";
+  "press inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border-0 bg-transparent px-2 text-xs text-muted hover:bg-hover hover:text-fg aria-expanded:bg-hover aria-expanded:text-fg";
 
 /** What a pill opens: a glass popover above it. `target` is the pill (a button). */
 export function StripPopover({ target, children, opened, onChange, width = 360 }: {

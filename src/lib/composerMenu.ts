@@ -24,27 +24,37 @@ export function menuTrigger(text: string, caret: number): MenuTrigger | null {
   return { sigil, query, start, end: caret + rest.length };
 }
 
+function isSubsequence(query: string, value: string): boolean {
+  let offset = 0;
+  for (const character of query) {
+    const index = value.indexOf(character, offset);
+    if (index === -1) return false;
+    offset = index + character.length;
+  }
+  return true;
+}
+
 function score(item: AgentCommand, query: string): number | null {
   if (!query) return 0;
   const name = item.name.toLowerCase();
   const q = query.toLowerCase();
-  if (name === q) return 0;
-  if (name.startsWith(q)) return 1;
-  if (name.split(/[-_:.\s]/).some((part) => part.startsWith(q))) return 2;
-  if (name.includes(q)) return 3;
-  if ((item.description ?? "").toLowerCase().includes(q)) return 4;
+  const hasSearchableToken = (item.kind === "skill" && item.insert.startsWith("@")) || item.source === "cabin";
+  const names = hasSearchableToken ? [name, item.insert.slice(1).trim().toLowerCase()] : [name];
+  if (names.some((value) => value === q)) return 0;
+  if (names.some((value) => value.startsWith(q))) return 1;
+  if (names.some((value) => value.split(/[-_:.\s]/).some((part) => part.startsWith(q)))) return 2;
+  if (names.some((value) => value.includes(q))) return 3;
+  if (q.length >= 3 && item.kind !== "file" && names.some((value) => isSubsequence(q, value))) return 4;
+  if ((item.description ?? "").toLowerCase().includes(q)) return 5;
   return null;
 }
 
-/** Entries for a trigger, best match first. `/` lists the agent's commands
- * (including Codex's `$`-named ones) and slash-style skills; `$` lists the
- * dollar-style skills and commands; `@` lists workspace files. */
+/** `/` discovers both commands and skills, without changing how they're sent.
+ * `$` is a shortcut for dollar-style skills; `@` lists files. */
 export function menuItems(commands: AgentCommand[], trigger: MenuTrigger, limit = 40): AgentCommand[] {
   const pool = commands.filter((item) => {
     if (trigger.sigil === "@") return item.kind === "file";
-    if (trigger.sigil === "/") {
-      return item.kind === "command" || (item.kind === "skill" && item.insert.startsWith("/"));
-    }
+    if (trigger.sigil === "/") return item.kind === "command" || item.kind === "skill";
     return item.kind === "skill" && item.insert.startsWith("$");
   });
   // A live command may repeat a slash skill's token (and merges keep the disk
@@ -64,8 +74,15 @@ export function menuItems(commands: AgentCommand[], trigger: MenuTrigger, limit 
     .map((entry) => entry.item);
 }
 
-/** Text to insert for an entry at the trigger's position: the token the agent
- * runs, exactly as its own CLI spells it (`/review`, `$pdf`, `/skill:pdf`). */
+export function menuKeyAction(key: string, shift: boolean, hasItem: boolean, repeat = false) {
+  if (key === "Escape") return repeat ? "hold" : "dismiss";
+  if (!shift && key === "ArrowDown") return "next";
+  if (!shift && key === "ArrowUp") return "previous";
+  if (!shift && (key === "Enter" || (key === "Tab" && hasItem))) return hasItem && !repeat ? "pick" : "hold";
+  return null;
+}
+
+/** Keep the agent's command or skill reference as provided by the catalog. */
 export function insertionFor(item: AgentCommand, _trigger: MenuTrigger): string {
   return item.insert;
 }

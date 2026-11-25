@@ -4,9 +4,9 @@ import {
   type MantineColorsTuple,
 } from "@mantine/core";
 
-/** The accent (#c2622d, styles/base.css --accent) as Mantine's primary. */
+/** The accent (styles/base.css --accent-fill) as Mantine's primary. */
 const brand: MantineColorsTuple = [
-  "#fdf3ed", "#f9e2d4", "#f2c2a6", "#eaa175", "#e2844d", "#d97036", "#c2622d", "#a65225", "#87421d", "#693314",
+  "#eef7f4", "#d8ece6", "#b1d9ce", "#86c5b4", "#6cc3ac", "#3b917f", "#1c6a5a", "#17594c", "#12473d", "#0d352d",
 ];
 
 const floating = {
@@ -43,7 +43,7 @@ const overlay = { backgroundOpacity: 0.26, transitionProps: { duration: 160, exi
 
 export const theme = createTheme({
   primaryColor: "brand",
-  primaryShade: { light: 6, dark: 4 },
+  primaryShade: 6,
   colors: { brand },
   fontFamily: "var(--font)",
   fontFamilyMonospace: "var(--mono)",

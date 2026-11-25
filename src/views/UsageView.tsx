@@ -51,8 +51,8 @@ const RANGE_OPTIONS = USAGE_RANGES.map((entry) => ({ value: entry.value, label: 
 const agentName = (agent: string) => (isAgentKind(agent) ? AGENT_NAMES[agent] : agent);
 
 /**
- * Token usage, on its own page: a filter row (agent, model, period), four
- * figures, the daily trend, then the details as tables (requests, models,
+ * Token usage, on its own page: a filter row (agent, model, period), the
+ * total with its daily trend beside what it is made of, then the details as tables (requests, models,
  * agents, pricing). The app's usage monitor imports records in the background.
  */
 export function UsageView() {
@@ -153,21 +153,30 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
           <div className="usage-loading">{loading ? <><Loader size="sm" /> Loading usage…</> : "No usage data."}</div>
         ) : (
           <div className={`usage-results${loading ? " loading" : ""}`} aria-busy={loading}>
-            <div className="usage-stat-row stagger">
-              <Stat label="Total cost" value={formatUsd(summary.cost)}
-                note={summary.unpricedRequests > 0 ? `+ ${formatInteger(summary.unpricedRequests)} unpriced` : undefined} />
-              <Stat label="Requests" value={formatInteger(summary.requests)} />
-              <Stat label="Tokens" value={formatCount(totalTokens(summary))} note={`${formatCount(summary.input)} in · ${formatCount(summary.output)} out`} />
-              <Stat label="Cache hit rate" value={hitRate === null ? "—" : `${(hitRate * 100).toFixed(1)}%`} note={`${formatCount(summary.cacheRead)} from cache`} />
+            <div className="usage-top">
+              <section className="usage-card usage-hero" aria-label="Summary">
+                <div className="usage-card-head">
+                  <div className="usage-headline">
+                    <span>Total cost · {RANGE_NAMES[range]}</span>
+                    <strong>{formatUsd(summary.cost)}</strong>
+                    {summary.unpricedRequests > 0 && <small>+ {formatInteger(summary.unpricedRequests)} unpriced requests</small>}
+                  </div>
+                  <SegmentedControl size="xs" value={metric} data={METRICS} onChange={(value) => setMetric(value as UsageMetric)} aria-label="Measure" />
+                </div>
+                <DailyBars dashboard={dashboard} metric={metric} range={range} />
+                <div className="usage-figures">
+                  <Stat label="Requests" value={formatInteger(summary.requests)} />
+                  <Stat label="Tokens" value={formatCount(totalTokens(summary))} note={`${formatCount(summary.input)} in · ${formatCount(summary.output)} out`} />
+                  <Stat label="Cache hit rate" value={hitRate === null ? "—" : `${(hitRate * 100).toFixed(1)}%`} note={`${formatCount(summary.cacheRead)} from cache`} />
+                </div>
+              </section>
+              <aside className="usage-rail">
+                <ShareCard title="By agent" rows={agents.map((row) => ({ key: row.agent, label: agentName(row.agent), cost: row.cost }))} active={agent}
+                  onPick={(key) => { if (isAgentKind(key)) { setAgent(agent === key ? null : key); setModel(null); setPage(0); } }} />
+                <ShareCard title="Top models" mono rows={dashboard.models.map((row) => ({ key: row.model, label: row.model, cost: row.cost }))} active={model}
+                  onPick={(key) => { setModel(model === key ? null : key); setPage(0); }} />
+              </aside>
             </div>
-
-            <section className="usage-card">
-              <div className="usage-card-head">
-                <div><h2>Trend</h2><span className="usage-muted">Per day · {RANGE_NAMES[range]}</span></div>
-                <SegmentedControl size="xs" value={metric} data={METRICS} onChange={(value) => setMetric(value as UsageMetric)} aria-label="Measure" />
-              </div>
-              <DailyBars dashboard={dashboard} metric={metric} range={range} />
-            </section>
 
             <section className="usage-card usage-tables">
               <div className="usage-tabs" role="tablist" aria-label="Details">
@@ -292,6 +301,31 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
       </div>
       <RequestDetail log={selectedLog} onClose={() => setSelectedLog(null)} />
     </div>
+  );
+}
+
+/** What the cost is made of, largest first; a row filters the page by it. */
+function ShareCard({ title, rows, active, onPick, mono = false }: {
+  title: string;
+  rows: { key: string; label: string; cost: number }[];
+  active: string | null;
+  onPick: (key: string) => void;
+  mono?: boolean;
+}) {
+  const total = rows.reduce((sum, row) => sum + row.cost, 0);
+  const shown = rows.slice().sort((a, b) => b.cost - a.cost).slice(0, 5);
+  return (
+    <section className="usage-card" aria-label={title}>
+      <h2 className="usage-rail-title">{title}</h2>
+      {shown.length === 0 && <p className="usage-muted m-0">Nothing in this period.</p>}
+      {shown.map((row) => (
+        <button key={row.key} type="button" className="usage-share press" aria-pressed={active === row.key} title={row.label} onClick={() => onPick(row.key)}>
+          <span className={`truncate ${mono ? "font-mono text-xs" : ""}`}>{row.label}</span>
+          <strong>{formatUsd(row.cost)}</strong>
+          <span className="usage-share-bar" aria-hidden><span style={{ inlineSize: `${total > 0 ? (row.cost / total) * 100 : 0}%` }} /></span>
+        </button>
+      ))}
+    </section>
   );
 }
 

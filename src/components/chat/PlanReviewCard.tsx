@@ -26,7 +26,7 @@ const STATUS_TONE: Record<PlanReviewStatus, string> = {
 export const PLAN_BUTTON =
   "press inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-line bg-surface/70 px-2.5 py-1 text-xs font-medium text-fg hover:bg-surface disabled:cursor-default disabled:opacity-45";
 export const PLAN_PRIMARY =
-  "press inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-transparent bg-accent px-3 py-1 text-xs font-medium text-white shadow-[0_2px_8px_-3px_var(--accent),inset_0_1px_0_rgb(255_255_255/0.25)] hover:brightness-110 disabled:cursor-default disabled:opacity-45 disabled:shadow-none";
+  "press inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-transparent bg-accent-fill px-3 py-1 text-xs font-medium text-white shadow-[0_2px_8px_-3px_var(--accent),inset_0_1px_0_rgb(255_255_255/0.25)] hover:brightness-110 disabled:cursor-default disabled:opacity-45 disabled:shadow-none";
 
 export function PlanStatusBadge({ status }: { status: PlanReviewStatus }) {
   return <span className={`shrink-0 rounded-full px-2 py-px text-[11px] font-medium ${STATUS_TONE[status]}`}>{PLAN_STATUS_LABEL[status]}</span>;

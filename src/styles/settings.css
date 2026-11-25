@@ -48,6 +48,10 @@
 .storage-summary strong { font-size: var(--mantine-font-size-xl); }
 .storage-summary span, .storage-row span { color: var(--muted); font-size: var(--mantine-font-size-sm); }
 .storage-breakdown { margin: var(--mantine-spacing-sm) 0 0; }
+section .storage-breakdown { border: 0; border-radius: 0; background: none; }
+section .storage-row { padding-inline: 0; }
+.storage-bar { display: flex; gap: 2px; height: 14px; overflow: hidden; border-radius: 7px; }
+.storage-bar > span { flex-basis: 0; min-width: 3px; background: var(--accent); }
 .storage-row {
   display: flex;
   align-items: baseline;
@@ -61,29 +65,7 @@
 .storage-clean-action { display: flex; align-items: center; gap: var(--mantine-spacing-xs); flex-wrap: wrap; justify-content: flex-end; text-align: right; }
 .storage-blocked, .storage-notice { margin: var(--mantine-spacing-xs) 0; }
 
-/* Machine overview and the configured/observed facts beneath it. */
-.machine-overview {
-  display: flex;
-  align-items: center;
-  gap: var(--mantine-spacing-md);
-  padding: var(--mantine-spacing-md);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-}
-
-.machine-overview-icon {
-  display: grid;
-  place-items: center;
-  flex: none;
-  padding: var(--mantine-spacing-sm);
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
-  border-radius: var(--radius);
-}
-
-.machine-overview-name { min-width: 0; }
-.machine-overview-name h3 { margin: 0 0 4px; overflow-wrap: anywhere; }
+/* The configured and observed machine facts. */
 .machine-columns {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
@@ -98,10 +80,7 @@
 }
 
 .machine-facts {
-  margin: var(--mantine-spacing-xs) 0;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  border-radius: var(--radius);
+  margin: var(--mantine-spacing-xs) 0 0;
 }
 
 .machine-facts > div {
@@ -109,7 +88,7 @@
   grid-template-columns: minmax(8em, 1fr) minmax(0, 1.4fr);
   align-items: baseline;
   gap: var(--mantine-spacing-xs);
-  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  padding: var(--mantine-spacing-xs) 0;
   font-size: var(--mantine-font-size-sm);
 }
 
@@ -181,28 +160,6 @@
 
 button.list-row:hover {
   background: var(--hover);
-}
-
-.empty {
-  text-align: center;
-  padding: 72px 24px;
-  max-width: 460px;
-  margin: 0 auto;
-}
-
-.empty h2 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 12px 0 6px;
-}
-
-.empty p {
-  color: var(--muted);
-  margin: 0 0 20px;
-}
-
-.empty-icon {
-  color: var(--faint);
 }
 
 .changes {

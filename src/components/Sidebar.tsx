@@ -3,7 +3,7 @@ import {
   IconActivity, IconArchive, IconArchiveOff, IconBell, IconBrandChrome, IconChartBar, IconCheck,
   IconClock, IconCopy, IconDots, IconDownload, IconFolder, IconFolderPlus, IconLayoutSidebarLeftCollapse,
   IconLayoutSidebarLeftExpand, IconListDetails, IconPencil, IconPlayerPlay, IconPlayerStop, IconPlus, IconSearch,
-  IconPlug, IconRobot, IconSettings, IconSparkles, IconTerminal2, IconTrash, IconX,
+  IconPlug, IconRobot, IconSettings, IconSparkles, IconTerminal2, IconTrash,
   IconRefresh,
 } from "@tabler/icons-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
@@ -32,13 +32,11 @@ import { useOperationSummary } from "./OperationCenter";
 import { SessionMenuItems } from "./SessionMenu";
 import { useClock } from "../lib/clock";
 import { useMinute } from "../lib/useNow";
+import { IS_MAC } from "../lib/platform";
 import { DisclosureChevron, Reveal } from "./motion";
 
-export const SEARCH_INPUT_ID = "sidebar-search";
-/** Dispatched on window to open and focus the task search (Ctrl+Shift+K). */
-export const SEARCH_EVENT = "cabin:search";
-export const IS_MAC = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent);
 const NEW_TASK_KEY = IS_MAC ? "⌘N" : "Ctrl+Shift+N";
+const SEARCH_KEY = IS_MAC ? "⌘K" : "Ctrl+Shift+K";
 
 const MODE_ICON: Record<TaskListMode, ReactNode> = {
   project: <IconFolder size={15} />,
@@ -108,7 +106,7 @@ export function SidebarToggle() {
 function TaskMarker({ session, unread }: { session: Session; unread: boolean }) {
   const activity = useActivity().get(session.id);
   const live = session.agent !== null && (session.status.state === "running" || session.status.state === "starting");
-  const [tone, label] = activity === "waiting" ? ["bg-accent", "Waiting for you"]
+  const [tone, label] = activity === "waiting" ? ["bg-warn", "Waiting for you"]
     : live ? ["bg-ok live-dot", "Running"]
       : unread ? ["bg-accent", "Unread"]
         : ["", ""];
@@ -188,7 +186,7 @@ function ProjectHeader({
     {/* Outside the row: React events bubble through portals, and a click in
         the dialog must not fold the project. */}
     {sync && <SyncPanel view={sync} opened={syncOpen} onClose={() => setSyncOpen(false)} />}
-    <div className="press group flex h-8 cursor-pointer items-center gap-2.5 rounded-lg pr-1 pl-2 text-[13px] font-semibold text-fg hover:bg-hover" role="button" tabIndex={0} onClick={onToggle} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onToggle(); } }} aria-expanded={open}>
+    <div className="press group flex h-8 cursor-pointer items-center gap-2.5 rounded-lg pr-1 pl-2 text-[13px] font-medium text-muted hover:bg-hover hover:text-fg" role="button" tabIndex={0} onClick={onToggle} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onToggle(); } }} aria-expanded={open}>
       <span className="grid size-5 shrink-0 place-items-center"><DisclosureChevron open={open} className="text-faint" /></span>
       {renaming ? (
         <InlineRename
@@ -291,6 +289,8 @@ function readCollapsedProjects(): Set<string> {
   }
 }
 
+const LIST_TITLE: Record<TaskListMode, string> = { project: "Projects", session: "Tasks", recent: "Recent", unread: "Inbox" };
+
 function TaskList() {
   const workspaces = useApp((state) => state.workspaces);
   const sessions = useApp((state) => state.sessions);
@@ -298,20 +298,9 @@ function TaskList() {
   const unread = useUnread();
   const now = useMinute();
   useClock(); // ages move when the guest clock offset is measured
-  const [searching, setSearching] = useState(false);
-  const [query, setQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [closed, setClosed] = useState(readCollapsedProjects);
   const [creating, setCreating] = useState(false);
-
-  useEffect(() => {
-    const open = () => {
-      setSearching(true);
-      requestAnimationFrame(() => document.getElementById(SEARCH_INPUT_ID)?.focus());
-    };
-    window.addEventListener(SEARCH_EVENT, open);
-    return () => window.removeEventListener(SEARCH_EVENT, open);
-  }, []);
 
   const toggleProject = (id: string) => {
     const next = new Set(closed);
@@ -325,29 +314,16 @@ function TaskList() {
     }
   };
 
-  const sections = taskSections(mode, sessions, workspaces, { query, showArchived, unread, now });
+  const sections = taskSections(mode, sessions, workspaces, { showArchived, unread, now });
   const projectName = (id: string) => workspaces.find((w) => w.id === id)?.name ?? "";
+  const activity = useActivity();
+  const waiting = sessions.filter((session) => !session.archived && activity.get(session.id) === "waiting");
   const empty = sections.every((s) => s.sessions.length === 0) && !(mode === "project" && sections.length > 0);
 
   return (
     <>
-      <div className="flex h-8 items-center gap-0.5 pt-2 pr-2.5 pl-4 text-xs font-semibold text-faint">
-        <span className="min-w-0 flex-1">Tasks</span>
-        <Tooltip label="Search tasks">
-          <ActionIcon
-            size="sm"
-            variant={searching ? "light" : "subtle"}
-            color="gray"
-            aria-label="Search tasks"
-            onClick={() => {
-              setSearching(!searching);
-              if (searching) setQuery("");
-              else requestAnimationFrame(() => document.getElementById(SEARCH_INPUT_ID)?.focus());
-            }}
-          >
-            <IconSearch size={14} />
-          </ActionIcon>
-        </Tooltip>
+      <div className="flex h-8 items-center gap-0.5 pr-2.5 pl-4 text-xs font-medium text-faint">
+        <span className="min-w-0 flex-1">{LIST_TITLE[mode]}</span>
         <Menu position="bottom-end" withinPortal shadow="md" width={210}>
           <Menu.Target>
             <ActionIcon size="sm" variant="subtle" color="gray" aria-label="Task list options">
@@ -380,34 +356,15 @@ function TaskList() {
         </Menu>
       </div>
 
-      {searching && (
-        <label className="mx-2.5 mt-1 mb-1.5 flex items-center gap-1.5 rounded-lg border border-line bg-surface/70 px-2 text-faint transition-colors duration-[var(--motion-fast)] focus-within:border-[color:var(--field-focus-border)]">
-          <IconSearch size={14} />
-          <input
-            id={SEARCH_INPUT_ID}
-            className="w-full border-0 bg-transparent py-1.5 font-[inherit] text-[13px] text-fg outline-none"
-            placeholder="Search tasks and projects"
-            value={query}
-            onChange={(e) => setQuery(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                setQuery("");
-                setSearching(false);
-              }
-            }}
-            aria-label="Search tasks"
-          />
-          {query && (
-            <button className="grid cursor-pointer place-items-center border-0 bg-transparent p-0.5 text-faint hover:text-fg" aria-label="Clear search" onClick={() => setQuery("")}>
-              <IconX size={12} />
-            </button>
-          )}
-        </label>
-      )}
-
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 pt-0.5 pb-2.5" aria-label="Tasks">
+        {waiting.length > 0 && (
+          <div className="mb-2 rounded-xl bg-warn/10 p-1" role="group" aria-label="Needs you">
+            <div className="px-2 pt-1 pb-0.5 text-xs font-medium text-warn">Needs you</div>
+            {waiting.map((session) => <TaskItem key={session.id} session={session} unread={false} now={now} showProject={projectName(session.workspaceId)} />)}
+          </div>
+        )}
         {sections.map((section) => {
-          const open = !section.workspace || !closed.has(section.workspace.id) || query !== "";
+          const open = !section.workspace || !closed.has(section.workspace.id);
           return (
             <div key={section.key} className="[&+&]:mt-1">
               {section.workspace ? (
@@ -437,7 +394,7 @@ function TaskList() {
         })}
         {empty && (
           <p className="m-0 px-2.5 py-1 text-[13px] text-faint">
-            {query ? "No tasks match." : mode === "unread" ? "Nothing unread." : "Tasks you start appear here."}
+            {mode === "unread" ? "Nothing unread." : "Tasks you start appear here."}
           </p>
         )}
       </nav>
@@ -493,14 +450,14 @@ function SettingsMenu() {
   );
 }
 
-function AccountBar({ collapsed }: { collapsed: boolean }) {
+function AccountBar({ collapsed, today }: { collapsed: boolean; today: string | null }) {
   const machine = useApp((state) => state.machine);
   const user = machine?.username ?? "dev";
   const host = machine?.hostname ?? (machine?.state === "notInstalled" ? "not installed" : "vm");
   const connected = machine?.connection === "connected";
   const tone = connected ? "ok" : machine?.busy || machine?.state === "running" ? "warn" : machine?.error ? "bad" : "";
   return (
-    <div className={`flex shrink-0 items-center border-t border-line/70 ${collapsed ? "flex-col justify-center gap-1 py-2" : "h-12 gap-2 px-4"}`}>
+    <div className={`flex shrink-0 items-center ${collapsed ? "flex-col justify-center gap-1 py-2" : "h-12 gap-2 pr-3 pl-4"}`}>
       {collapsed ? (machine?.state === "running" && connected && <InternetMark />) : (
         <span className="flex min-w-0 items-center gap-2.5 truncate text-[13px] font-medium" title={`${user}@${host} · ${machineLabel(machine)}`}>
           <span className="grid size-5 shrink-0 place-items-center"><span className={`dot ${tone}`} aria-label={machineLabel(machine)} /></span>
@@ -508,6 +465,9 @@ function AccountBar({ collapsed }: { collapsed: boolean }) {
         </span>
       )}
       {!collapsed && <span className="flex-1" />}
+      {!collapsed && today && (
+        <button type="button" className="press shrink-0 cursor-pointer rounded-md border-0 bg-transparent px-1.5 py-1 text-xs text-faint tabular-nums hover:bg-hover hover:text-fg" title={today} aria-label={today} onClick={() => uiActions.navigate({ kind: "usage" })}>{today.replace(/^Today /, "")}</button>
+      )}
       <SettingsMenu />
     </div>
   );
@@ -515,82 +475,111 @@ function AccountBar({ collapsed }: { collapsed: boolean }) {
 
 // -------------------------------------------------------------------- shell
 
-const NAV_ROW = 34; // 32px row + 2px gap: the indicator's step
+type ToolKind = "chrome" | "agents" | "usage" | "mcp" | "skills";
+const TOOLS: { kind: ToolKind; label: string; icon: typeof IconRobot }[] = [
+  { kind: "chrome", label: "Chrome", icon: IconBrandChrome },
+  { kind: "agents", label: "Agents", icon: IconRobot },
+  { kind: "usage", label: "Usage", icon: IconChartBar },
+  { kind: "mcp", label: "MCP", icon: IconPlug },
+  { kind: "skills", label: "Skills", icon: IconSparkles },
+];
+const RAIL_STEP = 40; // collapsed: 38px button + 2px gap
 
-/** One row of the sidebar's navigation: icon, label, optional meta; icon only when collapsed. */
-function NavButton({ icon, label, active, collapsed, title, onClick, accent, children }: {
-  icon: ReactNode;
-  label: string;
-  active: boolean;
-  collapsed: boolean;
-  title?: string;
-  onClick: () => void;
-  accent?: boolean;
-  children?: ReactNode;
-}) {
+/**
+ * The tools every task shares, as labelled tabs under the task list (a
+ * column of icons when collapsed). One pill glides to the open one.
+ */
+function ToolDock({ collapsed }: { collapsed: boolean }) {
+  const view = useUi((ui) => ui.view.kind);
+  const attention = useApp((state) => attentionCount(state.agents));
+  const today = todayLabel(useUsage().todayCost);
+  const index = TOOLS.findIndex((tool) => tool.kind === view);
+  const at = Math.max(index, 0);
   return (
-    <button
-      type="button"
-      title={title ?? label}
-      aria-label={label}
-      aria-current={active ? "page" : undefined}
-      onClick={onClick}
-      className={`press group relative z-[1] mx-2 mb-0.5 flex h-8 cursor-pointer items-center gap-2.5 rounded-lg border-0 bg-transparent px-2 text-left text-md font-medium text-fg w-[calc(100%-16px)] ${
-        collapsed ? "justify-center" : ""
-      } ${active ? "" : "hover:bg-hover"}`}
-    >
-      <span className={`grid size-5 shrink-0 place-items-center transition-colors duration-200 ${accent ? "rounded-full bg-accent text-white" : active ? "text-accent" : "text-muted group-hover:text-fg"}`}>{icon}</span>
-      {!collapsed && <span className="min-w-0 flex-1 truncate">{label}</span>}
-      {!collapsed && children}
-    </button>
+    <nav aria-label="Tools" className={`relative mx-2 shrink-0 ${collapsed ? "flex flex-col gap-0.5" : "grid grid-cols-5"}`}>
+      <span
+        aria-hidden
+        className="glass pointer-events-none absolute top-0 left-0 rounded-lg transition-[translate,opacity] duration-[var(--motion-glide)] ease-[var(--ease-spring)]"
+        style={{
+          width: collapsed ? "100%" : "20%", height: collapsed ? RAIL_STEP - 2 : "100%",
+          translate: collapsed ? `0 ${at * RAIL_STEP}px` : `${at * 100}% 0`, opacity: index < 0 ? 0 : 1,
+        }}
+      />
+      {TOOLS.map(({ kind, label, icon: Icon }) => {
+        const active = view === kind;
+        const alert = kind === "agents" && attention > 0;
+        return (
+          <button
+            key={kind}
+            type="button"
+            title={kind === "usage" && today ? today : label}
+            aria-label={alert ? `${label}, ${attention} need attention` : label}
+            aria-current={active ? "page" : undefined}
+            onClick={() => uiActions.navigate({ kind })}
+            className={`press group relative z-[1] flex cursor-pointer flex-col items-center justify-center gap-0.5 rounded-lg border-0 bg-transparent p-0 ${collapsed ? "h-[38px]" : "h-12"} ${active ? "text-fg" : "text-muted hover:text-fg"}`}
+          >
+            <span className={`relative grid size-5 place-items-center ${active ? "text-accent" : ""}`}>
+              <Icon size={18} stroke={1.7} />
+              {alert && <span className="absolute -top-0.5 -right-0.5 size-[7px] rounded-full bg-warn" aria-hidden />}
+            </span>
+            {!collapsed && <span className="max-w-full truncate text-[11px] font-medium">{label}</span>}
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 
-/** The selection: one glass pill that glides between rows instead of jumping. */
-function NavIndicator({ index }: { index: number }) {
+/** Start something, or find something: the two things the sidebar opens with. */
+function StartRow({ collapsed }: { collapsed: boolean }) {
+  const active = useUi((ui) => ui.view.kind === "new");
+  const icon = "press grid size-9 shrink-0 cursor-pointer place-items-center rounded-[10px] border-0 bg-transparent p-0 text-muted hover:bg-hover hover:text-fg";
+  const fresh = () => uiActions.navigate({ kind: "new" });
+  const search = (
+    <Tooltip label={`Search (${SEARCH_KEY})`} position={collapsed ? "right" : "bottom"}>
+      <button type="button" className={icon} aria-label="Search tasks and pages" onClick={uiActions.openPalette}><IconSearch size={17} stroke={1.8} /></button>
+    </Tooltip>
+  );
+  if (collapsed) {
+    return (
+      <div className="flex shrink-0 flex-col items-center gap-1">
+        <Tooltip label={`New task (${NEW_TASK_KEY})`} position="right">
+          <button type="button" className="press grid size-9 cursor-pointer place-items-center rounded-[10px] border-0 bg-accent-fill p-0 text-white hover:bg-accent-fill/88" aria-label="New task" aria-current={active ? "page" : undefined} onClick={fresh}><IconPlus size={17} stroke={2.2} /></button>
+        </Tooltip>
+        {search}
+      </div>
+    );
+  }
   return (
-    <span
-      aria-hidden
-      className="glass pointer-events-none absolute inset-x-2 top-0 h-8 rounded-lg transition-[translate,opacity] duration-[var(--motion-glide)] ease-[var(--ease-spring)]"
-      style={{ translate: `0 ${Math.max(index, 0) * NAV_ROW}px`, opacity: index < 0 ? 0 : 1 }}
-    />
+    <div className="mx-2 mb-2 flex shrink-0 items-center gap-1">
+      <button type="button" aria-current={active ? "page" : undefined} onClick={fresh}
+        className="press flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[10px] border-0 bg-accent-fill px-2 text-left text-md font-medium text-white hover:bg-accent-fill/88">
+        <span className="grid size-5 shrink-0 place-items-center"><IconPlus size={16} stroke={2.2} /></span>
+        <span className="min-w-0 flex-1 truncate">New task</span>
+        <span className="pr-1 text-xs text-white/75">{NEW_TASK_KEY}</span>
+      </button>
+      {search}
+    </div>
   );
 }
 
-type NavKind = "new" | "chrome" | "agents" | "usage" | "mcp" | "skills";
-const NAV_ORDER: NavKind[] = ["new", "chrome", "agents", "usage", "mcp", "skills"];
-
+/** Tasks first; the shared tools and the machine's state sit below them. */
 export function Sidebar() {
   const collapsed = useUi((ui) => ui.sidebarCollapsed);
-  const view = useUi((ui) => ui.view.kind);
   const connected = useApp((state) => state.machine?.state === "running" && state.machine.connection === "connected");
-  const agentAttention = useApp((state) => attentionCount(state.agents));
   const today = todayLabel(useUsage().todayCost);
-  const go = (kind: NavKind) => () => uiActions.navigate({ kind });
-  const nav = { collapsed };
   return (
-    <aside className={`sidebar${collapsed ? " collapsed" : ""} row-start-2 flex min-h-0 flex-col gap-px pt-0.5 transition-[width] duration-300 ease-out select-none`} style={{ width: collapsed ? "var(--sidebar-collapsed-width)" : "var(--sidebar-width)" }}>
-      <div className="relative shrink-0">
-        <NavIndicator index={NAV_ORDER.indexOf(view as NavKind)} />
-        <NavButton {...nav} accent icon={<IconPlus size={13} stroke={2.6} />} label="New Task" title={`New task (${NEW_TASK_KEY})`} active={view === "new"} onClick={go("new")} />
-        <NavButton {...nav} icon={<IconBrandChrome size={18} stroke={1.7} />} label="Chrome" active={view === "chrome"} onClick={go("chrome")} />
-        <NavButton {...nav} icon={<IconRobot size={18} stroke={1.7} />} label="Agents" title="Agents and providers" active={view === "agents"} onClick={go("agents")}>
-          {agentAttention > 0 && <span className="dot warn" aria-label={`${agentAttention} need attention`} />}
-        </NavButton>
-        <NavButton {...nav} icon={<IconChartBar size={18} stroke={1.7} />} label="Usage" title={today ?? "Usage"} active={view === "usage"} onClick={go("usage")}>
-          {today && <span className="text-xs text-faint tabular-nums">{today}</span>}
-        </NavButton>
-        <NavButton {...nav} icon={<IconPlug size={18} stroke={1.7} />} label="MCP" active={view === "mcp"} onClick={go("mcp")} />
-        <NavButton {...nav} icon={<IconSparkles size={18} stroke={1.7} />} label="Skills" active={view === "skills"} onClick={go("skills")} />
-      </div>
+    <aside className={`sidebar${collapsed ? " collapsed" : ""} row-start-2 flex min-h-0 flex-col pt-0.5 transition-[width] duration-300 ease-out select-none`} style={{ width: collapsed ? "var(--sidebar-collapsed-width)" : "var(--sidebar-width)" }}>
+      <StartRow collapsed={collapsed} />
       {collapsed ? <div className="flex-1" /> : <TaskList />}
+      <ToolDock collapsed={collapsed} />
       {connected && !collapsed && (
-        <div className="glass mx-2 my-1 grid min-w-0 shrink-0 rounded-[var(--card-radius)]">
+        <div className="glass mx-2 mt-2 grid min-w-0 shrink-0 rounded-[var(--card-radius)]">
           <InternetStatus />
           <PerformancePanel />
         </div>
       )}
-      <AccountBar collapsed={collapsed} />
+      <AccountBar collapsed={collapsed} today={today} />
     </aside>
   );
 }

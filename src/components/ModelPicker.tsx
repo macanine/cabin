@@ -8,6 +8,7 @@ import { toIpcError } from "../services/ipc/common";
 import { libraryIpc } from "../services/ipc/library";
 import { currentLabel } from "../lib/agentControls";
 import { customCandidate, flatModels, groupModels, modelLabel } from "../lib/modelList";
+import { modelName, rememberModelNames } from "../state/modelMemory";
 import { uiActions } from "../state/ui";
 
 const CACHE_MS = 2 * 60 * 1000;
@@ -26,6 +27,7 @@ function fetchModels(key: string, workspaceId: string, agent: AgentKind): Promis
       // Keep the guest's order (default first); drop duplicates.
       const unique = [...new Map(list.map((model) => [model.id, model])).values()];
       cache.set(key, { at: Date.now(), models: unique });
+      rememberModelNames(agent, unique);
       return unique;
     })
     .finally(() => inflight.delete(key));
@@ -146,6 +148,7 @@ export function ModelPicker({ workspaceId, agent, value, disabled, onSelect, liv
       isDefault: false,
     }))
     : models, [live, models]);
+  useEffect(() => { if (live) rememberModelNames(agent, listed); }, [agent, live, listed]);
   const { groups, shown, total } = useMemo(() => groupModels(listed, query), [listed, query]);
   const rows = useMemo(() => flatModels(groups), [groups]);
   const custom = live ? null : customCandidate(query, listed);
@@ -153,7 +156,7 @@ export function ModelPicker({ workspaceId, agent, value, disabled, onSelect, liv
   // (OpenCode lists hundreds) get a search field that also takes custom ids.
   const searchable = listed.length > SEARCH_FROM || (!live && listed.length === 0) || query !== "";
   const options = custom ? rows.length + 1 : rows.length;
-  const label = modelLabel(value, listed);
+  const label = (value && !listed.some((model) => model.id === value) ? modelName(agent, value) : null) ?? modelLabel(value, listed);
   const effort = reasoning && reasoning.choices.length > 1 ? reasoning : null;
   const needsChoice = !value && !disabled && !live;
 
@@ -212,7 +215,7 @@ export function ModelPicker({ workspaceId, agent, value, disabled, onSelect, liv
       <Popover.Target>
         <button
           type="button"
-          className={`${CHIP} ${compact ? "!max-w-[min(100%,10rem)]" : ""} ${needsChoice ? "!bg-accent-soft !text-accent" : ""}`}
+          className={`${CHIP} ${compact ? "!max-w-[min(100%,13rem)]" : ""} ${needsChoice ? "!bg-accent-soft !text-accent" : ""}`}
           disabled={disabled || !workspaceId}
           aria-label={`Model: ${label ?? "not chosen"}${effort ? ` · ${currentLabel(effort)}` : ""}`}
           title={value ?? "Choose the model for this conversation"}

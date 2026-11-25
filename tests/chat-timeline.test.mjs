@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   activeTurn,
   deriveTimeline,
+  groupSteps,
   elapsedLabel,
   entryLabel,
   pendingRequest,
@@ -320,4 +321,13 @@ test("reasoning gist and elapsed labels stay compact", () => {
   assert.equal(elapsedLabel(5_400), "5s");
   assert.equal(elapsedLabel(65_000), "1m 05s");
   assert.equal(elapsedLabel(3_725_000), "1h 02m");
+});
+
+test("runs of commands and of reads group; failures and subagents keep their rows", () => {
+  const step = (id, action, over = {}) => ({ id, kind: "tool", action, status: "completed", taskId: null, ...over });
+  const shape = (items) => groupSteps(items).map((g) => `${g.kind}:${g.items.length}`);
+  assert.deepEqual(shape([step("1", "read"), step("2", "code-search"), step("3", "read"), step("4", "command"), step("5", "command")]), ["explore:3", "commands:2"]);
+  assert.deepEqual(shape([step("1", "read"), step("2", "read")]), ["single:1", "single:1"]);
+  assert.deepEqual(shape([step("1", "read"), step("2", "read"), step("3", "read", { status: "failed" }), step("4", "command", { taskId: "t" })]),
+    ["single:1", "single:1", "single:1", "single:1"]);
 });

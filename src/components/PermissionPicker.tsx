@@ -56,6 +56,10 @@ const PERMISSIONS: ReadonlyArray<{
 
 export const DEFAULT_CHAT_PERMISSION: ChatPermissionMode = "approval-required";
 
+export function permissionLabel(mode: ChatPermissionMode): string {
+  return PERMISSIONS.find((permission) => permission.value === mode)?.label ?? PERMISSIONS[0].label;
+}
+
 export function PermissionPicker({
   agent, value, disabled, onChange,
 }: {

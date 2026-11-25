@@ -11,7 +11,8 @@ import { BootHero, BootPage } from "./components/Boot";
 import { OperationModal, OperationsDrawer } from "./components/OperationCenter";
 import { NetworkCheckModal } from "./components/network/NetworkCheckModal";
 import { UsageMonitor } from "./components/usage/UsageMonitor";
-import { IS_MAC, SEARCH_EVENT } from "./components/Sidebar";
+import { CommandPalette } from "./components/CommandPalette";
+import { IS_MAC } from "./lib/platform";
 import { connect, refreshNetworkStatus, useApp } from "./state/store";
 import { refreshMacPermissions } from "./state/macPermissions";
 import { uiActions, useUi } from "./state/ui";
@@ -65,10 +66,6 @@ function View() {
   }
 }
 
-function useUiCollapsed(): boolean {
-  return document.querySelector(".sidebar.collapsed") != null;
-}
-
 export default function App() {
   const ready = useApp((state) => state.ready);
   const needsInstall = useApp((state) => state.machine?.state === "notInstalled");
@@ -96,7 +93,10 @@ export default function App() {
   const inspectingPermissions = useUi((ui) => ui.view.kind === "settings" && ui.view.tab === "permissions");
   useAutoRefresh(refreshMacPermissions, { enabled: ready, refreshKey: syncFolders, interval: inspectingPermissions ? 30_000 : 0 });
 
-  // Desktop shortcuts. On macOS ⌘N / ⌘[ / ⌘] (⌘ never reaches the
+  // The palette belongs to the workspace; it must not come back over a later one.
+  useEffect(() => { if (!showWorkspace) uiActions.closePalette(); }, [showWorkspace]);
+
+  // Desktop shortcuts. On macOS ⌘N / ⌘K / ⌘[ / ⌘] (⌘ never reaches the
   // terminal's PTY). Everywhere, Ctrl+Shift keeps plain Ctrl+N/K/B for shells
   // and agents running in the terminal.
   useEffect(() => {
@@ -104,6 +104,7 @@ export default function App() {
     const onKey = (event: KeyboardEvent) => {
       if (IS_MAC && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
         if (event.code === "KeyN") uiActions.navigate({ kind: "new" });
+        else if (event.code === "KeyK") uiActions.openPalette();
         else if (event.code === "Comma") uiActions.navigate({ kind: "settings" });
         else if (event.code === "BracketLeft") uiActions.back();
         else if (event.code === "BracketRight") uiActions.forward();
@@ -114,10 +115,8 @@ export default function App() {
       if (!event.ctrlKey || !event.shiftKey || event.altKey) return;
       if (event.code === "KeyN") uiActions.navigate({ kind: "new" });
       else if (event.code === "KeyB") uiActions.toggleSidebar();
-      else if (event.code === "KeyK") {
-        if (useUiCollapsed()) uiActions.toggleSidebar();
-        window.dispatchEvent(new Event(SEARCH_EVENT));
-      } else return;
+      else if (event.code === "KeyK") uiActions.openPalette();
+      else return;
       event.preventDefault();
     };
     window.addEventListener("keydown", onKey);
@@ -146,6 +145,7 @@ export default function App() {
       <OperationsDrawer />
       <OperationModal />
       <NetworkCheckModal />
+      {showWorkspace && <CommandPalette />}
       <QuitDialog />
       <Toasts />
     </UsageMonitor></MantineProvider>

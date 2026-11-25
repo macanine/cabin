@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { HostFacts, Readiness } from "../services/ipc/generated/common";
 import type { InstallPlan, MachineInstallOptions, OsChoice } from "../services/ipc/generated/core";
 import { machineIpc } from "../services/ipc/app";
@@ -39,10 +39,6 @@ export function InstallWizard() {
   const installing = machine?.busy != null && /install/i.test(machine.busy);
   const installed = machine != null && machine.state !== "notInstalled";
   const showProgress = installing || installed || (!editing && (startedAt != null || steps.length > 0 || error != null || cancelled != null));
-  const scroll = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (scroll.current) scroll.current.scrollTop = 0;
-  }, [showProgress]);
 
   useEffect(() => { draft = options; }, [options]);
 
@@ -127,38 +123,32 @@ export function InstallWizard() {
     hostname: machine.hostname ?? "dev-vm",
   } : draftSpec;
 
-  return (
-    <div className="install-wizard" ref={scroll}>
-      <div className="iw-frame view-enter" key={showProgress ? "progress" : "setup"}>
-        {showProgress ? (
-          <InstallProgress
-            machine={machine}
-            steps={steps}
-            startedAt={startedAt}
-            error={error}
-            installOptions={{ diskSize: options.diskSize, memoryMb: options.memoryMb, username: options.username ?? plan?.username ?? null }}
-            cancelled={cancelled}
-            spec={progressSpec}
-            host={host}
-            onRetry={install}
-            onEdit={() => setEditing(true)}
-          />
-        ) : (
-          <InstallSetup
-            options={options}
-            spec={draftSpec}
-            set={(patch) => setOptions((value) => ({ ...value, ...patch }))}
-            plan={plan}
-            choices={choices}
-            readiness={readiness}
-            checking={checked !== checkKey}
-            host={host}
-            onRecheck={onRecheck}
-            planError={planError}
-            onInstall={() => void install()}
-          />
-        )}
-      </div>
-    </div>
+  return showProgress ? (
+    <InstallProgress
+      machine={machine}
+      steps={steps}
+      startedAt={startedAt}
+      error={error}
+      installOptions={{ diskSize: options.diskSize, memoryMb: options.memoryMb, username: options.username ?? plan?.username ?? null }}
+      cancelled={cancelled}
+      spec={progressSpec}
+      host={host}
+      onRetry={install}
+      onEdit={() => setEditing(true)}
+    />
+  ) : (
+    <InstallSetup
+      options={options}
+      spec={draftSpec}
+      set={(patch) => setOptions((value) => ({ ...value, ...patch }))}
+      plan={plan}
+      choices={choices}
+      readiness={readiness}
+      checking={checked !== checkKey}
+      host={host}
+      onRecheck={onRecheck}
+      planError={planError}
+      onInstall={() => void install()}
+    />
   );
 }

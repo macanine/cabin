@@ -3,7 +3,7 @@ import type { HostFacts } from "../../services/ipc/generated/common";
 
 export const gb = (mb: number) => `${mb / 1024 % 1 === 0 ? mb / 1024 : (mb / 1024).toFixed(1)} GB`;
 
-export type CardTone = "draft" | "building" | "ready" | "failed" | "idle";
+export type CardTone = "draft" | "building" | "starting" | "ready" | "failed" | "stopped" | "idle";
 
 export interface MachineSpec {
   osName: string;
@@ -36,8 +36,10 @@ const TONE_LABEL: Record<CardTone, string> = {
   draft: "Preview",
   building: "Installing",
   ready: "Running",
-  failed: "Install stopped",
+  failed: "Attention",
   idle: "Installed",
+  starting: "Starting",
+  stopped: "Stopped",
 };
 
 /**
@@ -66,7 +68,7 @@ export function MachineCard({ spec, host, tone, caption, screen, badge, children
         <code className="iw-prompt">
           <span className="iw-prompt-user">{spec.username}@{spec.hostname}</span>
           <span className="iw-prompt-path">:~$</span>
-          {!screen && <span className="iw-caret" />}
+          {!screen && tone !== "stopped" && <span className="iw-caret" />}
         </code>
         {screen && <code key={screen} className="iw-screen-line">{screen}<span className="iw-caret" /></code>}
       </div>

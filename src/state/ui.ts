@@ -85,6 +85,7 @@ interface UiState {
   operationId: string | null;
   operationsOpen: boolean;
   networkCheckOpen: boolean;
+  paletteOpen: boolean;
   networkSettingsFocus: "route" | "region" | null;
   /** The browser environment panel on the Chrome page. */
   browserPanelOpen: boolean;
@@ -151,6 +152,7 @@ let ui: UiState = {
   operationId: null,
   operationsOpen: false,
   networkCheckOpen: false,
+  paletteOpen: false,
   networkSettingsFocus: null,
   browserPanelOpen: false,
   panel: readPanel(),
@@ -235,6 +237,8 @@ export const uiActions = {
   },
   openOperation: (operationId: string | null) => set({ operationId }),
   showOperations: (operationsOpen: boolean) => set({ operationsOpen }),
+  openPalette: () => set({ paletteOpen: true }),
+  closePalette: () => set({ paletteOpen: false }),
   openNetworkCheck: () => set({ networkCheckOpen: true }),
   closeNetworkCheck: () => set({ networkCheckOpen: false }),
   focusNetworkSettings(target: "route" | "region") {

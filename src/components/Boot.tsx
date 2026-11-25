@@ -69,11 +69,6 @@ function StepMark({ state }: { state: StepKind }) {
   return <span className={`${base} border-[1.5px] border-dashed border-faint/60`} aria-hidden />;
 }
 
-/** The glass card the steps sit in. Hidden while empty. */
-export function BootSteps({ children }: { children: ReactNode }) {
-  return <ol className="glass m-0 grid list-none gap-0.5 rounded-xl p-1.5 empty:hidden">{children}</ol>;
-}
-
 /** One step: mark, title, optional live lines, and a time on the right. */
 export function BootStep({ state, title, time, order, children }: {
   state: StepKind;
