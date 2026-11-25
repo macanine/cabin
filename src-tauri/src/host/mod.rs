@@ -457,7 +457,7 @@ impl Host {
     /// they show a real error instead of retrying until the user stops them.
     fn fail_guest_chats(&self, message: impl Into<String>) {
         let _ = self.call_guest_with_timeout(
-            "chat_fail_active", json!({ "message": message.into() }), Some(Duration::from_secs(3)),
+            "chat_fail_active", json!({ "message": message.into() }), Duration::from_secs(3),
         );
     }
 

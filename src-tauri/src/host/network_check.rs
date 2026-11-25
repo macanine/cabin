@@ -445,7 +445,7 @@ impl Host {
             .call_guest_with_timeout(
                 "environment_apply",
                 json!({ "spec": { "timezone": zone, "language": language } }),
-                Some(Duration::from_secs(120)),
+                Duration::from_secs(120),
             )
             .and_then(|record| {
                 let record: agent_core::model::OperationRecord = serde_json::from_value(record)
@@ -473,7 +473,7 @@ impl Host {
 
     fn guest_network_probe(&self, check_boundary: bool, timeout: Duration) -> Result<GuestNetworkProbe, AppError> {
         let probe = self.call_guest_with_timeout(
-            "network_probe", json!({ "checkClosedBoundary": check_boundary }), Some(timeout),
+            "network_probe", json!({ "checkClosedBoundary": check_boundary }), timeout,
         )?;
         serde_json::from_value(probe).map_err(|error| {
             unavailable(format!("The machine returned an invalid probe result: {error}"))

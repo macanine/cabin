@@ -538,7 +538,7 @@ impl Host {
         let guest_events = self.call_guest_with_timeout(
             "diagnostic_events",
             serde_json::json!({}),
-            Some(std::time::Duration::from_secs(1)),
+            std::time::Duration::from_secs(1),
         ).ok().filter(serde_json::Value::is_array);
         let install = vm_core::util::read_json(&self.install_result_path()).unwrap_or_default();
         let mut recorded_events = history["lastInstall"].take();

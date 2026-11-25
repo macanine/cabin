@@ -4,6 +4,7 @@ import type { Session } from "../services/ipc/generated/core";
 import { libraryIpc } from "../services/ipc/library";
 import { uiActions } from "../state/ui";
 import { attempt } from "../lib/operations";
+import { chatQueue } from "../lib/chatQueue";
 import { confirmAction } from "../services/ipc/dialogs";
 
 /** The same actions everywhere a session appears (sidebar, header). */
@@ -54,7 +55,7 @@ export function SessionMenuItems({ session, onRename }: { session: Session; onRe
         leftSection={<IconTrash size={14} />}
         onClick={async () => {
           if (!await confirmAction(`Delete the session “${session.name}”? This cannot be undone.`)) return;
-          await attempt(libraryIpc.deleteSession(session.id));
+          if (await attempt(libraryIpc.deleteSession(session.id).then(() => true))) chatQueue.forget(session.id);
           const view = uiActions.getView();
           if (view.kind === "session" && view.id === session.id) uiActions.navigate({ kind: "new" });
         }}

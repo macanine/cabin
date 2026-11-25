@@ -374,7 +374,7 @@ fn disk_check(free: u64, disk_gb: u32) -> Readiness {
                 util::format_bytes(Some(needed))
             )
         } else {
-            let action = if disk_gb == 0 { "Free up space." } else { "Free up space or choose a smaller disk under Advanced." };
+            let action = if disk_gb == 0 { "Free up space." } else { "Free up space or choose a smaller disk." };
             format!(
                 "Only {} is free and the VM needs about {}. {action}",
                 util::format_bytes(Some(free)),
@@ -394,7 +394,7 @@ fn memory_check(memory_mb: u32, host_mb: Option<u64>) -> Readiness {
             false,
             false,
             format!(
-                "This computer has {} of memory and the chosen size wants {} for the VM plus {} for everything else. Pick a smaller size under Advanced.",
+                "This computer has {} of memory and the chosen size wants {} for the VM plus {} for everything else. Pick a smaller size.",
                 gb_text(host),
                 gb_text(u64::from(memory_mb)),
                 gb_text(HOST_HEADROOM_MB)

@@ -7,7 +7,39 @@ interface QueueState {
 }
 
 const empty: QueueState = { messages: [], active: null, failed: [] };
-const sessions = new Map<string, QueueState>();
+
+const KEY = "cabin.chatQueue";
+/** Sessions whose queues are kept; the oldest go first. */
+export const QUEUE_SESSION_LIMIT = 30;
+
+/**
+ * Queues saved by an earlier run. Every message waits for an explicit Retry:
+ * the one being sent may have arrived, and the rest were meant for a
+ * conversation that may have moved on.
+ */
+export function restoreQueues(saved: string | null): Map<string, QueueState> {
+  const restored = new Map<string, QueueState>();
+  try {
+    const value: unknown = JSON.parse(saved ?? "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return restored;
+    for (const [id, list] of Object.entries(value)) {
+      if (!Array.isArray(list)) continue;
+      const messages = list.filter((entry): entry is QueuedMessage =>
+        entry != null && typeof entry.id === "string" && typeof entry.text === "string" && entry.text !== "")
+        .map(({ id: messageId, text }) => ({ id: messageId, text }));
+      if (messages.length) restored.set(id, { messages, active: null, failed: messages.map((message) => message.id) });
+    }
+  } catch {
+    // Unreadable: start empty.
+  }
+  return restored;
+}
+
+function readSaved(): string | null {
+  try { return localStorage.getItem(KEY); } catch { return null; }
+}
+
+const sessions = restoreQueues(readSaved());
 const listeners = new Set<() => void>();
 
 function get(sessionId: string): QueueState {
@@ -17,7 +49,22 @@ function get(sessionId: string): QueueState {
 function set(sessionId: string, state: QueueState) {
   if (state.messages.length || state.active !== null) sessions.set(sessionId, state);
   else sessions.delete(sessionId);
+  save();
   listeners.forEach((listener) => listener());
+}
+
+let saved = "";
+function save() {
+  const entries = [...sessions].filter(([, state]) => state.messages.length).slice(-QUEUE_SESSION_LIMIT);
+  const next = JSON.stringify(Object.fromEntries(entries.map(([id, state]) => [id, state.messages])));
+  if (next === saved) return;
+  saved = next;
+  try {
+    if (entries.length) localStorage.setItem(KEY, next);
+    else localStorage.removeItem(KEY);
+  } catch {
+    // Not kept in this viewer.
+  }
 }
 
 function updateMessages(sessionId: string, change: (messages: QueuedMessage[]) => QueuedMessage[]) {
@@ -35,6 +82,10 @@ export const chatQueue = {
   },
   add(sessionId: string, text: string) {
     updateMessages(sessionId, (messages) => queueMessage(messages, text));
+  },
+  /** Drop a deleted session's queue. */
+  forget(sessionId: string) {
+    if (sessions.has(sessionId)) set(sessionId, empty);
   },
   remove(sessionId: string, id: string) {
     const state = get(sessionId);

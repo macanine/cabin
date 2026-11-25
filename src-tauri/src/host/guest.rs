@@ -19,8 +19,48 @@ use super::{Host, start_gateway, unavailable};
 use crate::app_error::AppError;
 
 pub(super) struct Link {
-    stdin: ChildStdin,
+    outbox: mpsc::SyncSender<Vec<u8>>,
     child: Child,
+}
+
+/// Requests waiting for the pipe. A guest that stops reading fills this and
+/// then refuses new calls, rather than blocking them.
+const OUTBOX_DEPTH: usize = 256;
+
+/// Calls that only read guest state. They answer in milliseconds, so a missing
+/// reply means the request is stuck.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// Everything else can install packages or wait on an agent. This only ends
+/// calls that will never be answered.
+const WORK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+fn call_timeout(method: &str) -> Duration {
+    let base = match method {
+        "app_snapshot" | "clock" | "machine_observation" | "monitor_processes"
+        | "terminal_snapshot" | "chat_snapshot" | "chat_attachment" | "agent_chat_capabilities"
+        | "acp_runtimes" | "agent_config" | "agent_backups" | "agent_catalog" | "workspace_files"
+        | "worktree_refs" | "fs_list" | "fs_read" | "git_status" | "git_diff" | "listening_ports"
+        | "mcp_library" | "mcp_library_edit" | "mcp_library_export" | "mcp_library_parse"
+        | "skill_library" | "skill_library_read" | "environment_state" | "environment_review"
+        | "node_state" | "operations_list" | "diagnostic_events" => READ_TIMEOUT,
+        _ => WORK_TIMEOUT,
+    };
+    base * vm_core::platform::slowdown()
+}
+
+/// Write requests in order on their own thread, so a full pipe never holds the
+/// link. Dropping the sender, or a failed write, closes the pipe; the guest
+/// then ends the link and the reader fails what is still pending.
+fn spawn_writer(mut pipe: impl Write + Send + 'static, depth: usize) -> std::io::Result<mpsc::SyncSender<Vec<u8>>> {
+    let (outbox, requests) = mpsc::sync_channel::<Vec<u8>>(depth);
+    std::thread::Builder::new().name("guest-writer".into()).spawn(move || {
+        for line in requests {
+            if pipe.write_all(&line).and_then(|()| pipe.flush()).is_err() {
+                return;
+            }
+        }
+    })?;
+    Ok(outbox)
 }
 
 /// An open `cabind connect` link: the SSH child, its stdin, its stdout
@@ -81,20 +121,20 @@ impl Host {
     }
 
     pub(super) fn call_guest(&self, method: &str, params: Value) -> Result<Value, AppError> {
-        self.call_guest_with_timeout(method, params, None)
+        self.call_guest_with_timeout(method, params, call_timeout(method))
     }
 
     pub(super) fn call_guest_with_timeout(
         &self,
         method: &str,
         params: Value,
-        timeout: Option<Duration>,
+        timeout: Duration,
     ) -> Result<Value, AppError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (reply, wait) = mpsc::channel();
         {
-            let mut link = self.link.locked();
-            let Some(link) = link.as_mut() else {
+            let link = self.link.locked();
+            let Some(link) = link.as_ref() else {
                 let state = self.status.read_lock().state;
                 return Err(unavailable(match state {
                     MachineState::NotInstalled => {
@@ -110,36 +150,29 @@ impl Host {
                 .insert(id, reply);
             let mut line = json!({ "id": id, "method": method, "params": params }).to_string();
             line.push('\n');
-            if let Err(error) = link
-                .stdin
-                .write_all(line.as_bytes())
-                .and_then(|()| link.stdin.flush())
-            {
+            if let Err(error) = link.outbox.try_send(line.into_bytes()) {
                 self.pending.locked()
                     .remove(&id);
-                return Err(unavailable(format!(
-                    "The connection to the machine dropped: {error}"
-                )));
+                return Err(unavailable(match error {
+                    mpsc::TrySendError::Full(_) => "The machine is not accepting requests right now. Try again in a moment.",
+                    mpsc::TrySendError::Disconnected(_) => "The connection to the machine dropped",
+                }));
             }
         }
-        if let Some(timeout) = timeout {
-            return match wait.recv_timeout(timeout) {
-                Ok(result) => result,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    Err(unavailable("The connection to the machine dropped"))
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.pending.locked()
-                        .remove(&id);
-                    Err(unavailable(format!(
-                        "The guest request {method} timed out after {} seconds",
-                        timeout.as_secs()
-                    )))
-                }
-            };
+        match wait.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(unavailable("The connection to the machine dropped"))
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.pending.locked()
+                    .remove(&id);
+                Err(unavailable(format!(
+                    "The guest request {method} timed out after {} seconds",
+                    timeout.as_secs()
+                )))
+            }
         }
-        wait.recv()
-            .unwrap_or_else(|_| Err(unavailable("The connection to the machine dropped")))
     }
 
     /// Load the guest library and make the first environment result available
@@ -163,11 +196,16 @@ impl Host {
             attempt.begin(Phase::Library);
             self.publish_start(attempt);
         }
+        if let Ok(runtime) = self.machine.runtime()
+            && let Err(error) = vm_core::shell::migrate_chrome_autostart(&runtime)
+        {
+            cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "chrome", "autostart_migration_failed", format_args!("{error}"));
+        }
         if self.uses_gateway() {
             if let Some(attempt) = attempt {
                 attempt.note("Applying IPv4-only guest network configuration");
             }
-            self.call_guest_with_timeout("network_ipv4_ensure", json!({}), Some(Duration::from_secs(60)))
+            self.call_guest_with_timeout("network_ipv4_ensure", json!({}), Duration::from_secs(60))
                 .map_err(|error| {
                     let message = format!("Could not configure IPv4-only guest networking: {}", error.message);
                     self.network.invalidate_gate(&message);
@@ -179,7 +217,7 @@ impl Host {
             .call_guest_with_timeout(
                 "app_startup_snapshot",
                 json!({}),
-                Some(Duration::from_secs(30)),
+                Duration::from_secs(30),
             )
             .map_err(|error| {
                 format!(
@@ -258,7 +296,7 @@ impl Host {
         let _ = self.call_guest_with_timeout(
             "agents_refresh",
             json!({}),
-            Some(Duration::from_secs(90)),
+            Duration::from_secs(90),
         );
         Ok(())
     }
@@ -448,7 +486,15 @@ impl Host {
                 let _ = child.wait();
                 return Err("The environment changed while connecting".into());
             }
-            *link = Some(Link { stdin, child });
+            let outbox = match spawn_writer(stdin, OUTBOX_DEPTH) {
+                Ok(outbox) => outbox,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("Could not start writing to the machine: {error}"));
+                }
+            };
+            *link = Some(Link { outbox, child });
         }
 
         let alive = Arc::new(AtomicBool::new(true));
@@ -653,5 +699,54 @@ mod tests {
         assert!(!deployment.claim(&guest));
         assert!(deployment.ready(&guest));
         assert!(deployment.claim(&guest));
+    }
+
+    #[test]
+    fn reads_time_out_early_and_work_is_given_time() {
+        assert!(call_timeout("chat_snapshot") < call_timeout("setup_run"));
+        assert_eq!(call_timeout("chat_send"), call_timeout("an_unknown_method"));
+    }
+
+    /// A pipe nobody reads: every write waits until it is released.
+    struct Stuck(mpsc::Receiver<()>);
+    impl Write for Stuck {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.recv();
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_stuck_pipe_refuses_requests_instead_of_blocking_them() {
+        let (release, gate) = mpsc::channel();
+        let outbox = spawn_writer(Stuck(gate), 2).unwrap();
+        let begun = Instant::now();
+        let mut refused = false;
+        for _ in 0..8 {
+            refused |= matches!(outbox.try_send(b"x".to_vec()), Err(mpsc::TrySendError::Full(_)));
+        }
+        assert!(refused && begun.elapsed() < Duration::from_secs(2));
+        // Once the pipe breaks, the writer ends and later sends say so.
+        drop(release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !matches!(outbox.try_send(vec![]), Err(mpsc::TrySendError::Disconnected(_))) {
+            assert!(Instant::now() < deadline, "the writer kept running");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn requests_are_written_whole_and_in_order() {
+        let (read, write) = std::io::pipe().unwrap();
+        let outbox = spawn_writer(write, 8).unwrap();
+        for line in ["one\n", "two\n", "three\n"] {
+            outbox.try_send(line.as_bytes().to_vec()).unwrap();
+        }
+        drop(outbox);
+        let lines: Vec<_> = BufReader::new(read).lines().map(Result::unwrap).collect();
+        assert_eq!(lines, ["one", "two", "three"]);
     }
 }

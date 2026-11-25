@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chatQueue } from "../src/lib/chatQueue.ts";
+import { chatQueue, restoreQueues } from "../src/lib/chatQueue.ts";
 
 test("a failed delivery stays in its session and waits for an explicit retry", () => {
   const session = "retry";
@@ -46,4 +46,24 @@ test("direct and queued sends share a per-session claim", () => {
   assert.deepEqual(chatQueue.get(session).messages, [message]);
   chatQueue.finish(session, message.id, true);
   assert.deepEqual(chatQueue.get(session).messages, []);
+});
+
+test("a restored queue keeps its order and sends nothing by itself", () => {
+  const restored = restoreQueues(JSON.stringify({ s1: [{ id: "a", text: "first" }, { id: "b", text: "second", extra: 1 }], empty: [] }));
+  assert.deepEqual([...restored.keys()], ["s1"]);
+  assert.deepEqual(restored.get("s1"), {
+    messages: [{ id: "a", text: "first" }, { id: "b", text: "second" }], active: null, failed: ["a", "b"],
+  });
+});
+
+test("unreadable saved queues are ignored", () => {
+  for (const saved of [null, "", "not json", "[]", "null", '{"s":1}', '{"s":[null,{"id":1,"text":"x"},{"id":"a","text":""}]}']) {
+    assert.equal(restoreQueues(saved).size, 0);
+  }
+});
+
+test("a deleted session drops its queue", () => {
+  chatQueue.add("gone", "later");
+  chatQueue.forget("gone");
+  assert.deepEqual(chatQueue.get("gone").messages, []);
 });
