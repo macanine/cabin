@@ -17,7 +17,7 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 |---|---|---|
 | Host, VM, and SSH | [host/](src-tauri/src/host/mod.rs), [machine.rs](vm/src/machine.rs), [agentd.rs](vm/src/agentd.rs) | `src-tauri/src/host/{machine,guest,network_check}.rs`, `src-tauri/src/machine_service.rs`, `vm/src/{config,vm,os,qemu_engine,platform}.rs`, `vm/src/steps/` |
 | Installer and startup | [InstallWizard.tsx](src/views/InstallWizard.tsx), [StartReportView.tsx](src/components/StartReportView.tsx), [MachineStage.tsx](src/components/MachineStage.tsx) | `src/views/install/{InstallSetup,InstallProgress,MachineCard}.tsx`, `src/components/{Boot,MachineGate,Recovery}.tsx`, `src/lib/{installForm,wizard,startReport,recovery}.ts` |
-| IPC and application state | [common.ts](src/services/ipc/common.ts), [dispatch.rs](src-tauri/src/host/dispatch.rs), [rpc.rs](core/src/rpc.rs) | `src/services/ipc/`, `src/state/{store,reducer}.ts`, `core/src/model.rs`, `src-tauri/src/lib.rs` |
+| IPC and application state | [common.ts](src/services/ipc/common.ts), [dispatch.rs](src-tauri/src/host/dispatch.rs), [rpc.rs](core/src/rpc.rs) | `src/services/ipc/`, `src/state/{store,reducer}.ts`, `core/src/model/`, `src-tauri/src/lib.rs` |
 | Routes, interfaces, and subscriptions | [NetworkDashboard.tsx](src/components/network/NetworkDashboard.tsx), [global_network/](src-tauri/src/global_network/mod.rs) | `src-tauri/src/global_network/{gate,paths,health,catalog}.rs`, `src/lib/networkRoute.ts`, `src/components/network/useNetworkLive.ts`, `vm/src/network_interfaces.rs`, `vm/src/netgw/`, `core/src/proxy/`, `tests/geo.test.mjs`, `vm/tests/gateway_interface_live.rs` |
 | Network checks and exit | [network_gate/](src-tauri/src/network_gate/), [network_health.rs](src-tauri/src/network_health.rs), [network_probe.rs](core/src/network_probe.rs) | `src-tauri/src/network_gate/{report,exit,browser}.rs`, `vm/src/network_probe_targets.rs`, `src/components/network/{NetworkGatePanel,NetworkCheckModal}.tsx`, `src/state/networkMonitor.ts`, `src/lib/networkSummary.ts`, `ip-detection/` |
 | Desktop and browser | [ChromeView.tsx](src/views/ChromeView.tsx), [chrome_feature.rs](vm/src/chrome_feature.rs) | `src/components/{BrowserEnvironmentPanel,ChromeViewer}.tsx`, `src/lib/browserEnvironment.ts`, `core/src/{browser,native_display}/`, `core/src/{guest_desktop,device_probe,guest_dns}.rs` |
@@ -41,6 +41,10 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 - `Host::call_guest` times every call out: `call_timeout` lists the fast reads, and anything
   else may install or wait on an agent. A writer thread owns the SSH pipe, so a full pipe
   refuses calls and never holds the link lock.
+- `rpc::serve` gives every client a bounded output queue drained by its own writer thread
+  and caps concurrent requests and clients, so a client that stops reading is dropped
+  instead of blocking the event sink. `Store::chat_items` loads the newest items in order,
+  so one long session cannot turn every snapshot into an unbounded load.
 - The CSP in `tauri.conf.json` allows the loopback viewers, previews, and data images that the
   app uses. Queued chat messages survive a reload and wait for an explicit Retry.
 - Save VM resource requests separately from the running config. Under the machine operation
@@ -176,7 +180,9 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   parallel. Safe skips the guest scan when the Mac matches the base. Ignore rules include
   `.gitignore`, `.cabinignore`, configured patterns, and unticked paths. The scanner and
   watcher share rules for Cabin's temporary files. Watcher scopes use `/` on every host,
-  and explicit watcher rescan signals request a full cycle.
+  and explicit watcher rescan signals request a full cycle. Every guest sync command has
+  a deadline; a hung ssh or guest is killed and reported, and the SSH control socket lives
+  in the per-user temp directory, not `/tmp`.
 - Keep both versions of a conflict until `sync_resolve` selects one. Publish regular
   files atomically after checking the staged payload length and preserve ignored paths.
   Reject writes through symlinked directories and
@@ -296,6 +302,13 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 
 ## Verification
 
+- CI gates every push on `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+  `npm run lint` (ESLint), `tsc --noEmit`, and the frontend and Rust test suites. Keep
+  them green locally with the [development commands](README.md#development); do not add
+  an `#[allow]` for a new lint without a reason comment.
+- Live VM suites are `#[ignore]`d and run nightly through
+  [.github/workflows/live.yml](.github/workflows/live.yml) on a self-hosted macOS runner.
+  A behavior that only the live suites cover needs a note in the pull request.
 - Use the [development commands](README.md#development) for frontend and Rust
   tests. Use temp directories, in-memory SQLite, loopback listeners, and
   `system::fake::FakeSystem` for unit tests. `src-tauri/src/sync.rs` also has end-to-end

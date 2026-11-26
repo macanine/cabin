@@ -1,7 +1,7 @@
 //! Where guest traffic goes: the upstream and the shoes configuration for it.
 
-use super::frame::BLOCKED;
 use super::MTU;
+use super::frame::BLOCKED;
 use crate::{Error, Result};
 
 /// Where the VM's internet traffic goes.
@@ -45,13 +45,17 @@ fn client_chain_value(upstream: &Upstream) -> Result<serde_yaml::Value> {
         Upstream::BoundChain(hops, name) => (Some(hops), Some(name)),
     };
     let mut clean = if let Some(hops) = hops {
-        hops.iter().map(|hop| {
-            let mut hop = hop.as_mapping().cloned()
-                .ok_or_else(|| Error::Message("invalid proxy node".into()))?;
-            hop.remove(string("name"));
-            hop.remove(string("bind_interface"));
-            Ok(hop)
-        }).collect::<Result<Vec<_>>>()?
+        hops.iter()
+            .map(|hop| {
+                let mut hop = hop
+                    .as_mapping()
+                    .cloned()
+                    .ok_or_else(|| Error::Message("invalid proxy node".into()))?;
+                hop.remove(string("name"));
+                hop.remove(string("bind_interface"));
+                Ok(hop)
+            })
+            .collect::<Result<Vec<_>>>()?
     } else {
         let mut protocol = Mapping::new();
         protocol.insert(string("type"), string("direct"));
@@ -66,7 +70,11 @@ fn client_chain_value(upstream: &Upstream) -> Result<serde_yaml::Value> {
         clean[0].insert(string("bind_interface"), string(name));
     }
     let mut clean: Vec<_> = clean.into_iter().map(Value::Mapping).collect();
-    if clean.len() == 1 { Ok(clean.remove(0)) } else { Ok(Value::Sequence(clean)) }
+    if clean.len() == 1 {
+        Ok(clean.remove(0))
+    } else {
+        Ok(Value::Sequence(clean))
+    }
 }
 
 /// The shoes TUN config for `upstream`. The packet device is a socket passed
@@ -114,12 +122,17 @@ mod tests {
     fn bound_upstreams_only_set_the_interface_on_the_first_hop() {
         let direct = client_chain_value(&Upstream::BoundDirect("en8".into())).unwrap();
         assert_eq!(direct["bind_interface"].as_str(), Some("en8"));
-        let hop: serde_yaml::Value = serde_yaml::from_str("name: proxy\nbind_interface: stale\nprotocol: {type: socks}\n").unwrap();
-        let chain = client_chain_value(&Upstream::BoundChain(vec![hop.clone(), hop], "en8".into())).unwrap();
+        let hop: serde_yaml::Value =
+            serde_yaml::from_str("name: proxy\nbind_interface: stale\nprotocol: {type: socks}\n")
+                .unwrap();
+        let chain = client_chain_value(&Upstream::BoundChain(vec![hop.clone(), hop], "en8".into()))
+            .unwrap();
         let hops = chain.as_sequence().unwrap();
         assert_eq!(hops[0]["bind_interface"].as_str(), Some("en8"));
         assert!(hops[1].get("bind_interface").is_none());
-        assert!(client_chain(&Upstream::BoundDirect("cabin-nonexistent-interface".into())).is_err());
+        assert!(
+            client_chain(&Upstream::BoundDirect("cabin-nonexistent-interface".into())).is_err()
+        );
     }
 
     #[test]

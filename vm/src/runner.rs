@@ -792,7 +792,8 @@ impl Runner {
             } else {
                 "install"
             };
-            let mut log = cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
+            let mut log =
+                cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
             writeln!(
                 log,
                 "# reconfigure {old_user} -> {new_user}, {old_hostname} -> {new_hostname}"
@@ -996,11 +997,11 @@ impl Runner {
                         }
                     }
                     if was_running {
-                        let log = Arc::new(Mutex::new(
-                            cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?,
-                        ));
-                        let _ =
-                            runtime.start(&log, Boot::new(Duration::from_secs(180)));
+                        let log = Arc::new(Mutex::new(cabin_diagnostics::open_capture(
+                            &log_path,
+                            cabin_diagnostics::Capture::Append,
+                        )?));
+                        let _ = runtime.start(&log, Boot::new(Duration::from_secs(180)));
                     }
                     Ok(())
                 })();
@@ -1158,8 +1159,11 @@ impl Runner {
             let prepared = crate::guest_dns::ensure(cfg, &runtime)
                 .and_then(|_| crate::workspace::mount_mappings(cfg, &runtime));
             if let Err(error) = prepared {
-                let mut log_file = cabin_diagnostics::open_capture(&cfg.instance_logs_dir().join("start-rollback.log"), cabin_diagnostics::Capture::Append)?;
-                    writeln!(
+                let mut log_file = cabin_diagnostics::open_capture(
+                    &cfg.instance_logs_dir().join("start-rollback.log"),
+                    cabin_diagnostics::Capture::Append,
+                )?;
+                writeln!(
                     log_file,
                     "# start rollback instance={} at={}\n{}",
                     cfg.name,
@@ -1189,8 +1193,14 @@ impl Runner {
         let log_path = cfg
             .instance_logs_dir()
             .join(format!("start-{}.log", localstamp()));
-        let mut log_file = cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
-        writeln!(log_file, "# start instance={} at={}", cfg.name, now_millis())?;
+        let mut log_file =
+            cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
+        writeln!(
+            log_file,
+            "# start instance={} at={}",
+            cfg.name,
+            now_millis()
+        )?;
         let log = Arc::new(Mutex::new(log_file));
         self.start_stopped(&runtime, &log, &log_path, None)?;
         println!("[start] ssh: {}", self.ssh_command()?);
@@ -1258,7 +1268,10 @@ impl Runner {
                     attempt.note(&message);
                 }
                 if let Err(error) = crate::resources::record_notice(cfg, &message) {
-                    crate::util::log_line(log, &format!("[machine resources] Could not save the notice: {error}"));
+                    crate::util::log_line(
+                        log,
+                        &format!("[machine resources] Could not save the notice: {error}"),
+                    );
                 }
             }
             std::thread::scope(|scope| {
@@ -1267,7 +1280,9 @@ impl Runner {
                     .spawn_scoped(scope, || crate::guest_dns::ensure(cfg, runtime))?;
                 let folders = crate::workspace::mount_mappings(cfg, runtime);
                 dns.join()
-                    .map_err(|_| crate::Error::Message("Guest DNS worker stopped unexpectedly".into()))?
+                    .map_err(|_| {
+                        crate::Error::Message("Guest DNS worker stopped unexpectedly".into())
+                    })?
                     .and(folders)
             })?;
             if let Some(attempt) = attempt {
@@ -1317,13 +1332,17 @@ impl Runner {
         let log_path = cfg
             .instance_logs_dir()
             .join(format!("stop-{}.log", localstamp()));
-        let mut log_file = cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
+        let mut log_file =
+            cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
         writeln!(log_file, "# stop instance={} at={}", cfg.name, now_millis())?;
         let log = Arc::new(Mutex::new(log_file));
         let runtime = Runtime::new(cfg);
         runtime.stop(&log, Duration::from_secs(90));
         if runtime.alive() {
-            return message(format!("The machine could not be stopped. See {}", log_path.display()));
+            return message(format!(
+                "The machine could not be stopped. See {}",
+                log_path.display()
+            ));
         }
         let mut fields = Map::new();
         fields.insert("instance".to_string(), json!(cfg.name));
@@ -1348,9 +1367,10 @@ impl Runner {
             let log_path = cfg
                 .instance_logs_dir()
                 .join(format!("destroy-{}.log", localstamp()));
-            let log = Arc::new(Mutex::new(
-                cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?,
-            ));
+            let log = Arc::new(Mutex::new(cabin_diagnostics::open_capture(
+                &log_path,
+                cabin_diagnostics::Capture::Append,
+            )?));
             runtime.stop(&log, Duration::from_secs(60));
             if runtime.alive() {
                 return message("The machine could not be stopped; its data was kept");
@@ -1414,7 +1434,14 @@ impl Runner {
         let cfg = &self.cfg;
         let mut files: Vec<PathBuf> = Vec::new();
         if serial {
-            for path in [cfg.serial_log_path(), cfg.provision_serial_log(), cfg.instance_file("serial.log"), StatePaths::new(&cfg.home).instance(&cfg.name).provision_serial()] {
+            for path in [
+                cfg.serial_log_path(),
+                cfg.provision_serial_log(),
+                cfg.instance_file("serial.log"),
+                StatePaths::new(&cfg.home)
+                    .instance(&cfg.name)
+                    .provision_serial(),
+            ] {
                 if path.exists() {
                     files.push(path);
                 }

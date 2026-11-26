@@ -1,0 +1,54 @@
+name: live
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+# Boots real VMs. These suites are `#[ignore]`d in the push build because they
+# need QEMU/HVF, a prepared Ubuntu image, and the guest daemon; GitHub-hosted
+# runners cannot nest virtualization, so this workflow targets a self-hosted
+# macOS runner and stays off until the repository variable CABIN_LIVE_CI is
+# set to true. Secrets: CABIN_TEST_IMAGE, CABIN_TEST_ENGINE_HOME,
+# CABIN_TEST_AGENTD.
+jobs:
+  suites:
+    name: ${{ matrix.suite }}
+    if: vars.CABIN_LIVE_CI == 'true'
+    runs-on: [self-hosted, macOS, cabin-live]
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - destroy_vm_live
+          - workspace_live
+          - gateway_vm_live
+          - gateway_interface_live
+          - kernel_vm_live
+          - browser_live
+          - chrome_vm_live
+          - chrome_tunnel_vm_live
+          - accounts_vm_live
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build the guest daemon
+        run: node scripts/build-agentd.mjs --target aarch64-unknown-linux-musl
+      - name: Boot and exercise a real machine
+        env:
+          CABIN_TEST_IMAGE: ${{ secrets.CABIN_TEST_IMAGE }}
+          CABIN_TEST_ENGINE_HOME: ${{ secrets.CABIN_TEST_ENGINE_HOME }}
+          CABIN_TEST_AGENTD: ${{ secrets.CABIN_TEST_AGENTD }}
+          CABIND_TEST_BIN: ${{ github.workspace }}/core/target/aarch64-unknown-linux-musl/release/cabind
+        run: >-
+          cargo test --manifest-path vm/Cargo.toml
+          --test ${{ matrix.suite }}
+          -- --ignored --test-threads=1 --nocapture

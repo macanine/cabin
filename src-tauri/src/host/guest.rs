@@ -36,13 +36,36 @@ const WORK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 fn call_timeout(method: &str) -> Duration {
     let base = match method {
-        "app_snapshot" | "clock" | "machine_observation" | "monitor_processes"
-        | "terminal_snapshot" | "chat_snapshot" | "chat_attachment" | "agent_chat_capabilities"
-        | "acp_runtimes" | "agent_config" | "agent_backups" | "agent_catalog" | "workspace_files"
-        | "worktree_refs" | "fs_list" | "fs_read" | "git_status" | "git_diff" | "listening_ports"
-        | "mcp_library" | "mcp_library_edit" | "mcp_library_export" | "mcp_library_parse"
-        | "skill_library" | "skill_library_read" | "environment_state" | "environment_review"
-        | "node_state" | "operations_list" | "diagnostic_events" => READ_TIMEOUT,
+        "app_snapshot"
+        | "clock"
+        | "machine_observation"
+        | "monitor_processes"
+        | "terminal_snapshot"
+        | "chat_snapshot"
+        | "chat_attachment"
+        | "agent_chat_capabilities"
+        | "acp_runtimes"
+        | "agent_config"
+        | "agent_backups"
+        | "agent_catalog"
+        | "workspace_files"
+        | "worktree_refs"
+        | "fs_list"
+        | "fs_read"
+        | "git_status"
+        | "git_diff"
+        | "listening_ports"
+        | "mcp_library"
+        | "mcp_library_edit"
+        | "mcp_library_export"
+        | "mcp_library_parse"
+        | "skill_library"
+        | "skill_library_read"
+        | "environment_state"
+        | "environment_review"
+        | "node_state"
+        | "operations_list"
+        | "diagnostic_events" => READ_TIMEOUT,
         _ => WORK_TIMEOUT,
     };
     base * vm_core::platform::slowdown()
@@ -51,21 +74,31 @@ fn call_timeout(method: &str) -> Duration {
 /// Write requests in order on their own thread, so a full pipe never holds the
 /// link. Dropping the sender, or a failed write, closes the pipe; the guest
 /// then ends the link and the reader fails what is still pending.
-fn spawn_writer(mut pipe: impl Write + Send + 'static, depth: usize) -> std::io::Result<mpsc::SyncSender<Vec<u8>>> {
+fn spawn_writer(
+    mut pipe: impl Write + Send + 'static,
+    depth: usize,
+) -> std::io::Result<mpsc::SyncSender<Vec<u8>>> {
     let (outbox, requests) = mpsc::sync_channel::<Vec<u8>>(depth);
-    std::thread::Builder::new().name("guest-writer".into()).spawn(move || {
-        for line in requests {
-            if pipe.write_all(&line).and_then(|()| pipe.flush()).is_err() {
-                return;
+    std::thread::Builder::new()
+        .name("guest-writer".into())
+        .spawn(move || {
+            for line in requests {
+                if pipe.write_all(&line).and_then(|()| pipe.flush()).is_err() {
+                    return;
+                }
             }
-        }
-    })?;
+        })?;
     Ok(outbox)
 }
 
 /// An open `cabind connect` link: the SSH child, its stdin, its stdout
 /// lines and the daemon's hello.
-type GuestLink = (Child, ChildStdin, std::io::Lines<BufReader<std::process::ChildStdout>>, Value);
+type GuestLink = (
+    Child,
+    ChildStdin,
+    std::io::Lines<BufReader<std::process::ChildStdout>>,
+    Value,
+);
 
 /// Why a link could not be opened, and whether the guest answered at all.
 struct LinkFailure {
@@ -112,10 +145,7 @@ impl Host {
     }
 
     pub(super) fn fail_pending(&self, message: &str) {
-        for (_, reply) in self
-            .pending.locked()
-            .drain()
-        {
+        for (_, reply) in self.pending.locked().drain() {
             let _ = reply.send(Err(unavailable(message)));
         }
     }
@@ -146,15 +176,15 @@ impl Host {
                     MachineState::Running => "Connecting to the machine…",
                 }));
             };
-            self.pending.locked()
-                .insert(id, reply);
+            self.pending.locked().insert(id, reply);
             let mut line = json!({ "id": id, "method": method, "params": params }).to_string();
             line.push('\n');
             if let Err(error) = link.outbox.try_send(line.into_bytes()) {
-                self.pending.locked()
-                    .remove(&id);
+                self.pending.locked().remove(&id);
                 return Err(unavailable(match error {
-                    mpsc::TrySendError::Full(_) => "The machine is not accepting requests right now. Try again in a moment.",
+                    mpsc::TrySendError::Full(_) => {
+                        "The machine is not accepting requests right now. Try again in a moment."
+                    }
                     mpsc::TrySendError::Disconnected(_) => "The connection to the machine dropped",
                 }));
             }
@@ -165,8 +195,7 @@ impl Host {
                 Err(unavailable("The connection to the machine dropped"))
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.pending.locked()
-                    .remove(&id);
+                self.pending.locked().remove(&id);
                 Err(unavailable(format!(
                     "The guest request {method} timed out after {} seconds",
                     timeout.as_secs()
@@ -199,7 +228,12 @@ impl Host {
         if let Ok(runtime) = self.machine.runtime()
             && let Err(error) = vm_core::shell::migrate_chrome_autostart(&runtime)
         {
-            cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "chrome", "autostart_migration_failed", format_args!("{error}"));
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Warn,
+                "chrome",
+                "autostart_migration_failed",
+                format_args!("{error}"),
+            );
         }
         if self.uses_gateway() {
             if let Some(attempt) = attempt {
@@ -207,18 +241,17 @@ impl Host {
             }
             self.call_guest_with_timeout("network_ipv4_ensure", json!({}), Duration::from_secs(60))
                 .map_err(|error| {
-                    let message = format!("Could not configure IPv4-only guest networking: {}", error.message);
+                    let message = format!(
+                        "Could not configure IPv4-only guest networking: {}",
+                        error.message
+                    );
                     self.network.invalidate_gate(&message);
                     let _ = self.emit_network();
                     message
                 })?;
         }
         let value = self
-            .call_guest_with_timeout(
-                "app_startup_snapshot",
-                json!({}),
-                Duration::from_secs(30),
-            )
+            .call_guest_with_timeout("app_startup_snapshot", json!({}), Duration::from_secs(30))
             .map_err(|error| {
                 format!(
                     "Could not load the initial guest snapshot: {}",
@@ -242,9 +275,7 @@ impl Host {
             if self.uses_gateway() {
                 attempt.begin(Phase::Network);
                 self.publish_start(attempt);
-                let _transaction = self
-                    .network
-                    .transaction.locked();
+                let _transaction = self.network.transaction.locked();
                 if !still_connected() {
                     return Err("The machine disconnected before the network check".into());
                 }
@@ -272,8 +303,7 @@ impl Host {
         if !still_connected() {
             return Err("The machine disconnected before startup finished".into());
         }
-        *self
-            .guest_snapshot.write_lock() = Some(snapshot.clone());
+        *self.guest_snapshot.write_lock() = Some(snapshot.clone());
         self.update(|status| {
             status.connection = GuestConnection::Connected;
             status.guest_version = Some(version);
@@ -293,11 +323,7 @@ impl Host {
         }
         // The first snapshot already has the installed CLIs and models. Their
         // version and sign-in checks are published separately after readiness.
-        let _ = self.call_guest_with_timeout(
-            "agents_refresh",
-            json!({}),
-            Duration::from_secs(90),
-        );
+        let _ = self.call_guest_with_timeout("agents_refresh", json!({}), Duration::from_secs(90));
         Ok(())
     }
 
@@ -330,7 +356,10 @@ impl Host {
         runtime: &vm_core::vm::Runtime,
         attempt: Option<&Arc<Attempt>>,
     ) -> Result<GuestLink, LinkFailure> {
-        let unreachable = |reason: String| LinkFailure { reason, reachable: false };
+        let unreachable = |reason: String| LinkFailure {
+            reason,
+            reachable: false,
+        };
         let argv = vm_core::agentd::connect_argv(runtime)
             .map_err(|error| unreachable(error.to_string()))?;
         let stderr = attempt
@@ -353,16 +382,23 @@ impl Host {
         let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(unreachable("SSH did not provide the cabind handshake pipes".into()));
+            return Err(unreachable(
+                "SSH did not provide the cabind handshake pipes".into(),
+            ));
         };
         let (hello_tx, hello_rx) = mpsc::channel();
-        if let Err(error) = std::thread::Builder::new().name("guest-hello".into()).spawn(move || {
-            let mut lines = BufReader::new(stdout).lines();
-            let _ = hello_tx.send((lines.next(), lines));
-        }) {
+        if let Err(error) = std::thread::Builder::new()
+            .name("guest-hello".into())
+            .spawn(move || {
+                let mut lines = BufReader::new(stdout).lines();
+                let _ = hello_tx.send((lines.next(), lines));
+            })
+        {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(unreachable(format!("Could not start reading the cabind handshake: {error}")));
+            return Err(unreachable(format!(
+                "Could not start reading the cabind handshake: {error}"
+            )));
         }
         let timeout = Duration::from_secs(20) * vm_core::platform::slowdown();
         let deadline = Instant::now() + timeout;
@@ -442,7 +478,10 @@ impl Host {
                         reason
                     }
                 },
-                Err(LinkFailure { reason, reachable: false }) => return Err(reason),
+                Err(LinkFailure {
+                    reason,
+                    reachable: false,
+                }) => return Err(reason),
                 Err(LinkFailure { reason, .. }) => reason,
             };
             if changed() {
@@ -466,10 +505,17 @@ impl Host {
         };
         let deployed = self.deployment.locked().ready(&guest);
         #[cfg(unix)]
-        if vm_core::vm::cli_dir(&runtime.cfg).join("exec.sock").exists()
+        if vm_core::vm::cli_dir(&runtime.cfg)
+            .join("exec.sock")
+            .exists()
             && let Err(error) = vm_core::agentd::prepare_native(&runtime, deployed)
         {
-            cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "cli", "guest_setup_failed", format_args!("{error}"));
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Warn,
+                "cli",
+                "guest_setup_failed",
+                format_args!("{error}"),
+            );
         }
         let daemon = format!(
             "cabind {version} · build {}{}",
@@ -500,19 +546,23 @@ impl Host {
         let alive = Arc::new(AtomicBool::new(true));
         let worker_alive = alive.clone();
         let me = self.clone();
-        let load = match std::thread::Builder::new().name("guest-snapshot".into()).spawn(move || {
-            let result =
-                me.load_guest(generation, &worker_alive, attempt.as_ref(), version, daemon);
-            if result.is_err() {
-                me.disconnect();
-            }
-            result
-        }) {
+        let load = match std::thread::Builder::new()
+            .name("guest-snapshot".into())
+            .spawn(move || {
+                let result =
+                    me.load_guest(generation, &worker_alive, attempt.as_ref(), version, daemon);
+                if result.is_err() {
+                    me.disconnect();
+                }
+                result
+            }) {
             Ok(load) => load,
             Err(error) => {
                 self.disconnect();
                 self.fail_pending("The connection to the machine dropped");
-                return Err(format!("Could not start loading the guest snapshot: {error}"));
+                return Err(format!(
+                    "Could not start loading the guest snapshot: {error}"
+                ));
             }
         };
 
@@ -529,10 +579,7 @@ impl Host {
                     match &mut event {
                         AppEvent::Snapshot { snapshot } => self.overlay_snapshot(snapshot),
                         AppEvent::Agents { agents } => {
-                            if let Some(snapshot) = self
-                                .guest_snapshot.write_lock()
-                                .as_mut()
-                            {
+                            if let Some(snapshot) = self.guest_snapshot.write_lock().as_mut() {
                                 snapshot.agents.clone_from(agents);
                             }
                         }
@@ -547,9 +594,7 @@ impl Host {
                     self.emit(event);
                 }
             } else if let Some(id) = value.get("id").and_then(Value::as_u64) {
-                let reply = self
-                    .pending.locked()
-                    .remove(&id);
+                let reply = self.pending.locked().remove(&id);
                 if let Some(reply) = reply {
                     let result = match value.get("error") {
                         Some(error) => Err(serde_json::from_value(error.clone())
@@ -574,8 +619,12 @@ impl Host {
         std::thread::Builder::new()
             .name("guest-link".into())
             .spawn(move || {
-                let Some(kick_rx) = me.kick_rx.locked().take() else { return };
-                if me.machine.installed() && let Ok(attempt) = me.begin_start() {
+                let Some(kick_rx) = me.kick_rx.locked().take() else {
+                    return;
+                };
+                if me.machine.installed()
+                    && let Ok(attempt) = me.begin_start()
+                {
                     let _ = me.start_machine(&attempt);
                 }
                 let mut backoff = Duration::from_millis(250);
@@ -633,8 +682,7 @@ impl Host {
                                 .map(String::as_str)
                                 .unwrap_or("The guest link closed");
                             attempt.note(&format!("Connection attempt ended: {detail}"));
-                            let stopped = me.status.read_lock().state
-                                != MachineState::Running;
+                            let stopped = me.status.read_lock().state != MachineState::Running;
                             let initializing = attempt.phase_running(Phase::Library)
                                 || attempt.phase_running(Phase::Network);
                             if stopped
@@ -660,7 +708,9 @@ impl Host {
                     backoff = (backoff * 2).min(Duration::from_secs(5));
                 }
             })
-            .map_err(|error| unavailable(format!("Could not start the guest connection: {error}")))?;
+            .map_err(|error| {
+                unavailable(format!("Could not start the guest connection: {error}"))
+            })?;
         Ok(())
     }
 }
@@ -726,13 +776,19 @@ mod tests {
         let begun = Instant::now();
         let mut refused = false;
         for _ in 0..8 {
-            refused |= matches!(outbox.try_send(b"x".to_vec()), Err(mpsc::TrySendError::Full(_)));
+            refused |= matches!(
+                outbox.try_send(b"x".to_vec()),
+                Err(mpsc::TrySendError::Full(_))
+            );
         }
         assert!(refused && begun.elapsed() < Duration::from_secs(2));
         // Once the pipe breaks, the writer ends and later sends say so.
         drop(release);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !matches!(outbox.try_send(vec![]), Err(mpsc::TrySendError::Disconnected(_))) {
+        while !matches!(
+            outbox.try_send(vec![]),
+            Err(mpsc::TrySendError::Disconnected(_))
+        ) {
             assert!(Instant::now() < deadline, "the writer kept running");
             std::thread::sleep(Duration::from_millis(5));
         }

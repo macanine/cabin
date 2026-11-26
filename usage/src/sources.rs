@@ -271,11 +271,8 @@ pub(crate) fn sync_file(
                     continue;
                 };
                 let id = text(&v, "id").unwrap_or_else(|| start.to_string());
-                let mut r = empty_record(
-                    format!("pi:{}:{id}", *path_key),
-                    agent,
-                    stamp(&v, fallback),
-                );
+                let mut r =
+                    empty_record(format!("pi:{}:{id}", *path_key), agent, stamp(&v, fallback));
                 r.session_id = session.clone();
                 r.model = text(msg, "responseModel")
                     .or_else(|| text(msg, "model"))

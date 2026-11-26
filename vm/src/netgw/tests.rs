@@ -2,12 +2,12 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Instant;
 
-use super::*;
-use super::frame::{ETH_IPV4, ipv4_udp, read_frame, write_frame};
 use super::dns::dns_ipv6_nodata;
+use super::frame::{ETH_IPV4, ipv4_udp, read_frame, write_frame};
 use super::policy::{Lane, tcp_packet};
 use super::relay::{HELD_DNS, HELD_PACKETS};
 use super::testutil::*;
+use super::*;
 use crate::network_probe_targets::PUBLIC_PROBE_V4;
 use crate::sockets::UnixStream;
 
@@ -55,7 +55,10 @@ fn gateway_stops_with_a_partial_frame_and_can_restart() {
     guest.write_all(&[0, 0, 0, 64, 0]).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !gateway.connected() {
-        assert!(Instant::now() < deadline, "gateway did not accept the guest");
+        assert!(
+            Instant::now() < deadline,
+            "gateway did not accept the guest"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 
@@ -193,9 +196,19 @@ fn exchange_dhcp(link: &mut UnixStream) {
 fn held_dns_waits_for_open_while_rechecking_answers_the_fixed_question() {
     let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     upstream.set_nonblocking(true).unwrap();
-    let hop = serde_yaml::from_str(&format!("{{address: '{}', protocol: {{type: http}}}}", upstream.local_addr().unwrap())).unwrap();
+    let hop = serde_yaml::from_str(&format!(
+        "{{address: '{}', protocol: {{type: http}}}}",
+        upstream.local_addr().unwrap()
+    ))
+    .unwrap();
     let dir = std::env::temp_dir().join(format!("netgw-aaaa-{}", std::process::id()));
-    let gateway = Gateway::start(&dir.join("net.sock"), vec![], &Upstream::Chain(vec![hop]), (Ipv4Addr::LOCALHOST, 0).into()).unwrap();
+    let gateway = Gateway::start(
+        &dir.join("net.sock"),
+        vec![],
+        &Upstream::Chain(vec![hop]),
+        (Ipv4Addr::LOCALHOST, 0).into(),
+    )
+    .unwrap();
     let mut link = UnixStream::connect(dir.join("net.sock")).unwrap();
     link.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     exchange_dhcp(&mut link);
@@ -208,14 +221,21 @@ fn held_dns_waits_for_open_while_rechecking_answers_the_fixed_question() {
     write_frame(&mut link, &frame(GATEWAY_MAC, ETH_IPV4, &packet)).unwrap();
     let mut response = Vec::new();
     read_frame(&mut link, &mut response).unwrap();
-    assert_eq!(&response[14 + 28..], dns_ipv6_nodata(&query).unwrap().as_slice());
-    assert!(upstream.accept().is_err(), "AAAA must not create an upstream connection");
+    assert_eq!(
+        &response[14 + 28..],
+        dns_ipv6_nodata(&query).unwrap().as_slice()
+    );
+    assert!(
+        upstream.accept().is_err(),
+        "AAAA must not create an upstream connection"
+    );
     let mut probe = query[..12].to_vec();
     probe.extend_from_slice(b"\x03one\x03one\x03one\x03one\x00\x00\x1c\x00\x01");
     let held_probe = ipv4_udp(GUEST_IP, PUBLIC_PROBE_V4, 50001, 53, &probe);
     gateway.set_egress_mode(EgressMode::Suspended);
     let before = gateway.traffic();
-    link.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
+    link.set_read_timeout(Some(Duration::from_millis(250)))
+        .unwrap();
     write_frame(&mut link, &frame(GATEWAY_MAC, ETH_IPV4, &packet)).unwrap();
     write_frame(&mut link, &frame(GATEWAY_MAC, ETH_IPV4, &held_probe)).unwrap();
     exchange_dhcp(&mut link);
@@ -227,7 +247,10 @@ fn held_dns_waits_for_open_while_rechecking_answers_the_fixed_question() {
     write_frame(&mut link, &frame(GATEWAY_MAC, ETH_IPV4, &active_probe)).unwrap();
     read_frame(&mut link, &mut response).unwrap();
     assert_eq!(&response[14 + 22..14 + 24], &50002u16.to_be_bytes());
-    assert_eq!(&response[14 + 28..], dns_ipv6_nodata(&probe).unwrap().as_slice());
+    assert_eq!(
+        &response[14 + 28..],
+        dns_ipv6_nodata(&probe).unwrap().as_slice()
+    );
     expect_no_data(&mut link);
     assert_eq!(gateway.traffic(), before);
     assert!(upstream.accept().is_err());
@@ -236,7 +259,10 @@ fn held_dns_waits_for_open_while_rechecking_answers_the_fixed_question() {
     link.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     for question in [&query, &probe] {
         read_frame(&mut link, &mut response).unwrap();
-        assert_eq!(&response[14 + 28..], dns_ipv6_nodata(question).unwrap().as_slice());
+        assert_eq!(
+            &response[14 + 28..],
+            dns_ipv6_nodata(question).unwrap().as_slice()
+        );
     }
     {
         let _egress = gateway.shared.egress.lock().unwrap();
@@ -245,7 +271,10 @@ fn held_dns_waits_for_open_while_rechecking_answers_the_fixed_question() {
             before.tx_bytes + (packet.len() + held_probe.len()) as u64,
         );
     }
-    assert!(upstream.accept().is_err(), "AAAA must not create an upstream connection");
+    assert!(
+        upstream.accept().is_err(),
+        "AAAA must not create an upstream connection"
+    );
     drop(link);
     drop(gateway);
     let _ = std::fs::remove_dir_all(dir);
@@ -256,13 +285,19 @@ fn hold_packet_queue_is_bounded_and_flushes_in_order() {
     let proxy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     proxy.set_nonblocking(true).unwrap();
     let hop = serde_yaml::from_str(&format!(
-        "{{address: '{}', protocol: {{type: http}}}}", proxy.local_addr().unwrap()
-    )).unwrap();
+        "{{address: '{}', protocol: {{type: http}}}}",
+        proxy.local_addr().unwrap()
+    ))
+    .unwrap();
     let dir = std::env::temp_dir().join(format!("netgw-hold-{}", std::process::id()));
     let socket = dir.join("net.sock");
     let gateway = Gateway::start_closed(
-        &socket, vec![], Some(&Upstream::Chain(vec![hop])), (Ipv4Addr::LOCALHOST, 0).into(),
-    ).unwrap();
+        &socket,
+        vec![],
+        Some(&Upstream::Chain(vec![hop])),
+        (Ipv4Addr::LOCALHOST, 0).into(),
+    )
+    .unwrap();
     gateway.set_egress_mode(EgressMode::Suspended);
     let mut link = UnixStream::connect(&socket).unwrap();
     link.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -280,7 +315,10 @@ fn hold_packet_queue_is_bounded_and_flushes_in_order() {
     exchange_dhcp(&mut link);
     assert!(proxy.accept().is_err());
     assert_eq!(gateway.traffic(), GatewayTraffic::default());
-    assert_eq!(gateway.shared.egress.lock().unwrap().held_packets.len(), HELD_PACKETS);
+    assert_eq!(
+        gateway.shared.egress.lock().unwrap().held_packets.len(),
+        HELD_PACKETS
+    );
 
     // Flush through the packet socket directly so all TCP/UDP stays local.
     gateway.set_egress_mode(EgressMode::Suspended);
@@ -313,7 +351,15 @@ fn hold_packet_queue_is_bounded_and_flushes_in_order() {
         recv(&udp(index));
     }
     assert!(path.stack.recv(&mut [0; MTU]).is_err());
-    assert!(gateway.shared.egress.lock().unwrap().held_packets.is_empty());
+    assert!(
+        gateway
+            .shared
+            .egress
+            .lock()
+            .unwrap()
+            .held_packets
+            .is_empty()
+    );
     drop(link);
     drop(gateway);
     let _ = std::fs::remove_dir_all(dir);
@@ -323,13 +369,19 @@ fn hold_packet_queue_is_bounded_and_flushes_in_order() {
 fn close_upstream_switch_and_guest_disconnect_discard_hold() {
     let proxy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let hop = serde_yaml::from_str(&format!(
-        "{{address: '{}', protocol: {{type: http}}}}", proxy.local_addr().unwrap()
-    )).unwrap();
+        "{{address: '{}', protocol: {{type: http}}}}",
+        proxy.local_addr().unwrap()
+    ))
+    .unwrap();
     let dir = std::env::temp_dir().join(format!("netgw-discard-{}", std::process::id()));
     let socket = dir.join("net.sock");
     let gateway = Gateway::start_closed(
-        &socket, vec![], Some(&Upstream::Chain(vec![hop])), (Ipv4Addr::LOCALHOST, 0).into(),
-    ).unwrap();
+        &socket,
+        vec![],
+        Some(&Upstream::Chain(vec![hop])),
+        (Ipv4Addr::LOCALHOST, 0).into(),
+    )
+    .unwrap();
     let mut link = UnixStream::connect(&socket).unwrap();
     link.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let mut query = vec![0u8; 12];
@@ -519,7 +571,10 @@ fn gateway_parks_tcp_in_both_directions_and_hard_close_kills_old_paths() {
         // An ACK written to the QEMU socket before closure can still be
         // queued there. It must not contain revived upstream data.
         let header = usize::from(tcp[12] >> 4) * 4;
-        assert!(tcp[header..].is_empty(), "old flow carried data after closure");
+        assert!(
+            tcp[header..].is_empty(),
+            "old flow carried data after closure"
+        );
     }
     assert!(reset, "old flow must reset");
     assert_eq!(

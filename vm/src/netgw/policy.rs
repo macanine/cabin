@@ -54,9 +54,8 @@ impl EgressMode {
             Self::Open => true,
             Self::Install => tcp_packet(packet)
                 .is_some_and(|(ip, tcp)| matches!(remote_endpoint(ip, tcp, to_guest).1, 80 | 443)),
-            Self::Checking | Self::Rechecking => tcp_packet(packet).is_some_and(|(ip, tcp)| {
-                verification_endpoint(remote_endpoint(ip, tcp, to_guest))
-            }),
+            Self::Checking | Self::Rechecking => tcp_packet(packet)
+                .is_some_and(|(ip, tcp)| verification_endpoint(remote_endpoint(ip, tcp, to_guest))),
             Self::Closed | Self::Suspended => false,
         }
     }
@@ -130,7 +129,8 @@ pub(super) fn outbound_probe_tcp(packet: &[u8]) -> Option<((Ipv4Addr, u16), &[u8
 
 /// `handle_frame` has already checked the IPv4 lengths and destination.
 pub(super) fn hold_packet(packet: &[u8]) -> bool {
-    if packet.len() > MTU || packet[12..16] != GUEST_IP.octets()
+    if packet.len() > MTU
+        || packet[12..16] != GUEST_IP.octets()
         || u16::from_be_bytes([packet[6], packet[7]]) & 0x3fff != 0
     {
         return false;
@@ -138,10 +138,15 @@ pub(super) fn hold_packet(packet: &[u8]) -> bool {
     let header = usize::from(packet[0] & 0x0f) * 4;
     let transport = &packet[header..];
     match packet[9] {
-        6 if transport.len() >= 20 => (20..=transport.len()).contains(&(usize::from(transport[12] >> 4) * 4)),
+        6 if transport.len() >= 20 => {
+            (20..=transport.len()).contains(&(usize::from(transport[12] >> 4) * 4))
+        }
         17 if transport.len() >= 8 => {
             transport[2..4] != 53u16.to_be_bytes()
-                && (8..=transport.len()).contains(&usize::from(u16::from_be_bytes([transport[4], transport[5]])))
+                && (8..=transport.len()).contains(&usize::from(u16::from_be_bytes([
+                    transport[4],
+                    transport[5],
+                ])))
         }
         _ => false,
     }
@@ -150,8 +155,8 @@ pub(super) fn hold_packet(packet: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::netgw::testutil::*;
     use crate::netgw::frame::{Action, ETH_IPV4, handle_frame};
+    use crate::netgw::testutil::*;
     use crate::netgw::{DEFAULT_DNS, GATEWAY_MAC};
 
     #[test]
@@ -168,8 +173,14 @@ mod tests {
             assert!(!mode.allows_packet(&ipv6, false));
             assert!(!mode.allows_packet(&ipv6, true));
         }
-        assert_eq!(handle_frame(&frame(GATEWAY_MAC, ETH_IPV4, &ipv6), &DEFAULT_DNS), Action::Drop);
-        assert_eq!(handle_frame(&frame(GATEWAY_MAC, 0x86dd, &ipv6), &DEFAULT_DNS), Action::Drop);
+        assert_eq!(
+            handle_frame(&frame(GATEWAY_MAC, ETH_IPV4, &ipv6), &DEFAULT_DNS),
+            Action::Drop
+        );
+        assert_eq!(
+            handle_frame(&frame(GATEWAY_MAC, 0x86dd, &ipv6), &DEFAULT_DNS),
+            Action::Drop
+        );
     }
 
     #[test]
@@ -179,7 +190,10 @@ mod tests {
         let allowed = ipv4_frame(6, PUBLIC_PROBE_V4, &tcp)[14..].to_vec();
         let alternate = ipv4_frame(6, ALTERNATE_PROBE_V4, &tcp)[14..].to_vec();
         let unlisted = ipv4_frame(6, Ipv4Addr::new(104, 16, 124, 96), &tcp)[14..].to_vec();
-        assert_ne!(outbound_probe_tcp(&allowed).unwrap().0, outbound_probe_tcp(&alternate).unwrap().0);
+        assert_ne!(
+            outbound_probe_tcp(&allowed).unwrap().0,
+            outbound_probe_tcp(&alternate).unwrap().0
+        );
         assert!(!EgressMode::Closed.allows_packet(&allowed, false));
         assert!(!EgressMode::Suspended.allows_packet(&allowed, false));
         let mut udp = allowed.clone();

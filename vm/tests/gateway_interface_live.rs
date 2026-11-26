@@ -212,7 +212,8 @@ fn bound_interface_gateway_dns_https_and_system_route() {
             break;
         }
     }
-    let working_doh = working_doh.expect("no common DoH endpoint returned a valid DNS A answer over both paths");
+    let working_doh =
+        working_doh.expect("no common DoH endpoint returned a valid DNS A answer over both paths");
 
     // These URLs are the project's ip-detection services. Compare one and the
     // same service on both paths; never print response bodies or IP addresses.

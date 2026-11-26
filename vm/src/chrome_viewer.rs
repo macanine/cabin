@@ -101,9 +101,8 @@ pub fn start(cfg: &Config) -> Result<String> {
 }
 
 pub fn start_spice(cfg: &Config, parent_origin: Option<&str>) -> Result<String> {
-    if !cfg.desktop_spice
-        || cfg.device_enabled()
-        || cfg!(not(unix)) // QEMU ships no SPICE backend on Windows hosts
+    if !cfg.desktop_spice || cfg.device_enabled() || cfg!(not(unix))
+    // QEMU ships no SPICE backend on Windows hosts
     {
         return message("SPICE is unavailable for this desktop");
     }
@@ -131,7 +130,9 @@ pub fn start_spice(cfg: &Config, parent_origin: Option<&str>) -> Result<String> 
 
 fn start_bridge(cfg: &Config, target: Target) -> Result<String> {
     let runtime = Runtime::new(cfg);
-    let pid = runtime.pid().ok_or_else(|| Error::Message("The machine is not running".into()))?;
+    let pid = runtime
+        .pid()
+        .ok_or_else(|| Error::Message("The machine is not running".into()))?;
     let spice = matches!(target, Target::Spice { .. });
     let key = (cfg.instance_dir(), spice);
     let mut registry = bridges()?;
@@ -169,7 +170,14 @@ fn start_bridge(cfg: &Config, target: Target) -> Result<String> {
         .name("chrome-viewer".into())
         .spawn(move || {
             let running = || runtime.pid() == Some(pid) && runtime.alive();
-            serve(listener, &worker_stop, worker_target, &authority, &token, running);
+            serve(
+                listener,
+                &worker_stop,
+                worker_target,
+                &authority,
+                &token,
+                running,
+            );
         })?;
     registry.insert(
         key,
@@ -699,14 +707,21 @@ mod tests {
 
     #[test]
     fn spice_requires_its_token_origin_and_binary_and_closes_live_channels() {
-        let socket = PathBuf::from(format!("/tmp/va-ws-{}-{}.sock", std::process::id(), crate::util::localstamp()));
+        let socket = PathBuf::from(format!(
+            "/tmp/va-ws-{}-{}.sock",
+            std::process::id(),
+            crate::util::localstamp()
+        ));
         let upstream = UnixListener::bind(&socket).unwrap();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let authority = listener.local_addr().unwrap().to_string();
         listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
-        let target = Target::Spice { socket: socket.clone(), parent_origin: "tauri://localhost".into() };
+        let target = Target::Spice {
+            socket: socket.clone(),
+            parent_origin: "tauri://localhost".into(),
+        };
         let worker_authority = authority.clone();
         let server = thread::spawn(move || {
             serve(
@@ -727,9 +742,21 @@ mod tests {
             let response = request(&mut client(&authority), &authority, path, from, protocol);
             assert!(response.starts_with("HTTP/1.1 403"), "{response}");
         }
-        let css = request(&mut client(&authority), &authority, "/secret/src/main.js", &origin, "binary");
+        let css = request(
+            &mut client(&authority),
+            &authority,
+            "/secret/src/main.js",
+            &origin,
+            "binary",
+        );
         assert!(css.contains("Content-Type: text/javascript"));
-        let missing = request(&mut client(&authority), &authority, "/secret/../viewer.html", &origin, "binary");
+        let missing = request(
+            &mut client(&authority),
+            &authority,
+            "/secret/../viewer.html",
+            &origin,
+            "binary",
+        );
         assert!(missing.starts_with("HTTP/1.1 404"));
 
         let mut channels = Vec::new();
@@ -740,7 +767,10 @@ mod tests {
             assert!(response.contains("Sec-WebSocket-Protocol: binary"));
             let (mut channel, _) = upstream.accept().unwrap();
             channel.set_read_timeout(Some(HTTP_TIMEOUT)).unwrap();
-            viewer.get_mut().write_all(&[0x82, 0x81, 1, 2, 3, 4, byte ^ 1]).unwrap();
+            viewer
+                .get_mut()
+                .write_all(&[0x82, 0x81, 1, 2, 3, 4, byte ^ 1])
+                .unwrap();
             let mut data = [0];
             channel.read_exact(&mut data).unwrap();
             assert_eq!(data, [byte]);

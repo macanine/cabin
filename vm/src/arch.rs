@@ -109,8 +109,12 @@ impl GuestArch {
 
     pub const fn chrome_deb_url(self) -> &'static str {
         match self {
-            Self::Arm64 => "https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb",
-            Self::Amd64 => "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb",
+            Self::Arm64 => {
+                "https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb"
+            }
+            Self::Amd64 => {
+                "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+            }
         }
     }
 
@@ -161,7 +165,9 @@ impl GuestArch {
     /// Distro install hint for Linux development hosts.
     pub const fn linux_install_hint(self) -> &'static str {
         match self {
-            Self::Arm64 => "Install qemu-system-arm, qemu-utils and qemu-efi-aarch64 on this Linux host",
+            Self::Arm64 => {
+                "Install qemu-system-arm, qemu-utils and qemu-efi-aarch64 on this Linux host"
+            }
             Self::Amd64 => "Install qemu-system-x86, qemu-utils and ovmf on this Linux host",
         }
     }
@@ -170,20 +176,38 @@ impl GuestArch {
     pub fn distro_firmware_paths(self) -> Vec<(PathBuf, PathBuf)> {
         let pairs: [(&str, &str); 3] = match self {
             Self::Amd64 => [
-                ("/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_VARS.fd"),
-                ("/usr/share/qemu/edk2-x86_64-code.fd", "/usr/share/qemu/edk2-i386-vars.fd"),
-                ("/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"),
+                (
+                    "/usr/share/OVMF/OVMF_CODE.fd",
+                    "/usr/share/OVMF/OVMF_VARS.fd",
+                ),
+                (
+                    "/usr/share/qemu/edk2-x86_64-code.fd",
+                    "/usr/share/qemu/edk2-i386-vars.fd",
+                ),
+                (
+                    "/usr/share/OVMF/OVMF_CODE_4M.fd",
+                    "/usr/share/OVMF/OVMF_VARS_4M.fd",
+                ),
             ],
             Self::Arm64 => [
-                ("/usr/share/AAVMF/AAVMF_CODE.fd", "/usr/share/AAVMF/AAVMF_VARS.fd"),
-                ("/usr/share/qemu/edk2-aarch64-code.fd", "/usr/share/qemu/edk2-arm-vars.fd"),
+                (
+                    "/usr/share/AAVMF/AAVMF_CODE.fd",
+                    "/usr/share/AAVMF/AAVMF_VARS.fd",
+                ),
+                (
+                    "/usr/share/qemu/edk2-aarch64-code.fd",
+                    "/usr/share/qemu/edk2-arm-vars.fd",
+                ),
                 (
                     "/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw",
                     "/usr/share/edk2/aarch64/vars-template-pflash.raw",
                 ),
             ],
         };
-        pairs.iter().map(|(c, v)| (PathBuf::from(c), PathBuf::from(v))).collect()
+        pairs
+            .iter()
+            .map(|(c, v)| (PathBuf::from(c), PathBuf::from(v)))
+            .collect()
     }
 
     /// Substitute this guest's platform into browser fingerprint text written
@@ -204,8 +228,22 @@ mod tests {
     #[test]
     fn each_architecture_maps_to_its_own_names() {
         for (arch, qemu, deb, machine, vars, profile) in [
-            (GuestArch::Arm64, "aarch64", "arm64", "virt,highmem=on", "edk2-arm-vars.fd", true),
-            (GuestArch::Amd64, "x86_64", "amd64", "q35", "edk2-i386-vars.fd", false),
+            (
+                GuestArch::Arm64,
+                "aarch64",
+                "arm64",
+                "virt,highmem=on",
+                "edk2-arm-vars.fd",
+                true,
+            ),
+            (
+                GuestArch::Amd64,
+                "x86_64",
+                "amd64",
+                "q35",
+                "edk2-i386-vars.fd",
+                false,
+            ),
         ] {
             assert_eq!(arch.qemu_name(), qemu);
             assert_eq!(arch.debian(), deb);
@@ -213,7 +251,10 @@ mod tests {
             assert_eq!(arch.firmware_names().1, vars);
             assert_eq!(arch.device_profile_supported(), profile);
             assert!(arch.chrome_deb_url().ends_with(&format!("_{deb}.deb")));
-            assert!(arch.localize_fingerprint("Linux aarch64").ends_with(&format!("Linux {qemu}")));
+            assert!(
+                arch.localize_fingerprint("Linux aarch64")
+                    .ends_with(&format!("Linux {qemu}"))
+            );
         }
     }
 }

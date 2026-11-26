@@ -158,8 +158,7 @@ impl Attempt {
     }
 
     pub fn phase_running(&self, phase: Phase) -> bool {
-        self.state.locked().phases[phase as usize].state
-            == PhaseState::Running
+        self.state.locked().phases[phase as usize].state == PhaseState::Running
     }
 
     pub fn phase_elapsed(&self, phase: Phase) -> std::time::Duration {
@@ -225,9 +224,7 @@ impl Attempt {
     }
 
     pub fn running(&self) -> bool {
-        self.state.locked()
-            .finished_at
-            .is_none()
+        self.state.locked().finished_at.is_none()
     }
 
     pub fn finish(&self, error: Option<String>) {

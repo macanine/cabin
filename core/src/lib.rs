@@ -295,7 +295,9 @@ mod bindings {
         }
         // Checkouts may carry CRLF line endings; compare content only.
         assert_eq!(
-            std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n"),
+            std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .replace("\r\n", "\n"),
             generated,
             "TypeScript bindings are stale; run CABIN_UPDATE_IPC_BINDINGS=1 cargo test ipc_bindings"
         );

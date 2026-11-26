@@ -149,9 +149,12 @@ fn run(
                 for (key, value) in crate::agents::adapter(kind).launch_env() {
                     cmd.env(key, value);
                 }
-                                // portable-pty's writer injects LF + VEOF from Drop. A plain
+                // portable-pty's writer injects LF + VEOF from Drop. A plain
                 // duplicate closes without ever synthesizing input bytes.
-                let fd = pair.master.as_raw_fd().ok_or_else(|| io::Error::other("PTY master has no descriptor"))?;
+                let fd = pair
+                    .master
+                    .as_raw_fd()
+                    .ok_or_else(|| io::Error::other("PTY master has no descriptor"))?;
                 let input = clone_master_fd(fd)?;
                 let output = clone_master_fd(fd)?;
                 let mut child = pair.slave.spawn_command(cmd).map_err(io::Error::other)?;
@@ -195,7 +198,9 @@ fn run(
 
 fn clone_master_fd(fd: RawFd) -> io::Result<File> {
     // The master outlives this borrow. try_clone_to_owned also sets CLOEXEC.
-    unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned().map(File::from)
+    unsafe { BorrowedFd::borrow_raw(fd) }
+        .try_clone_to_owned()
+        .map(File::from)
 }
 
 fn pty_size(cols: u16, rows: u16, pixel_width: u16, pixel_height: u16) -> PtySize {
@@ -240,7 +245,11 @@ fn run_pipes(
 
 /// Whether `fd` has data or hung up within `POLL`.
 fn readable(fd: RawFd) -> io::Result<bool> {
-    let mut poll = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
     match unsafe { libc::poll(&mut poll, 1, POLL.as_millis() as libc::c_int) } {
         -1 => match io::Error::last_os_error() {
             error if error.kind() == io::ErrorKind::Interrupted => Ok(false),
@@ -317,10 +326,10 @@ fn pump(
             loop {
                 match read_frame(reader, &mut body) {
                     Ok(INPUT) => {
-                        if let Some(out) = &mut input {
-                            if out.write_all(&body).is_err() {
-                                input = None;
-                            }
+                        if let Some(out) = &mut input
+                            && out.write_all(&body).is_err()
+                        {
+                            input = None;
                         }
                     }
                     Ok(EOF) if !tty => {
@@ -348,7 +357,8 @@ fn pump(
             }
         });
         let ready = send(writer, READY, &[]);
-        let out = scope.spawn(|| output(stdout, writer, OUT, if tty { 8192 } else { MAX }, finished));
+        let out =
+            scope.spawn(|| output(stdout, writer, OUT, if tty { 8192 } else { MAX }, finished));
         let err = stderr.map(|s| scope.spawn(move || output(s, writer, ERR, 8192, finished)));
         let status = wait();
         finished.store(true, Ordering::Release);
@@ -380,7 +390,8 @@ mod tests {
     /// Run `script` on one end of a channel; the test is the host on the other.
     fn job(script: &str) -> (UnixStream, mpsc::Receiver<io::Result<()>>) {
         let (host, guest) = UnixStream::pair().unwrap();
-        host.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        host.set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
         let mut cmd = Command::new("sh");
         cmd.args(["-c", script]);
         let (done, result) = mpsc::channel();
@@ -419,7 +430,10 @@ mod tests {
         assert_eq!(until_exit(&mut host), (b"hello".to_vec(), 7));
         frame(&mut host, CLOSE, &[]).unwrap();
         assert_eq!(read_frame(&mut host, &mut vec![]).unwrap(), CLOSED);
-        result.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        result
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
     }
 
     #[test]
@@ -434,7 +448,11 @@ mod tests {
         let begun = Instant::now();
         let (mut host, _result) = job("sleep 15 & printf done");
         assert_eq!(until_exit(&mut host), (b"done".to_vec(), 0));
-        assert!(begun.elapsed() < Duration::from_secs(8), "{:?}", begun.elapsed());
+        assert!(
+            begun.elapsed() < Duration::from_secs(8),
+            "{:?}",
+            begun.elapsed()
+        );
     }
 
     #[test]
@@ -443,7 +461,11 @@ mod tests {
         // Ends on its own when the read end closes.
         let (mut host, _result) = job("yes & exit 3");
         assert_eq!(until_exit(&mut host).1, 3);
-        assert!(begun.elapsed() < Duration::from_secs(12), "{:?}", begun.elapsed());
+        assert!(
+            begun.elapsed() < Duration::from_secs(12),
+            "{:?}",
+            begun.elapsed()
+        );
     }
 
     #[test]
@@ -452,7 +474,12 @@ mod tests {
         started(&mut host, b"up");
         drop(host);
         // Reporting the exit fails; what matters is that the lane is free again.
-        assert!(result.recv_timeout(Duration::from_secs(8)).unwrap().is_err());
+        assert!(
+            result
+                .recv_timeout(Duration::from_secs(8))
+                .unwrap()
+                .is_err()
+        );
     }
 
     #[test]
@@ -466,24 +493,44 @@ mod tests {
     #[test]
     fn a_resize_during_the_exit_is_harmless() {
         let (mut host, guest) = UnixStream::pair().unwrap();
-        host.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        host.set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
         let (seen, sizes) = mpsc::channel();
         let (exit, exited) = mpsc::channel();
         let (_keep, output) = UnixStream::pair().unwrap();
         let worker = std::thread::spawn(move || {
             let mut reader = File::from(OwnedFd::from(guest));
             let writer = Mutex::new(reader.try_clone().unwrap());
-            pump(&mut reader, &writer, io::sink(), output, None::<File>, None, false,
-                move |cols, rows, width, height| { let _ = seen.send((cols, rows, width, height)); },
-                move || { let _ = exited.recv(); Ok(0) })
+            pump(
+                &mut reader,
+                &writer,
+                io::sink(),
+                output,
+                None::<File>,
+                None,
+                false,
+                move |cols, rows, width, height| {
+                    let _ = seen.send((cols, rows, width, height));
+                },
+                move || {
+                    let _ = exited.recv();
+                    Ok(0)
+                },
+            )
         });
         frame(&mut host, RESIZE, &[0, 80, 0, 24]).unwrap();
-        assert_eq!(sizes.recv_timeout(Duration::from_secs(5)).unwrap(), (80, 24, 0, 0));
+        assert_eq!(
+            sizes.recv_timeout(Duration::from_secs(5)).unwrap(),
+            (80, 24, 0, 0)
+        );
         exit.send(()).unwrap();
         frame(&mut host, RESIZE, &[0, 100, 0, 30, 3, 32, 1, 224]).unwrap();
         frame(&mut host, RESIZE, &[1, 2, 3]).unwrap(); // Malformed: ends the input.
         assert_eq!(until_exit(&mut host).1, 0);
-        assert_eq!(sizes.recv_timeout(Duration::from_secs(5)).unwrap(), (100, 30, 800, 480));
+        assert_eq!(
+            sizes.recv_timeout(Duration::from_secs(5)).unwrap(),
+            (100, 30, 800, 480)
+        );
         worker.join().unwrap().unwrap();
     }
 }

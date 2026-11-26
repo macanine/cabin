@@ -162,7 +162,11 @@ fn add_apt_sources(cfg: &crate::config::Config, doc: &mut Map<String, Value>) {
 }
 
 fn add_ipv4_policy(doc: &mut Map<String, Value>) {
-    let mut files = doc.get("write_files").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut files = doc
+        .get("write_files")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     files.push(json!({
         "path": "/etc/sysctl.d/zz-cabin-ipv4.conf",
         "permissions": "0644",
@@ -282,10 +286,7 @@ pub fn build_user_data(
         );
         doc.insert(
             "apt".to_string(),
-            apt_settings(
-                guest_proxy.as_deref(),
-                cfg.apt_mirror.as_deref(),
-            ),
+            apt_settings(guest_proxy.as_deref(), cfg.apt_mirror.as_deref()),
         );
         if let Some(proxy) = &guest_proxy {
             let no_proxy = proxy_no_proxy(cfg);
@@ -347,10 +348,7 @@ pub fn build_user_data(
     let mut write_files = Vec::new();
     doc.insert(
         "apt".to_string(),
-        apt_settings(
-            guest_proxy.as_deref(),
-            cfg.apt_mirror.as_deref(),
-        ),
+        apt_settings(guest_proxy.as_deref(), cfg.apt_mirror.as_deref()),
     );
     if let Some(proxy) = &guest_proxy {
         let no_proxy = proxy_no_proxy(cfg);
@@ -463,7 +461,9 @@ fn apt_settings(proxy: Option<&str>, mirror: Option<&str>) -> Value {
 fn verify_seed_iso(iso: &Path, expected: &[(&str, &Path)]) -> Result<()> {
     let (label, files) = crate::iso::read_iso(iso)?;
     if !label.eq_ignore_ascii_case("cidata") {
-        return message(format!("seed ISO volume label is {label:?}, expected CIDATA"));
+        return message(format!(
+            "seed ISO volume label is {label:?}, expected CIDATA"
+        ));
     }
     for (name, source) in expected {
         let Some((_, data)) = files.iter().find(|(found, _)| found == name) else {
@@ -864,7 +864,9 @@ mod apt_tests {
         assert!(first.starts_with("$6$"), "{first}");
         assert_ne!(first, hash_password("correct horse").unwrap());
         let hash = sha_crypt::PasswordHashRef::new(&first).unwrap();
-        ShaCrypt::SHA512.verify_password(b"correct horse", hash).unwrap();
+        ShaCrypt::SHA512
+            .verify_password(b"correct horse", hash)
+            .unwrap();
         assert!(ShaCrypt::SHA512.verify_password(b"wrong", hash).is_err());
         // `openssl passwd -6 -salt abcdefgh hunter2`: the format the guest checks.
         let known = "$6$abcdefgh$M/eYsB4rVXAm3ZNc88J.UD9rCKAT6FB1rahiwJCHtEndQNORCub5qhjxn50qbqVVthkM.9HpEwtf0t.iV9uH0/";
@@ -876,7 +878,11 @@ mod apt_tests {
     #[test]
     fn gateway_cloud_init_is_explicitly_ipv4_only() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        for (os, device) in [("ubuntu-24.04", false), ("ubuntu-24.04", true), ("ubuntu-26.04", false)] {
+        for (os, device) in [
+            ("ubuntu-24.04", false),
+            ("ubuntu-24.04", true),
+            ("ubuntu-26.04", false),
+        ] {
             let cfg = crate::config::build_config(&json!({"name": "ipv4-test", "network_mode": "gateway", "os": os, "device": {"enabled": device}}), root).unwrap();
             let network = build_network_config(&cfg).unwrap();
             let iface = &network["ethernets"]["data0"];
@@ -987,7 +993,10 @@ mod apt_tests {
             .unwrap();
             let doc = build_user_data(&cfg, "test-hash", TEST_SSH_KEY).unwrap();
             let packages = doc["packages"].as_array().unwrap();
-            assert!(packages.contains(&json!("locales")), "{network}/{device}: {packages:?}");
+            assert!(
+                packages.contains(&json!("locales")),
+                "{network}/{device}: {packages:?}"
+            );
             let commands = doc["runcmd"].as_array().unwrap();
             assert!(
                 commands.contains(&json!(["locale-gen", "en_US.UTF-8"])),

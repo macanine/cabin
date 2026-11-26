@@ -39,9 +39,13 @@ pub fn pack(root: &Path, paths: &[String], out: impl Write) -> io::Result<()> {
     let mut builder = tar::Builder::new(out);
     builder.follow_symlinks(false);
     for rel in paths {
-        let Some(rel_path) = safe_relative(rel) else { continue };
+        let Some(rel_path) = safe_relative(rel) else {
+            continue;
+        };
         let full = root.join(rel_path);
-        let Ok(meta) = fs::symlink_metadata(&full) else { continue };
+        let Ok(meta) = fs::symlink_metadata(&full) else {
+            continue;
+        };
         let mut header = tar::Header::new_gnu();
         header.set_mode(crate::fsx::mode_of(&meta));
         header.set_mtime(mtime_secs(&meta));
@@ -55,7 +59,9 @@ pub fn pack(root: &Path, paths: &[String], out: impl Write) -> io::Result<()> {
             header.set_size(0);
             builder.append_data(&mut header, rel_path, io::empty())?;
         } else if meta.is_file() {
-            let Ok(file) = fs::File::open(&full) else { continue };
+            let Ok(file) = fs::File::open(&full) else {
+                continue;
+            };
             header.set_entry_type(tar::EntryType::Regular);
             header.set_size(meta.len());
             // The size is fixed in the header; a file that grows meanwhile
@@ -75,8 +81,9 @@ pub fn apply_stream(root: &Path, input: impl Read) -> io::Result<ApplyReport> {
     let mut input = BufReader::with_capacity(1 << 20, input);
     let mut line = String::new();
     input.read_line(&mut line)?;
-    let header: ApplyHeader = serde_json::from_str(line.trim())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("bad apply header: {e}")))?;
+    let header: ApplyHeader = serde_json::from_str(line.trim()).map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("bad apply header: {e}"))
+    })?;
     apply(root, &header.delete, input)
 }
 
@@ -115,7 +122,10 @@ fn check_parents(root: &Path, rel: &Path) -> io::Result<()> {
         current.push(part);
         match fs::symlink_metadata(&current) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(io::Error::other(format!("{} is a symlink; not writing through it", current.display())));
+                return Err(io::Error::other(format!(
+                    "{} is a symlink; not writing through it",
+                    current.display()
+                )));
             }
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -175,7 +185,9 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
     let mode = header.mode().unwrap_or(0o644) & 0o7777;
     let mtime = std::time::UNIX_EPOCH
         .checked_add(std::time::Duration::from_secs(header.mtime().unwrap_or(0)))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "archive mtime is out of range"))?;
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "archive mtime is out of range")
+        })?;
     let times = fs::FileTimes::new().set_modified(mtime).set_accessed(mtime);
     match header.entry_type() {
         tar::EntryType::Directory => {
@@ -184,7 +196,10 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
             crate::fsx::set_mode(&full, mode | 0o700)?;
         }
         tar::EntryType::Symlink => {
-            let target = entry.link_name()?.ok_or_else(|| io::Error::other("symlink without a target"))?.into_owned();
+            let target = entry
+                .link_name()?
+                .ok_or_else(|| io::Error::other("symlink without a target"))?
+                .into_owned();
             clear_for(&full, false)?;
             if fs::symlink_metadata(&full).is_ok() {
                 fs::remove_file(&full)?;
@@ -197,7 +212,11 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
             // Exclusive creation prevents a pre-existing file or symlink from
             // being truncated, and a random name lets concurrent applies coexist.
             let (tmp, mut file) = loop {
-                let tmp = full.with_file_name(format!("{}{}.tmp", super::STAGED_FILE_PREFIX, uuid::Uuid::new_v4()));
+                let tmp = full.with_file_name(format!(
+                    "{}{}.tmp",
+                    super::STAGED_FILE_PREFIX,
+                    uuid::Uuid::new_v4()
+                ));
                 let mut options = fs::OpenOptions::new();
                 options.write(true).create_new(true);
                 #[cfg(unix)]
@@ -214,7 +233,10 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
             let written = (|| {
                 let expected = entry.size();
                 if io::copy(entry, &mut file)? != expected {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "archive file ended before its declared size"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "archive file ended before its declared size",
+                    ));
                 }
                 crate::fsx::set_mode(&tmp, mode)?;
                 file.set_times(times)?;
@@ -227,7 +249,11 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
             }
             written?;
         }
-        other => return Err(io::Error::other(format!("unsupported entry type {other:?}"))),
+        other => {
+            return Err(io::Error::other(format!(
+                "unsupported entry type {other:?}"
+            )));
+        }
     }
     Ok(())
 }
@@ -247,7 +273,8 @@ mod tests {
         crate::fsx::set_mode(&src.path().join("bin/run"), 0o755).unwrap();
         fs::set_times(
             src.path().join("bin/run"),
-            fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 5)),
+            fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 5)),
         )
         .unwrap();
         let long = format!("{}/file.txt", "d".repeat(120));
@@ -266,8 +293,14 @@ mod tests {
         for (a, b) in entries.iter().zip(&copied) {
             assert!(crate::sync::plan::same(a, b), "{a:?} vs {b:?}");
         }
-        assert_eq!(crate::fsx::mode_of(&fs::metadata(dst.path().join("bin/run")).unwrap()), 0o755);
-        assert_eq!(fs::read_link(dst.path().join("link")).unwrap(), Path::new("bin/run"));
+        assert_eq!(
+            crate::fsx::mode_of(&fs::metadata(dst.path().join("bin/run")).unwrap()),
+            0o755
+        );
+        assert_eq!(
+            fs::read_link(dst.path().join("link")).unwrap(),
+            Path::new("bin/run")
+        );
         assert_eq!(fs::read_to_string(dst.path().join(&long)).unwrap(), "long");
     }
 
@@ -296,7 +329,12 @@ mod tests {
         fs::write(src.path().join("x/evil"), "x").unwrap();
         std::os::unix::fs::symlink(outside.path(), dst.path().join("x")).unwrap();
         let mut stream = Vec::new();
-        pack(src.path(), &["x/evil".into(), "../escape".into()], &mut stream).unwrap();
+        pack(
+            src.path(),
+            &["x/evil".into(), "../escape".into()],
+            &mut stream,
+        )
+        .unwrap();
         let report = apply(dst.path(), &["x/evil".into()], stream.as_slice()).unwrap();
         assert!(!outside.path().join("evil").exists());
         assert_eq!(report.written, 0);
@@ -323,13 +361,17 @@ mod tests {
         directory.set_mode(0o755);
         directory.set_mtime(0);
         directory.set_size(0);
-        builder.append_data(&mut directory, "dir", io::empty()).unwrap();
+        builder
+            .append_data(&mut directory, "dir", io::empty())
+            .unwrap();
         let mut header = tar::Header::new_gnu();
         header.set_entry_type(tar::EntryType::Symlink);
         header.set_mode(0o777);
         header.set_mtime(0);
         header.set_size(0);
-        builder.append_link(&mut header, "dir", outside.path()).unwrap();
+        builder
+            .append_link(&mut header, "dir", outside.path())
+            .unwrap();
         append_file(&mut builder, "dir/escape", b"outside");
         let stream = builder.into_inner().unwrap();
 
@@ -406,9 +448,19 @@ mod tests {
                 if fail && !existing {
                     assert!(!destination.exists());
                 } else {
-                    assert_eq!(fs::read(&destination).unwrap(), if fail { b"old contents" } else { b"new contents" });
+                    assert_eq!(
+                        fs::read(&destination).unwrap(),
+                        if fail {
+                            b"old contents"
+                        } else {
+                            b"new contents"
+                        }
+                    );
                 }
-                assert_eq!(fs::read_dir(dst.path()).unwrap().count(), usize::from(existing || !fail));
+                assert_eq!(
+                    fs::read_dir(dst.path()).unwrap().count(),
+                    usize::from(existing || !fail)
+                );
             }
         }
     }
@@ -440,7 +492,9 @@ mod tests {
         header.set_mode(0o644);
         header.set_mtime(u64::MAX);
         header.set_size(1);
-        builder.append_data(&mut header, "bad-time", &b"x"[..]).unwrap();
+        builder
+            .append_data(&mut header, "bad-time", &b"x"[..])
+            .unwrap();
         append_file(&mut builder, "next", b"ok");
         let stream = builder.into_inner().unwrap();
 
@@ -460,7 +514,9 @@ mod tests {
         let victim = outside.path().join("victim");
         fs::write(&victim, b"untouched").unwrap();
         fs::write(dst.path().join("file"), b"old").unwrap();
-        let old_tmp = dst.path().join(format!(".file.{}.vasync-tmp", std::process::id()));
+        let old_tmp = dst
+            .path()
+            .join(format!(".file.{}.vasync-tmp", std::process::id()));
         std::os::unix::fs::symlink(&victim, &old_tmp).unwrap();
         let mut builder = tar::Builder::new(Vec::new());
         append_file(&mut builder, "file", b"new");
@@ -484,7 +540,10 @@ mod tests {
         let report = apply(dst.path(), &["p/old".into()], stream.as_slice()).unwrap();
         assert!(report.failed.is_empty(), "{:?}", report.failed);
         assert_eq!(report.deleted, 1);
-        assert_eq!(fs::read_to_string(dst.path().join("p")).unwrap(), "file now");
+        assert_eq!(
+            fs::read_to_string(dst.path().join("p")).unwrap(),
+            "file now"
+        );
     }
 
     #[test]

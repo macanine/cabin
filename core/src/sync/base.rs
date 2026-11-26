@@ -25,11 +25,17 @@ pub fn read(path: &Path) -> io::Result<Option<BTreeMap<String, BaseRecord>>> {
     let mut magic = [0; 8];
     input.read_exact(&mut magic)?;
     if &magic != MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid sync base header"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid sync base header",
+        ));
     }
     let count = read_u64(&mut input)?;
     if count > MAX_RECORDS {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "sync base has too many records"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sync base has too many records",
+        ));
     }
     let mut base = BTreeMap::new();
     for _ in 0..count {
@@ -69,12 +75,22 @@ fn read_stamp(input: &mut impl Read) -> io::Result<Stamp> {
         0 => EntryKind::File,
         1 => EntryKind::Dir,
         2 => EntryKind::Symlink,
-        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid sync entry kind")),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid sync entry kind",
+            ));
+        }
     };
     let size = read_u64(input)?;
     let mtime_ns = read_u64(input)? as i64;
     let target = read_optional_string(input)?;
-    Ok(Stamp { kind, size, mtime_ns, target })
+    Ok(Stamp {
+        kind,
+        size,
+        mtime_ns,
+        target,
+    })
 }
 
 fn write_stamp(out: &mut impl Write, stamp: &Stamp) -> io::Result<()> {
@@ -92,11 +108,15 @@ fn write_stamp(out: &mut impl Write, stamp: &Stamp) -> io::Result<()> {
 fn read_string(input: &mut impl Read) -> io::Result<String> {
     let len = read_u32(input)?;
     if len > MAX_PATH {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "sync path is too long"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sync path is too long",
+        ));
     }
     let mut bytes = vec![0; len as usize];
     input.read_exact(&mut bytes)?;
-    String::from_utf8(bytes).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "sync path is not UTF-8"))
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "sync path is not UTF-8"))
 }
 
 fn write_string(out: &mut impl Write, value: &str) -> io::Result<()> {
@@ -112,7 +132,10 @@ fn read_optional_string(input: &mut impl Read) -> io::Result<Option<String>> {
     match present[0] {
         0 => Ok(None),
         1 => read_string(input).map(Some),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid sync target flag")),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid sync target flag",
+        )),
     }
 }
 
@@ -152,7 +175,11 @@ mod tests {
 
     fn stamp(size: u64, target: Option<&str>) -> Stamp {
         Stamp {
-            kind: if target.is_some() { EntryKind::Symlink } else { EntryKind::File },
+            kind: if target.is_some() {
+                EntryKind::Symlink
+            } else {
+                EntryKind::File
+            },
             size,
             mtime_ns: 1_700_000_000_123_456_789,
             target: target.map(str::to_owned),
@@ -165,8 +192,20 @@ mod tests {
         let path = dir.path().join("base.bin");
         assert!(read(&path).unwrap().is_none());
         let mut base = BTreeMap::new();
-        base.insert("src/main.rs".into(), BaseRecord { mac: stamp(12, None), vm: stamp(12, None) });
-        base.insert("link".into(), BaseRecord { mac: stamp(0, Some("src/main.rs")), vm: stamp(0, Some("src/main.rs")) });
+        base.insert(
+            "src/main.rs".into(),
+            BaseRecord {
+                mac: stamp(12, None),
+                vm: stamp(12, None),
+            },
+        );
+        base.insert(
+            "link".into(),
+            BaseRecord {
+                mac: stamp(0, Some("src/main.rs")),
+                vm: stamp(0, Some("src/main.rs")),
+            },
+        );
         write(&path, &base).unwrap();
         assert_eq!(read(&path).unwrap().unwrap(), base);
     }
@@ -178,7 +217,10 @@ mod tests {
         fs::write(&path, b"not-a-base").unwrap();
         assert_eq!(read(&path).unwrap_err().kind(), io::ErrorKind::InvalidData);
         fs::write(&path, b"short").unwrap();
-        assert_eq!(read(&path).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            read(&path).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
         let mut broken = MAGIC.to_vec();
         broken.extend_from_slice(&u64::MAX.to_le_bytes());
         fs::write(&path, broken).unwrap();

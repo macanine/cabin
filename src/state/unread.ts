@@ -24,7 +24,7 @@ function read(): Times {
   }
 }
 
-let times = read();
+const times = read();
 let unread = compute();
 const listeners = new Set<() => void>();
 let saveTimer: number | undefined;

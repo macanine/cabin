@@ -30,8 +30,8 @@ use crate::network_gate::{GateState, GateToken, route_revision};
 use crate::network_health::{Connectivity, HoldCheck, traffic_sample};
 
 mod catalog;
-mod gate;
 mod exit_policy;
+mod gate;
 pub(crate) use exit_policy::ExitBaseline;
 mod health;
 mod paths;
@@ -79,7 +79,12 @@ struct Runtime {
 impl Runtime {
     fn apply_policy(&self) {
         if let Some(gateway) = &self.gateway {
-            let mode = match (self.sleeping, self.installing, self.grant.mode, self.connectivity.mode) {
+            let mode = match (
+                self.sleeping,
+                self.installing,
+                self.grant.mode,
+                self.connectivity.mode,
+            ) {
                 (true, _, _, _) => EgressMode::Closed,
                 (_, true, _, _) => EgressMode::Install,
                 (_, _, NetworkGateMode::Checking, _) => EgressMode::checking(),
@@ -231,7 +236,12 @@ impl GlobalNetwork {
         if let Err(error) = self.with_store(|store| {
             store.append_network_history(kind, message, runtime.connectivity.failed_checks, report)
         }) {
-            cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "network", "history_write_failed", format_args!("{}", error.code));
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Warn,
+                "network",
+                "history_write_failed",
+                format_args!("{}", error.code),
+            );
         }
     }
 
@@ -310,7 +320,8 @@ impl GlobalNetwork {
 
     pub fn upstream(&self, route: &NetworkRoute) -> Result<Upstream, AppError> {
         if let Some(interface) = route.bind_interface.as_deref() {
-            vm_core::network_interfaces::require_available(interface).map_err(|e| error(e.to_string()))?;
+            vm_core::network_interfaces::require_available(interface)
+                .map_err(|e| error(e.to_string()))?;
         }
         if !route.enabled {
             return Ok(match &route.bind_interface {
@@ -327,7 +338,10 @@ impl GlobalNetwork {
             .map(|node| node.config)
             .collect();
         // Validate the chain with shoes before touching the gateway.
-        proxy::validate_on_interface(&proxy::render_chain_on_interface(&hops, 18080, route.bind_interface.as_deref())?, route.bind_interface.as_deref())?;
+        proxy::validate_on_interface(
+            &proxy::render_chain_on_interface(&hops, 18080, route.bind_interface.as_deref())?,
+            route.bind_interface.as_deref(),
+        )?;
         Ok(match &route.bind_interface {
             Some(interface) => Upstream::BoundChain(hops, interface.clone()),
             None => Upstream::Chain(hops),
@@ -340,7 +354,12 @@ impl GlobalNetwork {
         self.start_gateway(socket, ssh_port, &self.route()?, true)
     }
 
-    pub fn start_with(&self, socket: &Path, ssh_port: u16, route: &NetworkRoute) -> Result<(), AppError> {
+    pub fn start_with(
+        &self,
+        socket: &Path,
+        ssh_port: u16,
+        route: &NetworkRoute,
+    ) -> Result<(), AppError> {
         self.start_gateway(socket, ssh_port, route, false)
     }
 
@@ -362,8 +381,13 @@ impl GlobalNetwork {
         runtime.interface_paths = network_interfaces::paths().unwrap_or_default();
         let result = (|| {
             let upstream = (!defer).then(|| self.upstream(route)).transpose()?;
-            Gateway::start_closed(socket, Vec::new(), upstream.as_ref(), (Ipv4Addr::LOCALHOST, ssh_port).into())
-                .map_err(|e| error(e.to_string()))
+            Gateway::start_closed(
+                socket,
+                Vec::new(),
+                upstream.as_ref(),
+                (Ipv4Addr::LOCALHOST, ssh_port).into(),
+            )
+            .map_err(|e| error(e.to_string()))
         })();
         match result {
             Ok(gateway) => {
@@ -394,18 +418,27 @@ impl GlobalNetwork {
     pub fn switch(&self, route: &NetworkRoute) -> Result<(), AppError> {
         let mut runtime = self.runtime();
         self.refresh_interface_paths(&mut runtime);
-        let Some(gateway) = &runtime.gateway else { return Ok(()) };
+        let Some(gateway) = &runtime.gateway else {
+            return Ok(());
+        };
         if runtime.active_route.as_ref() == Some(route) && gateway.error().is_none() {
             return Ok(());
         }
         let upstream = self.upstream(route)?;
         if runtime.grant.mode == NetworkGateMode::Open {
             self.cancel_hold(&mut runtime);
-            runtime.grant.invalidate("The gateway path needs a fresh network check");
+            runtime
+                .grant
+                .invalidate("The gateway path needs a fresh network check");
             runtime.apply_policy();
         }
-        let gateway = runtime.gateway.as_ref().ok_or_else(|| error("The network gateway stopped during the route change"))?;
-        gateway.set_upstream(&upstream).map_err(|e| error(e.to_string()))?;
+        let gateway = runtime
+            .gateway
+            .as_ref()
+            .ok_or_else(|| error("The network gateway stopped during the route change"))?;
+        gateway
+            .set_upstream(&upstream)
+            .map_err(|e| error(e.to_string()))?;
         runtime.active_route = Some(route.clone());
         runtime.upstream_revision += 1;
         Ok(())
@@ -481,10 +514,16 @@ impl GlobalNetwork {
         } else {
             NetworkGateMode::Closed
         };
-        let exit_policy_error = runtime.exit_policy_error.as_ref()
+        let exit_policy_error = runtime
+            .exit_policy_error
+            .as_ref()
             .filter(|(revision, _)| *revision == route_revision(&route))
             .map(|(_, reason)| reason.clone());
-        let next_retry_at = if exit_policy_error.is_some() { None } else { grant.next_retry_at };
+        let next_retry_at = if exit_policy_error.is_some() {
+            None
+        } else {
+            grant.next_retry_at
+        };
         Ok(NetworkStatus {
             available,
             running,
@@ -544,7 +583,10 @@ mod tests {
     fn legacy_route_defaults_to_system_interface() {
         let route: NetworkRoute = serde_json::from_str(r#"{"enabled":false,"chain":[]}"#).unwrap();
         assert_eq!(route.bind_interface, None);
-        let bound = NetworkRoute { bind_interface: Some("en0".into()), ..route.clone() };
+        let bound = NetworkRoute {
+            bind_interface: Some("en0".into()),
+            ..route.clone()
+        };
         assert_ne!(route_revision(&route), route_revision(&bound));
         assert_eq!(serde_json::to_value(bound).unwrap()["bindInterface"], "en0");
     }
@@ -555,8 +597,19 @@ mod tests {
         let network = GlobalNetwork::open(&dir).unwrap();
         let catalog = network.import("test", None, Some(TWO)).unwrap();
         for enabled in [false, true] {
-            let route = NetworkRoute { enabled, chain: vec![catalog.nodes[0].id.clone()], bind_interface: Some("cabin-nonexistent-interface".into()), ..NetworkRoute::default() };
-            assert!(network.upstream(&route).unwrap_err().message.contains("unavailable"));
+            let route = NetworkRoute {
+                enabled,
+                chain: vec![catalog.nodes[0].id.clone()],
+                bind_interface: Some("cabin-nonexistent-interface".into()),
+                ..NetworkRoute::default()
+            };
+            assert!(
+                network
+                    .upstream(&route)
+                    .unwrap_err()
+                    .message
+                    .contains("unavailable")
+            );
             assert!(network.check(&route).is_err());
         }
         drop(network);
@@ -567,12 +620,23 @@ mod tests {
     fn missing_saved_interface_keeps_ssh_up_with_no_outbound_listener() {
         let dir = temp("absent-adapter-start");
         let network = GlobalNetwork::open(&dir).unwrap();
-        let bound = NetworkRoute { bind_interface: Some("en-missing".into()), ..NetworkRoute::default() };
+        let bound = NetworkRoute {
+            bind_interface: Some("en-missing".into()),
+            ..NetworkRoute::default()
+        };
         network.save(&bound).unwrap();
         network.start(&dir.join("gateway.sock"), 0).unwrap();
         let ssh = network.ssh_port().unwrap();
         assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, ssh)).is_ok());
-        assert!(network.runtime().gateway.as_ref().unwrap().proxy_url().is_none());
+        assert!(
+            network
+                .runtime()
+                .gateway
+                .as_ref()
+                .unwrap()
+                .proxy_url()
+                .is_none()
+        );
         assert!(network.switch(&bound).is_err());
         network.fail_route_preflight("The selected interface is unavailable");
         let status = network.status(true).unwrap();
@@ -582,7 +646,15 @@ mod tests {
         assert!(status.next_retry_at.unwrap() > now_millis());
         network.switch(&NetworkRoute::default()).unwrap();
         assert_eq!(network.ssh_port(), Some(ssh));
-        assert!(network.runtime().gateway.as_ref().unwrap().proxy_url().is_some());
+        assert!(
+            network
+                .runtime()
+                .gateway
+                .as_ref()
+                .unwrap()
+                .proxy_url()
+                .is_some()
+        );
         assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Closed);
         drop(network);
         let _ = std::fs::remove_dir_all(dir);
@@ -657,7 +729,7 @@ mod tests {
                 enabled: true,
                 chain: vec![catalog.nodes[0].id.clone()],
                 bind_interface: None,
-            ..NetworkRoute::default()
+                ..NetworkRoute::default()
             })
             .unwrap();
         network.suspend_store().unwrap();

@@ -11,13 +11,17 @@ use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
 use crate::model::{
-    AgentKind, ChatItem, ChatPermissionMode, ChatTurnUsage, ModelOverride, OperationRecord,
-    NetworkCheckReport, NetworkHistoryEntry, OperationState, PlanDecision, PlanExecutionStatus,
+    AgentKind, ChatItem, ChatPermissionMode, ChatTurnUsage, ModelOverride, NetworkCheckReport,
+    NetworkHistoryEntry, OperationRecord, OperationState, PlanDecision, PlanExecutionStatus,
     PlanReview, PlanReviewStatus, Session, SessionMode, SessionStatus, SubagentTask, Workspace,
 };
 use crate::util::now_millis;
 
 pub const NETWORK_HISTORY_LIMIT: u32 = 500;
+
+/// Safety valve for a pathological session: snapshots and agent context load
+/// the newest items, never an unbounded history. Real chats stay far below it.
+const CHAT_ITEM_LIMIT: i64 = 20_000;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -189,8 +193,10 @@ fn session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         },
         archived: row.get::<_, i64>("archived")? != 0,
         starred: row.get::<_, i64>("starred")? != 0,
-        worktree: row.get::<_, Option<String>>("worktree")?
-            .map(|value| from_json(&value)).transpose()?,
+        worktree: row
+            .get::<_, Option<String>>("worktree")?
+            .map(|value| from_json(&value))
+            .transpose()?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         last_started_at: row.get("last_started_at")?,
@@ -345,12 +351,18 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_session_worktree(&self, id: &str, worktree: Option<&crate::model::SessionWorktree>) -> Result<()> {
+    pub fn set_session_worktree(
+        &self,
+        id: &str,
+        worktree: Option<&crate::model::SessionWorktree>,
+    ) -> Result<()> {
         let changed = self.conn().execute(
             "UPDATE sessions SET worktree = ?2 WHERE id = ?1",
             params![id, worktree.map(json).transpose()?],
         )?;
-        if changed == 0 { return Err(Error::NotFound("session".into())); }
+        if changed == 0 {
+            return Err(Error::NotFound("session".into()));
+        }
         Ok(())
     }
 
@@ -441,10 +453,22 @@ impl Store {
     }
 
     pub fn chat_items(&self, id: &str) -> Result<Vec<ChatItem>> {
+        self.chat_item_tail(id, CHAT_ITEM_LIMIT)
+    }
+
+    /// The newest `limit` items in reading order. The inner query keeps the
+    /// tail, the outer one restores the order the UI folds turns from.
+    fn chat_item_tail(&self, id: &str, limit: i64) -> Result<Vec<ChatItem>> {
         let conn = self.conn();
-        let mut stmt =
-            conn.prepare("SELECT data FROM chat_items WHERE session_id = ?1 ORDER BY ordinal")?;
-        let rows = stmt.query_map([id], |row| from_json::<ChatItem>(&row.get::<_, String>(0)?))?;
+        let mut stmt = conn.prepare(
+            "SELECT data FROM (
+                 SELECT data, ordinal FROM chat_items
+                 WHERE session_id = ?1 ORDER BY ordinal DESC LIMIT ?2
+             ) ORDER BY ordinal",
+        )?;
+        let rows = stmt.query_map(params![id, limit], |row| {
+            from_json::<ChatItem>(&row.get::<_, String>(0)?)
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -1103,23 +1127,33 @@ impl Store {
         Ok(())
     }
 
-    pub fn network_history(&self, before: Option<i64>, limit: u32) -> Result<Vec<NetworkHistoryEntry>> {
+    pub fn network_history(
+        &self,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<NetworkHistoryEntry>> {
         let conn = self.conn();
         let mut statement = conn.prepare(
             "SELECT id, at, kind, message, failed_checks, report FROM network_history
              WHERE id < ?1 ORDER BY id DESC LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![before.unwrap_or(i64::MAX), limit.clamp(1, NETWORK_HISTORY_LIMIT)], |row| {
-            let report: Option<String> = row.get(5)?;
-            Ok(NetworkHistoryEntry {
-                id: row.get(0)?,
-                at: row.get(1)?,
-                kind: row.get(2)?,
-                message: row.get(3)?,
-                failed_checks: row.get(4)?,
-                report: report.as_deref().map(from_json).transpose()?,
-            })
-        })?;
+        let rows = statement.query_map(
+            params![
+                before.unwrap_or(i64::MAX),
+                limit.clamp(1, NETWORK_HISTORY_LIMIT)
+            ],
+            |row| {
+                let report: Option<String> = row.get(5)?;
+                Ok(NetworkHistoryEntry {
+                    id: row.get(0)?,
+                    at: row.get(1)?,
+                    kind: row.get(2)?,
+                    message: row.get(3)?,
+                    failed_checks: row.get(4)?,
+                    report: report.as_deref().map(from_json).transpose()?,
+                })
+            },
+        )?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -1224,6 +1258,48 @@ mod tests {
         })
     }
 
+    fn chat_item(id: &str) -> ChatItem {
+        ChatItem {
+            id: id.into(),
+            ordinal: 0,
+            revision: 0,
+            turn_id: String::new(),
+            kind: crate::model::ChatItemKind::AssistantMessage,
+            status: crate::model::ChatItemStatus::Completed,
+            title: String::new(),
+            text: id.into(),
+            detail: String::new(),
+            request_id: None,
+            questions: vec![],
+            attachments: vec![],
+            started_at: 0,
+            updated_at: 0,
+            action: None,
+            subject: String::new(),
+            files: vec![],
+            approval: None,
+            changes: vec![],
+            task_id: None,
+        }
+    }
+
+    #[test]
+    fn chat_history_loads_the_newest_items_in_order() -> Result<()> {
+        let store = Store::in_memory()?;
+        insert_chat(&store)?;
+        for index in 1..=5 {
+            store.put_chat_item("s1", chat_item(&format!("i{index}")))?;
+        }
+        let tail: Vec<String> = store
+            .chat_item_tail("s1", 3)?
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(tail, ["i3", "i4", "i5"]);
+        assert_eq!(store.chat_items("s1")?.len(), 5);
+        Ok(())
+    }
+
     #[test]
     fn worktree_metadata_survives_reopen() -> Result<()> {
         let dir = tempfile::tempdir()?;
@@ -1231,8 +1307,10 @@ mod tests {
         let store = Store::open(&path)?;
         insert_chat(&store)?;
         let tree = crate::model::SessionWorktree {
-            path: "/data/worktrees/s/project".into(), root: "/data/worktrees/s".into(),
-            repository: "/repo".into(), base: "refs/heads/main".into(),
+            path: "/data/worktrees/s/project".into(),
+            root: "/data/worktrees/s".into(),
+            repository: "/repo".into(),
+            base: "refs/heads/main".into(),
         };
         store.set_session_worktree("s1", Some(&tree))?;
         drop(store);
@@ -1613,7 +1691,10 @@ mod tests {
         .flatten()
         .map(|entry| entry.id)
         .collect();
-        assert_eq!(store.network_history(None, NETWORK_HISTORY_LIMIT)?.len(), all_ids.len());
+        assert_eq!(
+            store.network_history(None, NETWORK_HISTORY_LIMIT)?.len(),
+            all_ids.len()
+        );
         assert_eq!(all_ids.len(), NETWORK_HISTORY_LIMIT as usize);
         assert_eq!(*all_ids.last().unwrap(), 6);
         Ok(())

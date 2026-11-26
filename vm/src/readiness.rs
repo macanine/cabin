@@ -374,7 +374,11 @@ fn disk_check(free: u64, disk_gb: u32) -> Readiness {
                 util::format_bytes(Some(needed))
             )
         } else {
-            let action = if disk_gb == 0 { "Free up space." } else { "Free up space or choose a smaller disk." };
+            let action = if disk_gb == 0 {
+                "Free up space."
+            } else {
+                "Free up space or choose a smaller disk."
+            };
             format!(
                 "Only {} is free and the VM needs about {}. {action}",
                 util::format_bytes(Some(free)),
@@ -590,7 +594,10 @@ pub fn diagnostic_history(home: &Path) -> serde_json::Value {
         .filter_map(|path| Some((path.metadata().ok()?.modified().ok()?, path)))
         .max();
     let mut records = cabin_diagnostics::recent_records(&paths.legacy_journal(), 128 * 1024);
-    records.extend(cabin_diagnostics::recent_records(&paths.journal(), 128 * 1024));
+    records.extend(cabin_diagnostics::recent_records(
+        &paths.journal(),
+        128 * 1024,
+    ));
     // Apply is also used by startup repairs. Anchor the install fallback to
     // the latest *install* step log, which uses "-apply-" instead of "-start-".
     let last_apply_ms = last_apply
@@ -616,12 +623,23 @@ pub fn diagnostic_history(home: &Path) -> serde_json::Value {
     let global = recent(&paths.logs().join("global")).take(3);
     let console = recent(paths.instance(crate::machine::NAME).root()).filter(|path| {
         path.file_name().is_some_and(|name| {
-            matches!(name.to_str(), Some("serial.log" | "serial-provision.log" | "display.log" | "qemu-stderr.log" | "start-rollback.log"))
+            matches!(
+                name.to_str(),
+                Some(
+                    "serial.log"
+                        | "serial-provision.log"
+                        | "display.log"
+                        | "qemu-stderr.log"
+                        | "start-rollback.log"
+                )
+            )
         })
     });
     let current_console = |path: &Path| {
-        matches!(path.file_name().and_then(|name| name.to_str()),
-            Some("serial.log" | "serial-provision.log" | "qemu-stderr.log"))
+        matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("serial.log" | "serial-provision.log" | "qemu-stderr.log")
+        )
     };
     let logs: Vec<_> = recent(&instance)
         .filter(|path| !current_console(path))
@@ -634,7 +652,10 @@ pub fn diagnostic_history(home: &Path) -> serde_json::Value {
             json!({ "file": path.file_name().unwrap_or_default().to_string_lossy(), "tail": log })
         })
         .collect();
-    let events = cabin_diagnostics::recent_records(&paths.logs().join(cabin_diagnostics::EVENT_FILE), 32 * 1024);
+    let events = cabin_diagnostics::recent_records(
+        &paths.logs().join(cabin_diagnostics::EVENT_FILE),
+        32 * 1024,
+    );
     json!({ "lastStart": last_start, "lastInstall": last_install, "logTails": logs, "events": events })
 }
 

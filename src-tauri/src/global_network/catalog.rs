@@ -75,7 +75,11 @@ fn detector(proxy_url: Option<&str>) -> Result<Detector, AppError> {
 /// The IPv4 address a node's host stands for (resolved on the Mac).
 fn resolve(host: &str) -> Result<IpAddr, String> {
     if let Ok(ip) = host.parse::<IpAddr>() {
-        return if ip.is_ipv4() { Ok(ip) } else { Err(format!("{host} has no IPv4 address")) };
+        return if ip.is_ipv4() {
+            Ok(ip)
+        } else {
+            Err(format!("{host} has no IPv4 address"))
+        };
     }
     let addresses: Vec<IpAddr> = (host, 443)
         .to_socket_addrs()
@@ -90,11 +94,16 @@ fn resolve(host: &str) -> Result<IpAddr, String> {
 }
 
 fn lookup_location(proxy_url: Option<&str>) -> Result<GeoInfo, AppError> {
-    detector(proxy_url)?.detect().map(geo).map_err(|failure| error(failure.to_string()))
+    detector(proxy_url)?
+        .detect()
+        .map(geo)
+        .map_err(|failure| error(failure.to_string()))
 }
 
 fn public_ipv4(value: &str) -> bool {
-    value.parse().is_ok_and(|address: IpAddr| address.is_ipv4() && public_ip(address))
+    value
+        .parse()
+        .is_ok_and(|address: IpAddr| address.is_ipv4() && public_ip(address))
 }
 
 impl GlobalNetwork {
@@ -176,7 +185,10 @@ impl GlobalNetwork {
             if !runtime.internet_allowed() {
                 return Err(error("Internet access is closed"));
             }
-            let via = runtime.gateway.as_ref().and_then(Gateway::proxy_url)
+            let via = runtime
+                .gateway
+                .as_ref()
+                .and_then(Gateway::proxy_url)
                 .ok_or_else(|| error("The route is unavailable"))?;
             (source, via, runtime.identity(), runtime.grant.generation)
         };
@@ -187,8 +199,13 @@ impl GlobalNetwork {
         {
             let mut runtime = self.runtime();
             self.expire(&mut runtime);
-            if !runtime.internet_allowed() || runtime.identity() != path || runtime.grant.generation != generation {
-                return Err(error("The network changed while the subscription was being downloaded"));
+            if !runtime.internet_allowed()
+                || runtime.identity() != path
+                || runtime.grant.generation != generation
+            {
+                return Err(error(
+                    "The network changed while the subscription was being downloaded",
+                ));
             }
         }
         self.save_refreshed_source(&source, &nodes)
@@ -217,7 +234,11 @@ impl GlobalNetwork {
         self.save_refreshed_source(&source, &nodes)
     }
 
-    fn save_refreshed_source(&self, source: &StoredSource, nodes: &[Node]) -> Result<ProxyCatalog, AppError> {
+    fn save_refreshed_source(
+        &self,
+        source: &StoredSource,
+        nodes: &[Node],
+    ) -> Result<ProxyCatalog, AppError> {
         let used = self.route_nodes_in(&source.id)?;
         self.with_store(|store| proxy::save_refresh(store, source, nodes, &used))
     }
@@ -255,7 +276,8 @@ impl GlobalNetwork {
         interface: Option<&str>,
     ) -> Result<agent_core::model::ProxyTestResult, AppError> {
         if let Some(name) = interface {
-            vm_core::network_interfaces::require_available(name).map_err(|e| error(e.to_string()))?;
+            vm_core::network_interfaces::require_available(name)
+                .map_err(|e| error(e.to_string()))?;
         }
         let identity = self.runtime().identity();
         let node = self.with_store(|store| proxy::nodes::test_node(store, id, revision))?;
@@ -264,7 +286,8 @@ impl GlobalNetwork {
             return Err(error("The network changed while the node was being tested"));
         }
         if let Some(name) = interface {
-            vm_core::network_interfaces::require_available(name).map_err(|e| error(e.to_string()))?;
+            vm_core::network_interfaces::require_available(name)
+                .map_err(|e| error(e.to_string()))?;
         }
         Ok(result)
     }
@@ -273,11 +296,16 @@ impl GlobalNetwork {
     pub fn probe(&self, id: &str) -> Result<agent_core::model::ProbeResult, AppError> {
         let route = self.route()?;
         if let Some(name) = route.bind_interface.as_deref() {
-            vm_core::network_interfaces::require_available(name).map_err(|e| error(e.to_string()))?;
+            vm_core::network_interfaces::require_available(name)
+                .map_err(|e| error(e.to_string()))?;
         }
         let identity = self.runtime().identity();
         let node = self.nodes(&[id.to_string()])?.remove(0);
-        let result = proxy::probe_chain_on_interface(&[node], CHECK_TARGET, route.bind_interface.as_deref())?;
+        let result = proxy::probe_chain_on_interface(
+            &[node],
+            CHECK_TARGET,
+            route.bind_interface.as_deref(),
+        )?;
         if self.runtime().identity() != identity || self.route()? != route {
             return Err(error("The network changed while the node was being tested"));
         }
@@ -295,12 +323,15 @@ impl GlobalNetwork {
         let mut broken_at = None;
         for (index, id) in chain.iter().enumerate() {
             // A hop whose listener cannot even start is just as broken.
-            let result = proxy::probe_chain_on_interface(&nodes[..=index], CHECK_TARGET, route.bind_interface.as_deref()).unwrap_or_else(|e| {
-                agent_core::model::ProbeResult {
-                    ok: false,
-                    latency_ms: None,
-                    detail: e.to_string(),
-                }
+            let result = proxy::probe_chain_on_interface(
+                &nodes[..=index],
+                CHECK_TARGET,
+                route.bind_interface.as_deref(),
+            )
+            .unwrap_or_else(|e| agent_core::model::ProbeResult {
+                ok: false,
+                latency_ms: None,
+                detail: e.to_string(),
             });
             hops.push(HopCheck {
                 node_id: id.clone(),
@@ -314,10 +345,13 @@ impl GlobalNetwork {
             }
         }
         if self.runtime().identity() != identity {
-            return Err(error("The network changed while the route was being checked"));
+            return Err(error(
+                "The network changed while the route was being checked",
+            ));
         }
         if let Some(name) = route.bind_interface.as_deref() {
-            vm_core::network_interfaces::require_available(name).map_err(|e| error(e.to_string()))?;
+            vm_core::network_interfaces::require_available(name)
+                .map_err(|e| error(e.to_string()))?;
         }
         Ok(RouteCheck {
             hops,
@@ -349,14 +383,20 @@ impl GlobalNetwork {
         let mut exit = lookup_location(Some(&url))?;
         let mut runtime = self.runtime();
         if runtime.identity() != identity {
-            return Err(error("The network changed while the exit was being looked up"));
+            return Err(error(
+                "The network changed while the exit was being looked up",
+            ));
         }
         let ip = exit.ip.parse().map_err(|_| error("Invalid exit address"))?;
         runtime.exit_observation = Some((identity, ip));
         // The fastest answer often only has a country. Reuse the verified
         // location only when it describes the very same public address.
         if let Some(reference) = runtime.verified_samples.iter().flatten().find(|sample| {
-            sample.ip == exit.ip && exit.country_code.as_ref().is_none_or(|code| sample.country_code.as_ref() == Some(code))
+            sample.ip == exit.ip
+                && exit
+                    .country_code
+                    .as_ref()
+                    .is_none_or(|code| sample.country_code.as_ref() == Some(code))
         }) {
             exit.country_code = exit.country_code.or_else(|| reference.country_code.clone());
             exit.country = exit.country.or_else(|| reference.country.clone());
@@ -372,38 +412,67 @@ impl GlobalNetwork {
     }
 
     /// Classify the last observed exit through that same gateway path.
-    pub fn exit_type(&self, requested: &str, refresh: bool) -> Result<Option<IpClassification>, AppError> {
-        let ip = requested.parse::<IpAddr>().map_err(|_| error("Invalid exit address"))?;
+    pub fn exit_type(
+        &self,
+        requested: &str,
+        refresh: bool,
+    ) -> Result<Option<IpClassification>, AppError> {
+        let ip = requested
+            .parse::<IpAddr>()
+            .map_err(|_| error("Invalid exit address"))?;
         let (identity, url) = {
             let runtime = self.runtime();
             let identity = runtime.identity();
-            if runtime.exit_observation != Some((identity, ip)) || runtime.active_route.as_ref() != Some(&self.route()?) {
-                return Err(error("The exit changed while its IP type was being looked up"));
+            if runtime.exit_observation != Some((identity, ip))
+                || runtime.active_route.as_ref() != Some(&self.route()?)
+            {
+                return Err(error(
+                    "The exit changed while its IP type was being looked up",
+                ));
             }
             (identity, Self::proxy_endpoint(&runtime)?)
         };
         let cached = {
             let mut cache = self.quality.locked();
-            cache.retain(|_, (at, reply)| at.elapsed() < Duration::from_secs(if reply.is_some() { 3 * 24 * 3600 } else { 300 }));
-            (!refresh).then(|| cache.get(&ip).map(|(_, reply)| reply.clone())).flatten()
+            cache.retain(|_, (at, reply)| {
+                at.elapsed()
+                    < Duration::from_secs(if reply.is_some() { 3 * 24 * 3600 } else { 300 })
+            });
+            (!refresh)
+                .then(|| cache.get(&ip).map(|(_, reply)| reply.clone()))
+                .flatten()
         };
         if let Some(reply) = cached {
             let runtime = self.runtime();
             if runtime.identity() != identity || runtime.exit_observation != Some((identity, ip)) {
-                return Err(error("The exit changed while its IP type was being looked up"));
+                return Err(error(
+                    "The exit changed while its IP type was being looked up",
+                ));
             }
             return Ok(reply);
         }
-        let reply = detector(Some(&url))?.classify(ip).map(|result| IpClassification {
-            ip_type: ip_type(result.ip_type), inferred: result.inferred, organization: result.organization,
-            asn: result.asn, source: result.source.name().into(),
-        });
+        let reply = detector(Some(&url))?
+            .classify(ip)
+            .map(|result| IpClassification {
+                ip_type: ip_type(result.ip_type),
+                inferred: result.inferred,
+                organization: result.organization,
+                asn: result.asn,
+                source: result.source.name().into(),
+            });
         let runtime = self.runtime();
         if runtime.exit_observation != Some((identity, ip)) || runtime.identity() != identity {
-            return Err(error("The exit changed while its IP type was being looked up"));
+            return Err(error(
+                "The exit changed while its IP type was being looked up",
+            ));
         }
         let mut cache = self.quality.locked();
-        if cache.len() >= 256 && let Some(old) = cache.iter().min_by_key(|(_, (at, _))| *at).map(|(ip, _)| *ip) {
+        if cache.len() >= 256
+            && let Some(old) = cache
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(ip, _)| *ip)
+        {
             cache.remove(&old);
         }
         cache.insert(ip, (Instant::now(), reply.clone()));
@@ -453,8 +522,12 @@ impl GlobalNetwork {
         let url = Self::proxy_endpoint(&self.runtime())?;
         detector_builder()
             .services([Service::GeoJs, Service::IpWhoIs])
-            .proxy_url(&url).build().map_err(|failure| error(failure.to_string()))?
-            .lookup(ip.into()).map(geo).map_err(|failure| error(failure.to_string()))
+            .proxy_url(&url)
+            .build()
+            .map_err(|failure| error(failure.to_string()))?
+            .lookup(ip.into())
+            .map(geo)
+            .map_err(|failure| error(failure.to_string()))
     }
 
     pub fn gateway_connected(&self) -> bool {
@@ -467,10 +540,14 @@ impl GlobalNetwork {
     /// The Mac's own public address (the start of every route).
     pub fn origin(&self) -> Result<GeoInfo, AppError> {
         let detector = detector(None)?;
-        let mut info = detector.detect().map_err(|failure| error(failure.to_string()))?;
+        let mut info = detector
+            .detect()
+            .map_err(|failure| error(failure.to_string()))?;
         // The map needs coordinates. Enrich the confirmed Mac address using
         // an explicit address lookup, retaining a fast result if that fails.
-        if info.latitude.zip(info.longitude).is_none() && let Ok(located) = detector.lookup(info.ip) {
+        if info.latitude.zip(info.longitude).is_none()
+            && let Ok(located) = detector.lookup(info.ip)
+        {
             info = located;
         }
         Ok(geo(info))
@@ -507,10 +584,7 @@ impl GlobalNetwork {
                 for _ in 0..LOCATE_WORKERS.min(missing.len()) {
                     scope.spawn(|| {
                         loop {
-                            let Some(host) = next.locked()
-                                .next()
-                                .cloned()
-                            else {
+                            let Some(host) = next.locked().next().cloned() else {
                                 break;
                             };
                             let result = resolve(&host).and_then(|ip| {
@@ -519,14 +593,16 @@ impl GlobalNetwork {
                                     .map(geo)
                                     .map_err(|e| format!("Could not locate {ip}: {e}"))
                             });
-                            found.locked()
-                                .push((host, result));
+                            found.locked().push((host, result));
                         }
                     });
                 }
             });
             let mut places = self.places.locked();
-            for (host, result) in found.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
+            for (host, result) in found
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+            {
                 places.insert(host, (now, result));
             }
         }
@@ -601,7 +677,13 @@ mod tests {
         // Nothing listens on these ports, so the entry already fails.
         let catalog = network.import("test", None, Some(TWO)).unwrap();
         let chain: Vec<String> = catalog.nodes.iter().map(|n| n.id.clone()).collect();
-        let check = network.check(&NetworkRoute { enabled: true, chain, ..NetworkRoute::default() }).unwrap();
+        let check = network
+            .check(&NetworkRoute {
+                enabled: true,
+                chain,
+                ..NetworkRoute::default()
+            })
+            .unwrap();
         assert_eq!(check.broken_at, Some(0));
         assert_eq!(
             check.hops.len(),
@@ -622,20 +704,39 @@ mod tests {
         let mut source = network.with_store(Store::proxy_sources).unwrap().remove(0);
         let (url, server) = serve_once(TWO);
         source.url = Some(url.clone());
-        network.with_store(|store| store.upsert_proxy_source(&source)).unwrap();
-        let bound = NetworkRoute { bind_interface: Some("en-test".into()), ..NetworkRoute::default() };
+        network
+            .with_store(|store| store.upsert_proxy_source(&source))
+            .unwrap();
+        let bound = NetworkRoute {
+            bind_interface: Some("en-test".into()),
+            ..NetworkRoute::default()
+        };
         network.save(&bound).unwrap();
-        assert!(network.download_proxy().is_err(), "a missing gateway cannot fall back to direct");
+        assert!(
+            network.download_proxy().is_err(),
+            "a missing gateway cannot fall back to direct"
+        );
 
         // Start a local gateway and model the active bound route without using
         // a real host interface or making external network requests.
-        network.start_with(&dir.join("gateway.sock"), 0, &NetworkRoute::default()).unwrap();
+        network
+            .start_with(&dir.join("gateway.sock"), 0, &NetworkRoute::default())
+            .unwrap();
         network.runtime().active_route = Some(bound.clone());
-        assert!(network.download_proxy().is_err(), "a closed gate blocks downloads");
+        assert!(
+            network.download_proxy().is_err(),
+            "a closed gate blocks downloads"
+        );
         assert!(network.import("blocked", Some(&url), None).is_err());
         assert!(network.refresh(&catalog.sources[0].id, true).is_err());
         open_gate(&network, &bound);
-        let gateway_url = network.runtime().gateway.as_ref().unwrap().proxy_url().unwrap();
+        let gateway_url = network
+            .runtime()
+            .gateway
+            .as_ref()
+            .unwrap()
+            .proxy_url()
+            .unwrap();
         assert_eq!(network.download_proxy().unwrap(), Some(gateway_url));
         assert!(network.refresh_from_host(&catalog.sources[0].id).is_err());
 

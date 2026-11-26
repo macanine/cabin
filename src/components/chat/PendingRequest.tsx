@@ -110,7 +110,7 @@ export function PendingRequest({ sessionId, item }: { sessionId: string; item: C
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [item.id, isQuestion]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item.id, isQuestion]);
 
   async function respond(decision: string) {
     if (!item.requestId || sending) return;

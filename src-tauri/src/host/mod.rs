@@ -79,7 +79,12 @@ fn start_gateway(
         None => network.start(&cfg.net_socket(), cfg.ssh_port)?,
     }
     if let Err(error) = cfg.set_ssh_relay_port(network.ssh_port()) {
-        cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "ssh", "relay_port_write_failed", format_args!("{error}"));
+        cabin_diagnostics::event(
+            cabin_diagnostics::Level::Warn,
+            "ssh",
+            "relay_port_write_failed",
+            format_args!("{error}"),
+        );
     }
     Ok(())
 }
@@ -143,11 +148,13 @@ impl Host {
             // Fingerprint the bundled daemon while QEMU boots.
             let me = Arc::downgrade(&host);
             // The handshake can compute the fingerprint on demand if prewarming fails.
-            let _ = std::thread::Builder::new().name("guest-build-fingerprint".into()).spawn(move || {
-                if let Some(me) = me.upgrade() {
-                    let _ = me.bundled_build();
-                }
-            });
+            let _ = std::thread::Builder::new()
+                .name("guest-build-fingerprint".into())
+                .spawn(move || {
+                    if let Some(me) = me.upgrade() {
+                        let _ = me.bundled_build();
+                    }
+                });
         }
         Ok(host)
     }
@@ -200,7 +207,10 @@ impl Host {
         let report: StartReport = Self::convert(attempt.snapshot())?;
         let status = {
             let mut startup = self.startup.locked();
-            if startup.as_ref().is_some_and(|(current, _)| current.running()) {
+            if startup
+                .as_ref()
+                .is_some_and(|(current, _)| current.running())
+            {
                 return Err(unavailable("A machine operation is already in progress"));
             }
             let status = self.claim_machine("Starting the machine", true)?;
@@ -208,20 +218,25 @@ impl Host {
             *startup = Some((attempt.clone(), report.clone()));
             status
         };
-        self.emit(AppEvent::Start { report: Box::new(report) });
+        self.emit(AppEvent::Start {
+            report: Box::new(report),
+        });
         self.emit(AppEvent::Machine { status });
         let me = Arc::downgrade(self);
         let hot = attempt.clone();
-        if let Err(error) = std::thread::Builder::new().name("startup-progress".into()).spawn(move || {
-            while hot.running() {
-                std::thread::sleep(Duration::from_millis(400));
-                if let Some(me) = me.upgrade() {
-                    me.publish_start(&hot);
-                } else {
-                    break;
+        if let Err(error) = std::thread::Builder::new()
+            .name("startup-progress".into())
+            .spawn(move || {
+                while hot.running() {
+                    std::thread::sleep(Duration::from_millis(400));
+                    if let Some(me) = me.upgrade() {
+                        me.publish_start(&hot);
+                    } else {
+                        break;
+                    }
                 }
-            }
-        }) {
+            })
+        {
             attempt.note(&format!("Live startup progress is unavailable: {error}"));
         }
         Ok(attempt)
@@ -245,14 +260,16 @@ impl Host {
     }
 
     fn active_start(&self) -> Option<Arc<Attempt>> {
-        self.startup.locked()
+        self.startup
+            .locked()
             .as_ref()
             .filter(|(attempt, _)| attempt.running())
             .map(|(attempt, _)| attempt.clone())
     }
 
     fn start_state(&self) -> Option<StartState> {
-        self.startup.locked()
+        self.startup
+            .locked()
             .as_ref()
             .map(|(_, report)| report.state)
     }
@@ -267,22 +284,36 @@ impl Host {
     }
 
     /// Re-read the VM's configuration and run state.
-    pub fn machine_details(&self) -> Result<Option<vm_core::machine_details::MachineDetails>, AppError> {
+    pub fn machine_details(
+        &self,
+    ) -> Result<Option<vm_core::machine_details::MachineDetails>, AppError> {
         self.machine.details().map_err(Self::vm_error)
     }
 
-    pub fn save_resources(&self, request: vm_core::resources::ResourceRequest, cancel_disk: bool) -> Result<Option<vm_core::resources::ResourceRequest>, AppError> {
+    pub fn save_resources(
+        &self,
+        request: vm_core::resources::ResourceRequest,
+        cancel_disk: bool,
+    ) -> Result<Option<vm_core::resources::ResourceRequest>, AppError> {
         // Serialize with desktop machine operations. Validation errors belong to
         // the settings form, not the machine's connection state.
         let status = {
             let startup = self.startup.locked();
-            if startup.as_ref().is_some_and(|(attempt, _)| attempt.running()) {
-                return Err(unavailable("Wait for the machine startup attempt to finish"));
+            if startup
+                .as_ref()
+                .is_some_and(|(attempt, _)| attempt.running())
+            {
+                return Err(unavailable(
+                    "Wait for the machine startup attempt to finish",
+                ));
             }
             self.claim_machine("Saving machine resources", false)?
         };
         self.emit(AppEvent::Machine { status });
-        let result = self.machine.save_resources(request, cancel_disk).map_err(Self::vm_error);
+        let result = self
+            .machine
+            .save_resources(request, cancel_disk)
+            .map_err(Self::vm_error);
         self.update(|status| status.busy = None);
         result
     }
@@ -298,10 +329,15 @@ impl Host {
         crate::storage::StorageReport::read(&self.machine, identifier, blocked)
     }
 
-    pub fn clean_storage(&self, target: vm_core::storage::CleanupTarget) -> Result<vm_core::storage::CleanupResult, AppError> {
+    pub fn clean_storage(
+        &self,
+        target: vm_core::storage::CleanupTarget,
+    ) -> Result<vm_core::storage::CleanupResult, AppError> {
         self.busy("Cleaning storage", || {
             if self.sync.overlaps_host_path(self.machine.home()) {
-                return vm_core::message("A synced Mac folder overlaps the app data directory; its files were kept");
+                return vm_core::message(
+                    "A synced Mac folder overlaps the app data directory; its files were kept",
+                );
             }
             self.machine.clean_storage(target)
         })
@@ -332,17 +368,14 @@ impl Host {
     }
 
     pub fn snapshot(&self) -> HostSnapshot {
-        let machine = self
-            .status.read_lock()
-            .clone();
-        let mut guest = self
-            .guest_snapshot.read_lock()
-            .clone();
+        let machine = self.status.read_lock().clone();
+        let mut guest = self.guest_snapshot.read_lock().clone();
         if let Some(snapshot) = &mut guest {
             self.overlay_snapshot(snapshot);
         }
         let start = self
-            .startup.locked()
+            .startup
+            .locked()
             .as_ref()
             .map(|(_, report)| report.clone());
         HostSnapshot {
@@ -359,8 +392,13 @@ impl Host {
     ) -> Result<T, AppError> {
         let status = {
             let startup = self.startup.lock().unwrap_or_else(|p| p.into_inner());
-            if startup.as_ref().is_some_and(|(current, _)| current.running()) {
-                return Err(unavailable("Wait for the machine startup attempt to finish"));
+            if startup
+                .as_ref()
+                .is_some_and(|(current, _)| current.running())
+            {
+                return Err(unavailable(
+                    "Wait for the machine startup attempt to finish",
+                ));
             }
             self.claim_machine(label, false)?
         };
@@ -429,7 +467,9 @@ impl Host {
         }
         match self.machine.config().and_then(|cfg| {
             if !cfg.isolated() {
-                return Err(vm_core::Error::Message("The machine no longer has a managed network".into()));
+                return Err(vm_core::Error::Message(
+                    "The machine no longer has a managed network".into(),
+                ));
             }
             cfg.environment_revision()
         }) {
@@ -457,7 +497,9 @@ impl Host {
     /// they show a real error instead of retrying until the user stops them.
     fn fail_guest_chats(&self, message: impl Into<String>) {
         let _ = self.call_guest_with_timeout(
-            "chat_fail_active", json!({ "message": message.into() }), Duration::from_secs(3),
+            "chat_fail_active",
+            json!({ "message": message.into() }),
+            Duration::from_secs(3),
         );
     }
 
@@ -507,7 +549,12 @@ impl Host {
         if !self.stopping.load(Ordering::Acquire)
             && let Err(error) = self.quit(true, Duration::from_secs(4))
         {
-            cabin_diagnostics::event(cabin_diagnostics::Level::Error, "lifecycle", "shutdown_failed", format_args!("{}", error.code));
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Error,
+                "lifecycle",
+                "shutdown_failed",
+                format_args!("{}", error.code),
+            );
         }
     }
 }

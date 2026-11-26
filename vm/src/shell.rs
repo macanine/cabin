@@ -216,7 +216,11 @@ pub fn browser_follow_environment(
 /// guest was just updated in place, so the record is moved along with it,
 /// otherwise the next start would reinstall the browser for nothing (and a
 /// failed reinstall would keep the machine from starting).
-pub(crate) fn apply_browser_region(runtime: &Runtime, current: &Config, updated: &Config) -> Result<bool> {
+pub(crate) fn apply_browser_region(
+    runtime: &Runtime,
+    current: &Config,
+    updated: &Config,
+) -> Result<bool> {
     let configured_changed = current.browser != updated.browser;
     let before = browser::fingerprint(current)?;
     let profile = browser::install_profile(&browser::resolve(updated)?);
@@ -418,10 +422,15 @@ entry="exec $HOME/.config/sway/start-chrome.sh"
 [ -f "$config" ] && grep -Fxq -- "$entry" "$config" || exit 0
 "#;
     // Stop first so a failed cleanup leaves the migration retryable.
-    let script = format!("{script}if ! (\n{CHROME_STOP}\n); then exit 1; fi\ntmp=$(mktemp \"$config.cabin.XXXXXX\")\ntrap 'rm -f -- \"$tmp\"' EXIT\nawk -v entry=\"$entry\" '$0 != entry' \"$config\" >\"$tmp\"\nchmod --reference=\"$config\" \"$tmp\"\nmv -f -- \"$tmp\" \"$config\"\n");
+    let script = format!(
+        "{script}if ! (\n{CHROME_STOP}\n); then exit 1; fi\ntmp=$(mktemp \"$config.cabin.XXXXXX\")\ntrap 'rm -f -- \"$tmp\"' EXIT\nawk -v entry=\"$entry\" '$0 != entry' \"$config\" >\"$tmp\"\nchmod --reference=\"$config\" \"$tmp\"\nmv -f -- \"$tmp\" \"$config\"\n"
+    );
     let (code, output) = runtime.ssh_capture(&script, Duration::from_secs(20));
     if code != 0 {
-        return message(format!("Could not remove legacy Chrome autostart: {}", output.trim()));
+        return message(format!(
+            "Could not remove legacy Chrome autostart: {}",
+            output.trim()
+        ));
     }
     Ok(())
 }

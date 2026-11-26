@@ -123,6 +123,9 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
     }).catch((cause) => { if (current) setError(toIpcError(cause).message); })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
+    // `dashboard` is this effect's own output; including it would refetch on
+    // every result, so the request keys are the dependencies.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromMs, agent, model, page, usage.revision, zone, clockOffset, onDashboard]);
 
   const summary = dashboard?.summary;

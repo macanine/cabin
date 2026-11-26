@@ -21,7 +21,10 @@ pub fn record_live_change(cfg: &Config, previous: &str) -> Result<()> {
         return Ok(());
     };
     if state.get("status").and_then(Value::as_str) != Some("applied")
-        || state.pointer("/meta/browser_fingerprint").and_then(Value::as_str) != Some(previous)
+        || state
+            .pointer("/meta/browser_fingerprint")
+            .and_then(Value::as_str)
+            != Some(previous)
     {
         return Ok(());
     }
@@ -236,7 +239,8 @@ mod tests {
     struct Home(std::path::PathBuf);
     impl Home {
         fn new(tag: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("browser-step-{tag}-{}", std::process::id()));
+            let path =
+                std::env::temp_dir().join(format!("browser-step-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).unwrap();
             Self(path)
@@ -272,12 +276,25 @@ mod tests {
         let before = config(home.path(), "Asia/Tokyo");
         let after = config(home.path(), "Europe/Berlin");
         let old = browser::fingerprint(&before).unwrap();
-        assert_ne!(old, browser::fingerprint(&after).unwrap(), "the region is part of the fingerprint");
-        save_state(&after.home, &after.name, "browser", &json!({"status": "applied", "meta": {"browser_fingerprint": old}})).unwrap();
+        assert_ne!(
+            old,
+            browser::fingerprint(&after).unwrap(),
+            "the region is part of the fingerprint"
+        );
+        save_state(
+            &after.home,
+            &after.name,
+            "browser",
+            &json!({"status": "applied", "meta": {"browser_fingerprint": old}}),
+        )
+        .unwrap();
 
         record_live_change(&after, &old).unwrap();
         let state = load_state(&after.home, &after.name, "browser").unwrap();
-        assert_eq!(state["meta"]["browser_fingerprint"], json!(browser::fingerprint(&after).unwrap()));
+        assert_eq!(
+            state["meta"]["browser_fingerprint"],
+            json!(browser::fingerprint(&after).unwrap())
+        );
     }
 
     #[test]
@@ -286,7 +303,13 @@ mod tests {
         let before = config(home.path(), "Asia/Tokyo");
         let after = config(home.path(), "Europe/Berlin");
         let old = browser::fingerprint(&before).unwrap();
-        save_state(&after.home, &after.name, "browser", &json!({"status": "applied", "meta": {"browser_fingerprint": "stale"}})).unwrap();
+        save_state(
+            &after.home,
+            &after.name,
+            "browser",
+            &json!({"status": "applied", "meta": {"browser_fingerprint": "stale"}}),
+        )
+        .unwrap();
 
         record_live_change(&after, &old).unwrap();
         let state = load_state(&after.home, &after.name, "browser").unwrap();

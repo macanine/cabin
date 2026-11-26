@@ -484,7 +484,8 @@ pub fn apply_profile(old: &Config, updated: &Config, agentd_binary: &Path) -> Re
                 if result.code != 0 {
                     return message(result.output);
                 }
-                let result = crate::shell::browser_open(&updated.home, &updated.name, "about:blank")?;
+                let result =
+                    crate::shell::browser_open(&updated.home, &updated.name, "about:blank")?;
                 if result.code != 0 {
                     return message(result.output);
                 }
@@ -504,7 +505,9 @@ pub fn apply_profile(old: &Config, updated: &Config, agentd_binary: &Path) -> Re
                 )
             });
             match restored {
-                Ok(()) => message(format!("The browser settings were not applied: {error}. The previous settings are back.")),
+                Ok(()) => message(format!(
+                    "The browser settings were not applied: {error}. The previous settings are back."
+                )),
                 Err(cleanup) => message(format!(
                     "The browser settings were not applied: {error}. Putting the previous settings back also failed: {cleanup}"
                 )),

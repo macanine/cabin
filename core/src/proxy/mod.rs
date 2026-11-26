@@ -119,16 +119,24 @@ pub fn save_refresh(
 ) -> Result<ProxyCatalog> {
     let mut source = refresh_source(store, &original.id)?;
     if &source != original {
-        return Err(Error::invalid("The subscription changed while it was being downloaded"));
+        return Err(Error::invalid(
+            "The subscription changed while it was being downloaded",
+        ));
     }
     if !active.is_empty() {
         let previous = source_nodes(&source)?;
-        let find = |list: &[Node], id: &str| list.iter().position(|node| node_id(&source.id, node) == id);
-        if active.iter().any(|id| match (find(&previous, id), find(nodes, id)) {
-            (Some(old), Some(new)) => previous[old] != nodes[new],
-            _ => true,
-        }) {
-            return Err(Error::invalid("A node in the route changed or disappeared in the refreshed subscription. Take it out of the route first."));
+        let find =
+            |list: &[Node], id: &str| list.iter().position(|node| node_id(&source.id, node) == id);
+        if active
+            .iter()
+            .any(|id| match (find(&previous, id), find(nodes, id)) {
+                (Some(old), Some(new)) => previous[old] != nodes[new],
+                _ => true,
+            })
+        {
+            return Err(Error::invalid(
+                "A node in the route changed or disappeared in the refreshed subscription. Take it out of the route first.",
+            ));
         }
     }
     source.nodes_json = serde_json::to_string(nodes)?;
@@ -224,7 +232,9 @@ pub fn chain_value_on_interface(hops: &[Yaml], interface: Option<&str>) -> Resul
             .ok_or_else(|| Error::invalid("Invalid stored proxy node"))?;
         hop.remove(key("name"));
         hop.remove(key("bind_interface"));
-        if index == 0 && let Some(interface) = interface {
+        if index == 0
+            && let Some(interface) = interface
+        {
             hop.insert(key("bind_interface"), string(interface));
         }
         clean.push(Yaml::Mapping(hop));
@@ -247,11 +257,20 @@ pub fn render_chain(hops: &[Yaml], port: u16) -> Result<String> {
     render_listener(hops, port, true, None)
 }
 
-pub fn render_chain_on_interface(hops: &[Yaml], port: u16, interface: Option<&str>) -> Result<String> {
+pub fn render_chain_on_interface(
+    hops: &[Yaml],
+    port: u16,
+    interface: Option<&str>,
+) -> Result<String> {
     render_listener(hops, port, false, interface)
 }
 
-fn render_listener(hops: &[Yaml], port: u16, allow_local_direct: bool, interface: Option<&str>) -> Result<String> {
+fn render_listener(
+    hops: &[Yaml],
+    port: u16,
+    allow_local_direct: bool,
+    interface: Option<&str>,
+) -> Result<String> {
     let direct = Yaml::Mapping(map([(
         "protocol",
         Yaml::Mapping(map([("type", string("direct"))])),
@@ -265,10 +284,7 @@ fn render_listener(hops: &[Yaml], port: u16, allow_local_direct: bool, interface
         ("client_chain", direct),
     ]));
     let proxy_rule = Yaml::Mapping(map([
-        (
-            "masks",
-            Yaml::Sequence(vec![string("0.0.0.0/0")]),
-        ),
+        ("masks", Yaml::Sequence(vec![string("0.0.0.0/0")])),
         ("action", string("allow")),
         ("client_chain", chain_value_on_interface(hops, interface)?),
     ]));
@@ -312,13 +328,15 @@ pub fn validate_on_interface(config: &str, interface: Option<&str>) -> Result<()
         .enable_all()
         .build()
         .map_err(|error| Error::io("start proxy runtime", error))?;
-    runtime.block_on(async {
-        if let Some(dns) = &dns {
-            shoes::embed::validate_with_bound_dns(config, dns).await
-        } else {
-            shoes::embed::validate(config).await
-        }
-    }).map_err(|error| Error::invalid(format!("Proxy configuration rejected: {error}")))
+    runtime
+        .block_on(async {
+            if let Some(dns) = &dns {
+                shoes::embed::validate_with_bound_dns(config, dns).await
+            } else {
+                shoes::embed::validate(config).await
+            }
+        })
+        .map_err(|error| Error::invalid(format!("Proxy configuration rejected: {error}")))
 }
 
 pub fn port_free(port: u16) -> bool {
@@ -343,8 +361,14 @@ struct Running {
 
 /// Per-listener bootstrap DNS; no global interface state is shared by tests.
 pub fn bound_dns(interface: &str) -> Result<shoes::embed::BoundDns> {
-    let servers = [([223, 5, 5, 5], 53), ([119, 29, 29, 29], 53), ([1, 1, 1, 1], 53)]
-        .into_iter().map(SocketAddr::from).collect();
+    let servers = [
+        ([223, 5, 5, 5], 53),
+        ([119, 29, 29, 29], 53),
+        ([1, 1, 1, 1], 53),
+    ]
+    .into_iter()
+    .map(SocketAddr::from)
+    .collect();
     shoes::embed::BoundDns::new(interface.to_string(), servers)
         .map_err(|error| Error::Network(format!("Cannot configure interface DNS: {error}")))
 }
@@ -360,7 +384,12 @@ impl EmbeddedProxy {
         self.start_on_interface(config, port, None)
     }
 
-    pub fn start_on_interface(&self, config: String, port: u16, interface: Option<&str>) -> Result<()> {
+    pub fn start_on_interface(
+        &self,
+        config: String,
+        port: u16,
+        interface: Option<&str>,
+    ) -> Result<()> {
         let interface = interface.map(str::to_owned);
         self.stop();
         if !port_free(port) {
@@ -375,13 +404,15 @@ impl EmbeddedProxy {
             .spawn(move || {
                 let outcome = runtime().and_then(|runtime| {
                     let dns = interface.as_deref().map(bound_dns).transpose()?;
-                    runtime.block_on(async {
-                        if let Some(dns) = dns {
-                            shoes::embed::run_with_bound_dns(&config, shutdown_rx, dns).await
-                        } else {
-                            shoes::embed::run(&config, shutdown_rx).await
-                        }
-                    }).map_err(|error| Error::Network(error.to_string()))
+                    runtime
+                        .block_on(async {
+                            if let Some(dns) = dns {
+                                shoes::embed::run_with_bound_dns(&config, shutdown_rx, dns).await
+                            } else {
+                                shoes::embed::run(&config, shutdown_rx).await
+                            }
+                        })
+                        .map_err(|error| Error::Network(error.to_string()))
                 });
                 if let Err(error) = outcome {
                     let _ = done_tx.send(error.to_string());
@@ -416,9 +447,7 @@ impl EmbeddedProxy {
     }
 
     pub fn stop(&self) {
-        let running = self
-            .running.locked()
-            .take();
+        let running = self.running.locked().take();
         if let Some(mut running) = running {
             if let Some(shutdown) = running.shutdown.take() {
                 let _ = shutdown.send(());
@@ -431,7 +460,8 @@ impl EmbeddedProxy {
 
     /// Whether the listener is up (its thread has not ended).
     pub fn running(&self) -> bool {
-        self.running.locked()
+        self.running
+            .locked()
             .as_ref()
             .and_then(|running| running.thread.as_ref())
             .is_some_and(|thread| !thread.is_finished())
@@ -501,7 +531,11 @@ pub fn probe_chain(nodes: &[Node], target: &str) -> Result<ProbeResult> {
     probe_chain_on_interface(nodes, target, None)
 }
 
-pub fn probe_chain_on_interface(nodes: &[Node], target: &str, interface: Option<&str>) -> Result<ProbeResult> {
+pub fn probe_chain_on_interface(
+    nodes: &[Node],
+    target: &str,
+    interface: Option<&str>,
+) -> Result<ProbeResult> {
     let port = free_port()?;
     let hops: Vec<Yaml> = nodes.iter().map(|node| node.config.clone()).collect();
     let config = render_chain_on_interface(&hops, port, interface)?;
@@ -575,14 +609,26 @@ mod tests {
     fn interface_is_applied_only_to_the_first_hop() -> Result<()> {
         let node = socks_node();
         let mut contaminated = node.config.clone();
-        contaminated.as_mapping_mut().unwrap().insert(key("bind_interface"), string("old"));
+        contaminated
+            .as_mapping_mut()
+            .unwrap()
+            .insert(key("bind_interface"), string("old"));
         let hops = vec![contaminated.clone(), contaminated];
         let chain = chain_value_on_interface(&hops, Some("en8"))?;
         let hops = chain.as_sequence().unwrap();
-        assert_eq!(hops[0].get("bind_interface").and_then(Yaml::as_str), Some("en8"));
+        assert_eq!(
+            hops[0].get("bind_interface").and_then(Yaml::as_str),
+            Some("en8")
+        );
         assert!(hops[1].get("bind_interface").is_none());
         let system = chain_value_on_interface(&hops.to_vec(), None)?;
-        assert!(system.as_sequence().unwrap().iter().all(|hop| hop.get("bind_interface").is_none()));
+        assert!(
+            system
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .all(|hop| hop.get("bind_interface").is_none())
+        );
         Ok(())
     }
 
@@ -601,7 +647,12 @@ mod tests {
     #[test]
     fn invalid_config_is_rejected_by_shoes() {
         assert!(validate("- address: nope\n  protocol: {type: mystery}\n").is_err());
-        assert!(validate("- address: '127.0.0.1:18999'\n  protocol: {type: http}\n  dns: 'tcp://[::1]:53'\n").is_err());
+        assert!(
+            validate(
+                "- address: '127.0.0.1:18999'\n  protocol: {type: http}\n  dns: 'tcp://[::1]:53'\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -631,7 +682,9 @@ mod tests {
                 let mut prefix = [0u8; 7];
                 stream.read_exact(&mut prefix)?;
                 if prefix != [5, 1, 0, 5, 1, 0, 1] {
-                    return Err(std::io::Error::other(format!("unexpected SOCKS request: {prefix:?}")));
+                    return Err(std::io::Error::other(format!(
+                        "unexpected SOCKS request: {prefix:?}"
+                    )));
                 }
                 let mut address = [0u8; 6];
                 stream.read_exact(&mut address)?;
@@ -641,8 +694,12 @@ mod tests {
             Ok(targets)
         });
         let hops = [
-            serde_yaml::from_str::<Yaml>(&format!("address: '{upstream}'\nprotocol: {{type: socks}}" )).unwrap(),
-            serde_yaml::from_str::<Yaml>("address: 'localhost:1234'\nprotocol: {type: socks}").unwrap(),
+            serde_yaml::from_str::<Yaml>(&format!(
+                "address: '{upstream}'\nprotocol: {{type: socks}}"
+            ))
+            .unwrap(),
+            serde_yaml::from_str::<Yaml>("address: 'localhost:1234'\nprotocol: {type: socks}")
+                .unwrap(),
         ];
         let port = free_port()?;
         let proxy = EmbeddedProxy::default();
@@ -661,15 +718,22 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let upstream = listener.local_addr()?;
-        let hop: Yaml = serde_yaml::from_str(&format!("address: '{upstream}'\nprotocol: {{type: socks}}" )).unwrap();
+        let hop: Yaml =
+            serde_yaml::from_str(&format!("address: '{upstream}'\nprotocol: {{type: socks}}"))
+                .unwrap();
         let port = free_port()?;
         proxy.start(render_listener(&[hop], port, false, None)?, port)?;
         let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port))?;
         client.set_read_timeout(Some(Duration::from_secs(3)))?;
-        client.write_all(b"CONNECT [::ffff:127.0.0.1]:443 HTTP/1.1\r\nHost: [::ffff:127.0.0.1]:443\r\n\r\n")?;
+        client.write_all(
+            b"CONNECT [::ffff:127.0.0.1]:443 HTTP/1.1\r\nHost: [::ffff:127.0.0.1]:443\r\n\r\n",
+        )?;
         let size = client.read(&mut response).unwrap_or(0);
         assert!(!String::from_utf8_lossy(&response[..size]).contains("200"));
-        assert!(listener.accept().is_err(), "IPv6 request must not reach the upstream");
+        assert!(
+            listener.accept().is_err(),
+            "IPv6 request must not reach the upstream"
+        );
         proxy.stop();
         Ok(())
     }

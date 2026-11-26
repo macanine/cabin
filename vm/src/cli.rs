@@ -568,7 +568,9 @@ pub fn cmd_apply(args: &Args) -> Result<i32> {
     let mut cfg = cfg_for_new(args)?;
     cfg.adopt_stored_image();
     cfg.pin_image()?;
-    Runner::new(cfg.clone())?.with_agentd(crate::agentd::default_binary()).apply()?;
+    Runner::new(cfg.clone())?
+        .with_agentd(crate::agentd::default_binary())
+        .apply()?;
     print_credentials(&cfg)?;
     if cfg.device_enabled() {
         let report = read_json(&cfg.device_report_path()).unwrap_or(Value::Null);
@@ -585,14 +587,18 @@ pub fn cmd_apply(args: &Args) -> Result<i32> {
         }
     }
     if args.has("start") {
-        Runner::new(cfg)?.with_agentd(crate::agentd::default_binary()).start_vm()?;
+        Runner::new(cfg)?
+            .with_agentd(crate::agentd::default_binary())
+            .start_vm()?;
     }
     Ok(0)
 }
 
 pub fn cmd_status(args: &Args) -> Result<i32> {
     let cfg = cfg_for_existing(args)?;
-    let data = Runner::new(cfg.clone())?.with_agentd(crate::agentd::default_binary()).status()?;
+    let data = Runner::new(cfg.clone())?
+        .with_agentd(crate::agentd::default_binary())
+        .status()?;
     if args.has("json") {
         println!("{}", crate::py_json::dumps_pretty_with(&data, true));
     } else {
@@ -738,19 +744,25 @@ pub fn cmd_status(args: &Args) -> Result<i32> {
 
 pub fn cmd_rollback(args: &Args) -> Result<i32> {
     let cfg = cfg_for_existing(args)?;
-    Runner::new(cfg)?.with_agentd(crate::agentd::default_binary()).rollback(args.value("step"), args.has("last"), args.has("force"))?;
+    Runner::new(cfg)?
+        .with_agentd(crate::agentd::default_binary())
+        .rollback(args.value("step"), args.has("last"), args.has("force"))?;
     Ok(0)
 }
 
 pub fn cmd_start(args: &Args) -> Result<i32> {
     let cfg = cfg_for_existing(args)?;
-    Runner::new(cfg)?.with_agentd(crate::agentd::default_binary()).start_vm()?;
+    Runner::new(cfg)?
+        .with_agentd(crate::agentd::default_binary())
+        .start_vm()?;
     Ok(0)
 }
 
 pub fn cmd_stop(args: &Args) -> Result<i32> {
     let cfg = cfg_for_existing(args)?;
-    Runner::new(cfg)?.with_agentd(crate::agentd::default_binary()).stop_vm()?;
+    Runner::new(cfg)?
+        .with_agentd(crate::agentd::default_binary())
+        .stop_vm()?;
     Ok(0)
 }
 
@@ -759,7 +771,9 @@ pub fn cmd_console(args: &Args) -> Result<i32> {
     let runtime = Runtime::new(&cfg);
     if !runtime.running() {
         if args.has("start") {
-            Runner::new(cfg.clone())?.with_agentd(crate::agentd::default_binary()).start_vm()?;
+            Runner::new(cfg.clone())?
+                .with_agentd(crate::agentd::default_binary())
+                .start_vm()?;
         } else {
             return message(format!(
                 "instance {:?} is not running; use 'vmctl start --name {}' or 'vmctl console --name {} --start'",
@@ -791,7 +805,9 @@ pub fn cmd_ssh(args: &Args) -> Result<i32> {
 pub fn cmd_logs(args: &Args) -> Result<i32> {
     let files = if args.has("events") {
         let home = resolve_home(args.value("home"));
-        let path = crate::paths::StatePaths::new(home).logs().join(cabin_diagnostics::EVENT_FILE);
+        let path = crate::paths::StatePaths::new(home)
+            .logs()
+            .join(cabin_diagnostics::EVENT_FILE);
         if !args.has("list") && !args.has("follow") {
             let records = cabin_diagnostics::recent_records(&path, 128 * 1024);
             for record in &records[records.len().saturating_sub(200)..] {
@@ -917,12 +933,14 @@ pub fn cmd_reconfigure(args: &Args) -> Result<i32> {
         );
         return message("re-run with --yes to apply");
     }
-    let result = Runner::new(cfg.clone())?.with_agentd(crate::agentd::default_binary()).reconfigure(
-        args.value("user"),
-        args.value("hostname"),
-        args.value("timezone"),
-        args.value("locale"),
-    )?;
+    let result = Runner::new(cfg.clone())?
+        .with_agentd(crate::agentd::default_binary())
+        .reconfigure(
+            args.value("user"),
+            args.value("hostname"),
+            args.value("timezone"),
+            args.value("locale"),
+        )?;
     println!("{}", crate::py_json::dumps_pretty_with(&result, true));
     let cfg = cfg_for_existing(args)?;
     let (host, port) = if cfg.device_enabled() {
@@ -944,7 +962,9 @@ pub fn cmd_destroy(args: &Args) -> Result<i32> {
         return message("destroy is irreversible; re-run with --yes");
     }
     let cfg = cfg_for_existing(args)?;
-    Runner::new(cfg)?.with_agentd(crate::agentd::default_binary()).destroy(args.has("all"))?;
+    Runner::new(cfg)?
+        .with_agentd(crate::agentd::default_binary())
+        .destroy(args.has("all"))?;
     Ok(0)
 }
 
@@ -1090,7 +1110,12 @@ pub fn cmd_doctor(args: &Args) -> Result<i32> {
     println!("preflight: ok");
     println!("home: {}", cfg.home.display());
     let version = capture(
-        &[crate::arch::GuestArch::current().qemu_system_binary().to_string(), "--version".to_string()],
+        &[
+            crate::arch::GuestArch::current()
+                .qemu_system_binary()
+                .to_string(),
+            "--version".to_string(),
+        ],
         std::time::Duration::from_secs(5),
         None,
     );
@@ -1111,7 +1136,9 @@ pub fn cmd_device(args: &Args) -> Result<i32> {
     let cfg = cfg_for_existing(args)?;
     let action = args.positionals.first().map(String::as_str).unwrap_or("");
     if action == "status" {
-        let data = Runner::new(cfg.clone())?.with_agentd(crate::agentd::default_binary()).device_status()?;
+        let data = Runner::new(cfg.clone())?
+            .with_agentd(crate::agentd::default_binary())
+            .device_status()?;
         if args.has("json") {
             println!("{}", crate::py_json::dumps_pretty_with(&data, true));
         } else if !data
@@ -1159,17 +1186,23 @@ pub fn cmd_device(args: &Args) -> Result<i32> {
         return Ok(0);
     }
     if action == "verify" {
-        let report = Runner::new(cfg.clone())?.with_agentd(crate::agentd::default_binary()).verify_device(
-            args.value("group"),
-            !args.has("no-boot"),
-            args.has("keep-running"),
-        )?;
+        let report = Runner::new(cfg.clone())?
+            .with_agentd(crate::agentd::default_binary())
+            .verify_device(
+                args.value("group"),
+                !args.has("no-boot"),
+                args.has("keep-running"),
+            )?;
         if args.has("json") {
             println!("{}", crate::py_json::dumps_pretty_with(&report, true));
         } else {
             print_report(&report, args.value("group"));
         }
-        return Ok(if report["acceptable"].as_bool() == Some(true) { 0 } else { 1 });
+        return Ok(if report["acceptable"].as_bool() == Some(true) {
+            0
+        } else {
+            1
+        });
     }
     if action == "report" {
         let Some(report) = read_json(&cfg.device_report_path()) else {
@@ -1361,9 +1394,7 @@ fn run_parsed(args: &Args) -> Result<i32> {
 }
 
 pub fn print_help() {
-    println!(
-        "vmctl — atomic ARM64 QEMU VM manager for macOS (Ubuntu 24.04/26.04 LTS)"
-    );
+    println!("vmctl — atomic ARM64 QEMU VM manager for macOS (Ubuntu 24.04/26.04 LTS)");
     println!();
     println!("usage: vmctl [--home DIR] <command> [options]");
     println!();
@@ -1375,7 +1406,9 @@ pub fn print_help() {
     println!("  start / stop      control the VM (QMP + SSH)");
     println!("  console           attach to the guest serial console (--start)");
     println!("  ssh [command]     open SSH or run a guest command");
-    println!("  logs              list/tail logs (--step ID, --serial, --events, --list, --follow)");
+    println!(
+        "  logs              list/tail logs (--step ID, --serial, --events, --list, --follow)"
+    );
     println!("  credentials       print the generated guest login");
     println!("  reconfigure       rename user / change host, timezone, locale (--yes)");
     println!("  destroy           stop and remove an instance (--yes, --all)");
@@ -1397,7 +1430,8 @@ pub fn print_help() {
 pub fn main(argv: &[String]) -> i32 {
     let parsed = parse_args(argv);
     if let Ok(args) = &parsed
-        && !args.has("help") && args.command != "help"
+        && !args.has("help")
+        && args.command != "help"
     {
         let home = resolve_home(args.value("home"));
         cabin_diagnostics::init(&crate::paths::StatePaths::new(home).logs(), "vmctl");
@@ -1405,7 +1439,12 @@ pub fn main(argv: &[String]) -> i32 {
     match parsed.and_then(|args| run_parsed(&args)) {
         Ok(code) => code,
         Err(error) => {
-            cabin_diagnostics::event(cabin_diagnostics::Level::Error, "vm", "command_failed", format_args!("VM command returned an error"));
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Error,
+                "vm",
+                "command_failed",
+                format_args!("VM command returned an error"),
+            );
             eprintln!("error: {error}");
             1
         }

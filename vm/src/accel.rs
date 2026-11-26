@@ -285,16 +285,27 @@ mod tests {
     #[test]
     fn whpx_output_is_classified() {
         for (text, expected) in [
-            ("qemu-system-x86_64.exe: invalid accelerator whpx", Some(AccelProblem::WhpxFeatureOff)),
-            ("Could not load library WinHvPlatform.dll.", Some(AccelProblem::WhpxFeatureOff)),
+            (
+                "qemu-system-x86_64.exe: invalid accelerator whpx",
+                Some(AccelProblem::WhpxFeatureOff),
+            ),
+            (
+                "Could not load library WinHvPlatform.dll.",
+                Some(AccelProblem::WhpxFeatureOff),
+            ),
             (
                 "WHPX: No accelerator found, hr=00000000\nqemu: failed to initialize whpx: Operation not supported",
                 Some(AccelProblem::VirtualizationOff),
             ),
-            ("WHvCreatePartition failed with 0x80070005", Some(AccelProblem::HypervisorConflict)),
+            (
+                "WHvCreatePartition failed with 0x80070005",
+                Some(AccelProblem::HypervisorConflict),
+            ),
             (
                 "noise\nWHPX: Failed to setup partition, hr=c0350005\n",
-                Some(AccelProblem::ProbeFailed("WHPX: Failed to setup partition, hr=c0350005".into())),
+                Some(AccelProblem::ProbeFailed(
+                    "WHPX: Failed to setup partition, hr=c0350005".into(),
+                )),
             ),
             ("qemu: unrelated error", None),
         ] {
@@ -340,5 +351,4 @@ mod tests {
         assert_eq!(saved_start_fallback(&dir, &engine, 42), None);
         std::fs::remove_dir_all(dir).unwrap();
     }
-
 }

@@ -24,13 +24,21 @@ pub struct Stamp {
 
 impl From<&Entry> for Stamp {
     fn from(entry: &Entry) -> Self {
-        Self { kind: entry.kind, size: entry.size, mtime_ns: entry.mtime_ns, target: entry.target.clone() }
+        Self {
+            kind: entry.kind,
+            size: entry.size,
+            mtime_ns: entry.mtime_ns,
+            target: entry.target.clone(),
+        }
     }
 }
 
 impl Stamp {
     fn matches(&self, entry: &Entry) -> bool {
-        self.kind == entry.kind && self.size == entry.size && self.mtime_ns == entry.mtime_ns && self.target == entry.target
+        self.kind == entry.kind
+            && self.size == entry.size
+            && self.mtime_ns == entry.mtime_ns
+            && self.target == entry.target
     }
 }
 
@@ -56,7 +64,11 @@ pub enum Action {
 impl Action {
     pub fn path(&self) -> &str {
         match self {
-            Self::Push(p) | Self::Pull(p) | Self::DeleteVm(p) | Self::DeleteMac(p) | Self::Conflict(p) => p,
+            Self::Push(p)
+            | Self::Pull(p)
+            | Self::DeleteVm(p)
+            | Self::DeleteMac(p)
+            | Self::Conflict(p) => p,
         }
     }
 }
@@ -79,12 +91,9 @@ pub fn changed(base: Option<&Stamp>, now: Option<&Entry>) -> bool {
 /// Whether the Mac side differs from the base anywhere. Safe mode only has work
 /// to do for Mac changes, so it can skip the remote scan when this is false.
 pub fn mac_changed(base: &BTreeMap<String, BaseRecord>, mac: &BTreeMap<String, Entry>) -> bool {
-    base.keys().chain(mac.keys()).any(|path| {
-        changed(
-            base.get(path).map(|record| &record.mac),
-            mac.get(path),
-        )
-    })
+    base.keys()
+        .chain(mac.keys())
+        .any(|path| changed(base.get(path).map(|record| &record.mac), mac.get(path)))
 }
 
 /// The base already describes both current sides exactly. A cycle with no
@@ -96,10 +105,17 @@ pub fn base_is_current(
 ) -> bool {
     base.len() == mac.len()
         && base.len() == vm.len()
-        && base.iter().zip(mac).zip(vm).all(|(((path, record), (mac_path, mac)), (vm_path, vm))| {
-            path == mac_path && path == vm_path
-                && same(mac, vm) && record.mac.matches(mac) && record.vm.matches(vm)
-        })
+        && base
+            .iter()
+            .zip(mac)
+            .zip(vm)
+            .all(|(((path, record), (mac_path, mac)), (vm_path, vm))| {
+                path == mac_path
+                    && path == vm_path
+                    && same(mac, vm)
+                    && record.mac.matches(mac)
+                    && record.vm.matches(vm)
+            })
 }
 
 /// The two sides hold the same thing at this path.
@@ -108,7 +124,10 @@ pub fn same(a: &Entry, b: &Entry) -> bool {
         && match a.kind {
             EntryKind::Dir => true,
             EntryKind::Symlink => a.target == b.target,
-            EntryKind::File => a.size == b.size && a.mtime_ns.div_euclid(1_000_000_000) == b.mtime_ns.div_euclid(1_000_000_000),
+            EntryKind::File => {
+                a.size == b.size
+                    && a.mtime_ns.div_euclid(1_000_000_000) == b.mtime_ns.div_euclid(1_000_000_000)
+            }
         }
 }
 
@@ -117,14 +136,43 @@ fn paths<'a>(
     base: &'a BTreeMap<String, BaseRecord>,
     mac: &'a BTreeMap<String, Entry>,
     vm: &'a BTreeMap<String, Entry>,
-) -> impl Iterator<Item = (&'a String, Option<&'a BaseRecord>, Option<&'a Entry>, Option<&'a Entry>)> {
-    let (mut bases, mut macs, mut vms) = (base.iter().peekable(), mac.iter().peekable(), vm.iter().peekable());
+) -> impl Iterator<
+    Item = (
+        &'a String,
+        Option<&'a BaseRecord>,
+        Option<&'a Entry>,
+        Option<&'a Entry>,
+    ),
+> {
+    let (mut bases, mut macs, mut vms) = (
+        base.iter().peekable(),
+        mac.iter().peekable(),
+        vm.iter().peekable(),
+    );
     std::iter::from_fn(move || {
-        let path = [bases.peek().map(|(p, _)| *p), macs.peek().map(|(p, _)| *p), vms.peek().map(|(p, _)| *p)]
-            .into_iter().flatten().min()?;
-        let b = if bases.peek().is_some_and(|(p, _)| *p == path) { bases.next().map(|(_, v)| v) } else { None };
-        let m = if macs.peek().is_some_and(|(p, _)| *p == path) { macs.next().map(|(_, v)| v) } else { None };
-        let v = if vms.peek().is_some_and(|(p, _)| *p == path) { vms.next().map(|(_, v)| v) } else { None };
+        let path = [
+            bases.peek().map(|(p, _)| *p),
+            macs.peek().map(|(p, _)| *p),
+            vms.peek().map(|(p, _)| *p),
+        ]
+        .into_iter()
+        .flatten()
+        .min()?;
+        let b = if bases.peek().is_some_and(|(p, _)| *p == path) {
+            bases.next().map(|(_, v)| v)
+        } else {
+            None
+        };
+        let m = if macs.peek().is_some_and(|(p, _)| *p == path) {
+            macs.next().map(|(_, v)| v)
+        } else {
+            None
+        };
+        let v = if vms.peek().is_some_and(|(p, _)| *p == path) {
+            vms.next().map(|(_, v)| v)
+        } else {
+            None
+        };
         Some((path, b, m, v))
     })
 }
@@ -149,8 +197,20 @@ pub fn reconcile(
         }
         let mac_changed = changed(b.map(|b| &b.mac), m);
         let vm_changed = changed(b.map(|b| &b.vm), v);
-        let toward_vm = || if m.is_some() { Action::Push(path.clone()) } else { Action::DeleteVm(path.clone()) };
-        let toward_mac = || if v.is_some() { Action::Pull(path.clone()) } else { Action::DeleteMac(path.clone()) };
+        let toward_vm = || {
+            if m.is_some() {
+                Action::Push(path.clone())
+            } else {
+                Action::DeleteVm(path.clone())
+            }
+        };
+        let toward_mac = || {
+            if v.is_some() {
+                Action::Pull(path.clone())
+            } else {
+                Action::DeleteMac(path.clone())
+            }
+        };
         let action = match mode {
             SyncMode::Mirror => Some(toward_vm()),
             SyncMode::Safe => match (mac_changed, vm_changed) {
@@ -201,18 +261,31 @@ pub fn next_base(
         let mut mac_landed = false;
         let mut vm_landed = false;
         match by_path.get(path.as_str()) {
-            Some(Action::Push(_)) => { v = m; vm_landed = true; }
-            Some(Action::Pull(_)) => { m = v; mac_landed = true; }
+            Some(Action::Push(_)) => {
+                v = m;
+                vm_landed = true;
+            }
+            Some(Action::Pull(_)) => {
+                m = v;
+                mac_landed = true;
+            }
             Some(Action::DeleteVm(_)) => v = None,
             Some(Action::DeleteMac(_)) => m = None,
             Some(Action::Conflict(_)) | None => {}
         }
         match (m, v) {
             (Some(m), Some(v)) if same(m, v) => {
-                next.insert(path.clone(), BaseRecord {
-                    mac: if mac_landed { landed_stamp(m) } else { m.into() },
-                    vm: if vm_landed { landed_stamp(v) } else { v.into() },
-                });
+                next.insert(
+                    path.clone(),
+                    BaseRecord {
+                        mac: if mac_landed {
+                            landed_stamp(m)
+                        } else {
+                            m.into()
+                        },
+                        vm: if vm_landed { landed_stamp(v) } else { v.into() },
+                    },
+                );
             }
             (None, None) => {}
             _ => {
@@ -230,7 +303,14 @@ mod tests {
     use super::*;
 
     fn file(path: &str, size: u64, secs: i64) -> Entry {
-        Entry { path: path.into(), kind: EntryKind::File, size, mtime_ns: secs * 1_000_000_000 + 123, mode: 0o644, target: None }
+        Entry {
+            path: path.into(),
+            kind: EntryKind::File,
+            size,
+            mtime_ns: secs * 1_000_000_000 + 123,
+            mode: 0o644,
+            target: None,
+        }
     }
 
     fn landed(entry: &Entry) -> Entry {
@@ -240,12 +320,26 @@ mod tests {
     }
 
     fn map(entries: &[Entry]) -> BTreeMap<String, Entry> {
-        entries.iter().map(|e| (e.path.clone(), e.clone())).collect()
+        entries
+            .iter()
+            .map(|e| (e.path.clone(), e.clone()))
+            .collect()
     }
 
     /// A base where both sides held `entries` (as after a sync).
     fn synced(entries: &[Entry]) -> BTreeMap<String, BaseRecord> {
-        entries.iter().map(|e| (e.path.clone(), BaseRecord { mac: e.into(), vm: (&landed(e)).into() })).collect()
+        entries
+            .iter()
+            .map(|e| {
+                (
+                    e.path.clone(),
+                    BaseRecord {
+                        mac: e.into(),
+                        vm: (&landed(e)).into(),
+                    },
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -253,7 +347,11 @@ mod tests {
         let mac = map(&[file("a", 1, 10), file("b", 2, 10)]);
         for mode in [SyncMode::Mirror, SyncMode::Safe, SyncMode::TwoWay] {
             let plan = reconcile(mode, &BTreeMap::new(), &mac, &BTreeMap::new());
-            assert_eq!(plan, [Action::Push("a".into()), Action::Push("b".into())], "{mode:?}");
+            assert_eq!(
+                plan,
+                [Action::Push("a".into()), Action::Push("b".into())],
+                "{mode:?}"
+            );
         }
     }
 
@@ -308,7 +406,10 @@ mod tests {
         // Mac edits a; the machine edits b, deletes c and adds d.
         let mac = map(&[file("a", 2, 11), b.clone(), c.clone()]);
         let vm = map(&[landed(&a), file("b", 5, 12), file("d", 1, 12)]);
-        assert_eq!(reconcile(SyncMode::Safe, &base, &mac, &vm), [Action::Push("a".into())]);
+        assert_eq!(
+            reconcile(SyncMode::Safe, &base, &mac, &vm),
+            [Action::Push("a".into())]
+        );
         // The machine's deletion of c survives the next cycle too.
         let next = next_base(&base, &mac, &vm, &[Action::Push("a".into())]);
         assert!(reconcile(SyncMode::Safe, &next, &mac, &vm).is_empty());
@@ -321,7 +422,10 @@ mod tests {
         let mac = map(&[file("a", 2, 11)]);
         let vm = map(&[file("a", 3, 12)]);
         for mode in [SyncMode::Safe, SyncMode::TwoWay] {
-            assert_eq!(reconcile(mode, &base, &mac, &vm), [Action::Conflict("a".into())]);
+            assert_eq!(
+                reconcile(mode, &base, &mac, &vm),
+                [Action::Conflict("a".into())]
+            );
         }
         // A conflict keeps its old base, so it stays a conflict until resolved.
         let next = next_base(&base, &mac, &vm, &[Action::Conflict("a".into())]);
@@ -336,7 +440,11 @@ mod tests {
         let vm = map(&[file("a", 7, 20), file("new", 1, 20)]);
         assert_eq!(
             reconcile(SyncMode::TwoWay, &base, &mac, &vm),
-            [Action::DeleteMac("b".into()), Action::Pull("a".into()), Action::Pull("new".into())]
+            [
+                Action::DeleteMac("b".into()),
+                Action::Pull("a".into()),
+                Action::Pull("new".into())
+            ]
         );
         let applied = reconcile(SyncMode::TwoWay, &base, &mac, &vm);
         let next = next_base(&base, &mac, &vm, &applied);
@@ -347,7 +455,14 @@ mod tests {
 
     #[test]
     fn deletions_run_deepest_first() {
-        let dir = Entry { path: "d".into(), kind: EntryKind::Dir, size: 0, mtime_ns: 0, mode: 0o755, target: None };
+        let dir = Entry {
+            path: "d".into(),
+            kind: EntryKind::Dir,
+            size: 0,
+            mtime_ns: 0,
+            mode: 0o755,
+            target: None,
+        };
         let inner = file("d/x", 1, 10);
         let base = synced(&[dir.clone(), inner.clone()]);
         let vm = map(&[dir, landed(&inner)]);
@@ -365,13 +480,16 @@ mod tests {
         let found: Vec<_> = paths(&base, &mac, &vm)
             .map(|(path, b, m, v)| (path.as_str(), b.is_some(), m.is_some(), v.is_some()))
             .collect();
-        assert_eq!(found, [
-            ("a", true, false, false),
-            ("b", false, true, false),
-            ("c", true, true, true),
-            ("d", false, false, true),
-            ("e", true, true, true),
-        ]);
+        assert_eq!(
+            found,
+            [
+                ("a", true, false, false),
+                ("b", false, true, false),
+                ("c", true, true, true),
+                ("d", false, false, true),
+                ("e", true, true, true),
+            ]
+        );
     }
 
     #[test]
@@ -382,17 +500,43 @@ mod tests {
         link.target = Some("some/target".into());
         let mut before_epoch = file("push", 3, -1);
         before_epoch.mtime_ns = -1;
-        let mac = map(&[before_epoch.clone(), file("conflict", 2, 2), file("delete", 1, 1)]);
-        let vm = map(&[link.clone(), file("conflict", 3, 3), file("delete", 1, 1), file("missing", 1, 1)]);
+        let mac = map(&[
+            before_epoch.clone(),
+            file("conflict", 2, 2),
+            file("delete", 1, 1),
+        ]);
+        let vm = map(&[
+            link.clone(),
+            file("conflict", 3, 3),
+            file("delete", 1, 1),
+            file("missing", 1, 1),
+        ]);
         let base = synced(&[original, file("delete", 1, 1), file("missing", 1, 1)]);
         // Actions need not be sorted; when paths repeat, the last action wins.
-        let actions = [Action::Push("link".into()), Action::DeleteMac("delete".into()),
-            Action::Push("push".into()), Action::Conflict("conflict".into()),
-            Action::Pull("link".into()), Action::Push("missing".into())];
+        let actions = [
+            Action::Push("link".into()),
+            Action::DeleteMac("delete".into()),
+            Action::Push("push".into()),
+            Action::Conflict("conflict".into()),
+            Action::Pull("link".into()),
+            Action::Push("missing".into()),
+        ];
         let next = next_base(&base, &mac, &vm, &actions);
-        assert_eq!(next["push"], BaseRecord { mac: (&before_epoch).into(), vm: landed_stamp(&before_epoch) });
+        assert_eq!(
+            next["push"],
+            BaseRecord {
+                mac: (&before_epoch).into(),
+                vm: landed_stamp(&before_epoch)
+            }
+        );
         assert_eq!(next["push"].vm.mtime_ns, -1_000_000_000);
-        assert_eq!(next["link"], BaseRecord { mac: landed_stamp(&link), vm: (&link).into() });
+        assert_eq!(
+            next["link"],
+            BaseRecord {
+                mac: landed_stamp(&link),
+                vm: (&link).into()
+            }
+        );
         assert_eq!(next["conflict"], base["conflict"]);
         assert_eq!(next["delete"], base["delete"]);
         assert!(!next.contains_key("missing"));
@@ -408,7 +552,12 @@ mod tests {
         let mut moved = link.clone();
         moved.target = Some("b".into());
         assert_eq!(
-            reconcile(SyncMode::TwoWay, &base, &map(&[moved]), &map(&[landed(&link)])),
+            reconcile(
+                SyncMode::TwoWay,
+                &base,
+                &map(&[moved]),
+                &map(&[landed(&link)])
+            ),
             [Action::Push("l".into())]
         );
     }

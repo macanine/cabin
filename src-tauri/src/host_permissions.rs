@@ -291,16 +291,29 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let watched = watch::watch(dir.path(), &SyncRules::default()).unwrap();
-        assert_eq!(check_folder(dir.path(), true).state, FolderAccessState::Available);
-        assert_eq!(watched.batches.recv_timeout(Duration::from_millis(750)), Err(std::sync::mpsc::RecvTimeoutError::Timeout));
+        assert_eq!(
+            check_folder(dir.path(), true).state,
+            FolderAccessState::Available
+        );
+        assert_eq!(
+            watched.batches.recv_timeout(Duration::from_millis(750)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
         std::fs::write(dir.path().join("real-change.tmp"), b"user edit").unwrap();
-        assert_eq!(watched.batches.recv_timeout(Duration::from_secs(5)).unwrap(), [""]);
+        assert_eq!(
+            watched
+                .batches
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap(),
+            [""]
+        );
     }
 
     #[test]
     fn privacy_and_filesystem_denials_have_distinct_guidance() {
         let privacy = FolderAccess::failed(io::Error::from_raw_os_error(1 /* EPERM */), false);
-        let filesystem = FolderAccess::failed(io::Error::from(io::ErrorKind::PermissionDenied), false);
+        let filesystem =
+            FolderAccess::failed(io::Error::from(io::ErrorKind::PermissionDenied), false);
         assert_eq!(privacy.privacy_settings, cfg!(target_os = "macos"));
         assert!(!filesystem.privacy_settings);
         assert_eq!(filesystem.state, FolderAccessState::ReadDenied);

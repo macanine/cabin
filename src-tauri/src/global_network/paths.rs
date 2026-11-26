@@ -13,17 +13,31 @@ impl GlobalNetwork {
 
     pub(super) fn refresh_interface_paths(&self, runtime: &mut Runtime) -> bool {
         runtime.gateway.is_some()
-            && self.observe_interface_paths(runtime, network_interfaces::paths().unwrap_or_default())
+            && self
+                .observe_interface_paths(runtime, network_interfaces::paths().unwrap_or_default())
     }
 
-    fn observe_interface_paths(&self, runtime: &mut Runtime, paths: BTreeMap<String, InterfacePath>) -> bool {
+    fn observe_interface_paths(
+        &self,
+        runtime: &mut Runtime,
+        paths: BTreeMap<String, InterfacePath>,
+    ) -> bool {
         let previous = std::mem::replace(&mut runtime.interface_paths, paths);
         if previous == runtime.interface_paths {
             return false;
         }
         let changed = |name: &str| previous.get(name) != runtime.interface_paths.get(name);
-        let active_changed = runtime.active_route.as_ref().and_then(|route| route.bind_interface.as_deref()).is_some_and(changed);
-        let saved_changed = self.route().ok().and_then(|route| route.bind_interface).as_deref().is_some_and(changed);
+        let active_changed = runtime
+            .active_route
+            .as_ref()
+            .and_then(|route| route.bind_interface.as_deref())
+            .is_some_and(changed);
+        let saved_changed = self
+            .route()
+            .ok()
+            .and_then(|route| route.bind_interface)
+            .as_deref()
+            .is_some_and(changed);
         if !active_changed && !saved_changed {
             return false;
         }
@@ -56,11 +70,19 @@ impl GlobalNetwork {
     /// when its own adapter's index or addresses changed in `paths`.
     fn path_changed_with(&self, paths: BTreeMap<String, InterfacePath>) -> bool {
         let mut runtime = self.runtime();
-        if runtime.active_route.as_ref().is_some_and(|route| route.bind_interface.is_some()) {
+        if runtime
+            .active_route
+            .as_ref()
+            .is_some_and(|route| route.bind_interface.is_some())
+        {
             return runtime.gateway.is_some() && self.observe_interface_paths(&mut runtime, paths);
         }
         runtime.path_revision += 1;
-        self.start_hold(&mut runtime, HoldCheck::Reachability, "The Mac network path changed".into())
+        self.start_hold(
+            &mut runtime,
+            HoldCheck::Reachability,
+            "The Mac network path changed".into(),
+        )
     }
 }
 
@@ -70,9 +92,9 @@ mod tests {
     use crate::global_network::test_support::*;
     use std::net::Ipv4Addr;
 
+    use crate::network_gate::route_revision;
     use agent_core::model::{NetworkConnectivity, NetworkGateMode, NetworkRoute};
     use agent_core::util::now_millis;
-    use crate::network_gate::route_revision;
 
     #[test]
     fn off_default_interface_changes_discard_the_stale_upstream_and_schedule_recovery() {
@@ -83,8 +105,14 @@ mod tests {
         let ssh = network.ssh_port().unwrap();
         // Model a selected adapter without changing the host network configuration.
         let name = "en-test";
-        let path = || InterfacePath { index: 123, ipv4: vec![(Ipv4Addr::new(192, 0, 2, 2), None)] };
-        let bound = NetworkRoute { bind_interface: Some(name.into()), ..system };
+        let path = || InterfacePath {
+            index: 123,
+            ipv4: vec![(Ipv4Addr::new(192, 0, 2, 2), None)],
+        };
+        let bound = NetworkRoute {
+            bind_interface: Some(name.into()),
+            ..system
+        };
         network.save(&bound).unwrap();
         network.runtime().active_route = Some(bound.clone());
         open_gate(&network, &bound);
@@ -103,7 +131,10 @@ mod tests {
         {
             let mut runtime = network.runtime();
             runtime.connectivity.mode = NetworkConnectivity::Blocked;
-            assert!(network.observe_interface_paths(&mut runtime, BTreeMap::from([(name.into(), path())])));
+            assert!(
+                network
+                    .observe_interface_paths(&mut runtime, BTreeMap::from([(name.into(), path())]))
+            );
             assert_eq!(runtime.connectivity.mode, NetworkConnectivity::Normal);
             assert!(runtime.grant.due(now_millis()));
             assert!(runtime.active_route.is_none());
@@ -117,7 +148,10 @@ mod tests {
         let dir = temp("br");
         let network = GlobalNetwork::open(&dir).unwrap();
         network.start(&dir.join("gateway.sock"), 0).unwrap();
-        let bound = NetworkRoute { bind_interface: Some("en-test".into()), ..NetworkRoute::default() };
+        let bound = NetworkRoute {
+            bind_interface: Some("en-test".into()),
+            ..NetworkRoute::default()
+        };
         network.save(&bound).unwrap();
         network.runtime().active_route = Some(bound.clone());
         open_gate(&network, &bound);
@@ -132,7 +166,11 @@ mod tests {
         // hard_block_revision; path_revision must still invalidate the grant.
         network.path_changed();
         assert_eq!(network.runtime().hard_block_revision, hard_block_revision);
-        assert!(!network.finish_check(&attempt, passing_report(&revision), None, &[], None, None).unwrap());
+        assert!(
+            !network
+                .finish_check(&attempt, passing_report(&revision), None, &[], None, None)
+                .unwrap()
+        );
         // Model switching the upstream back without depending on a real en0.
         network.runtime().active_route = Some(bound);
         network.restore_gate(rollback);
@@ -150,7 +188,11 @@ mod tests {
         let attempt = network.begin_check(revision.clone(), true).unwrap();
         // The bound adapter appears with a new address.
         assert!(network.path_changed_with(test_path(7)));
-        assert!(!network.finish_check(&attempt, passing_report(&revision), None, &[], None, None).unwrap());
+        assert!(
+            !network
+                .finish_check(&attempt, passing_report(&revision), None, &[], None, None)
+                .unwrap()
+        );
         network.restore_gate(rollback);
         assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Closed);
         network.stop();

@@ -35,6 +35,9 @@ export function PlanReviewDock({
   const [held, setHeld] = useState<PlanReview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const root = useRef<HTMLDivElement>(null);
+  // The plan's identity, not the object: a re-render with the same content
+  // must not reset the editor.
+  const key = planKey(plan);
 
   useEffect(() => {
     setBusy(false);
@@ -43,7 +46,7 @@ export function PlanReviewDock({
     setHeld(null);
     setError(null);
     root.current?.focus();
-  }, [sessionId, planKey(plan)]);
+  }, [sessionId, key]);
 
   useEffect(() => {
     if (conflict) {

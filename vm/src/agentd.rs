@@ -84,7 +84,10 @@ pub fn ensure_helper(runtime: &Runtime, binary: &Path) -> Result<()> {
         &["/usr", "/usr/local", "/usr/local/libexec"],
     );
     let mut argv = runtime.ssh_argv(false)?;
-    argv.push(format!("sudo -n sh -c {}", crate::util::shell_quote(&script)));
+    argv.push(format!(
+        "sudo -n sh -c {}",
+        crate::util::shell_quote(&script)
+    ));
     let output = capture_file(&argv, Duration::from_secs(120), File::open(binary)?);
     if output.code == 124 {
         return message("Timed out deploying the guest native helper over SSH");
@@ -105,7 +108,10 @@ pub(crate) fn grow_root(runtime: &Runtime, bytes: u64) -> Result<()> {
         Duration::from_secs(240),
     );
     if code != 0 {
-        return message(format!("Could not verify guest disk expansion (exit {code}): {}", output.trim()));
+        return message(format!(
+            "Could not verify guest disk expansion (exit {code}): {}",
+            output.trim()
+        ));
     }
     Ok(())
 }
@@ -162,7 +168,8 @@ pub fn deploy(runtime: &Runtime, binary: &Path) -> Result<()> {
 /// request or project payload is sent through it.
 #[cfg(unix)]
 pub fn prepare_native(runtime: &Runtime, restart: bool) -> Result<()> {
-    let script = format!(r#"
+    let script = format!(
+        r#"
 set -eu
 uid=$(id -u); gid=$(id -g)
 for lane in exec sync watch; do
@@ -180,9 +187,20 @@ for lane in exec sync watch; do
       "$HOME/{REMOTE_BIN}" native-channel "$lane" "$device"
   fi
 done
-"#);
-    let (code, output) = runtime.ssh_capture(&format!("sh -c {}", crate::util::shell_quote(&script)), Duration::from_secs(20));
-    if code == 0 { Ok(()) } else { message(format!("Could not prepare cabind native channels: {}", output.trim())) }
+"#
+    );
+    let (code, output) = runtime.ssh_capture(
+        &format!("sh -c {}", crate::util::shell_quote(&script)),
+        Duration::from_secs(20),
+    );
+    if code == 0 {
+        Ok(())
+    } else {
+        message(format!(
+            "Could not prepare cabind native channels: {}",
+            output.trim()
+        ))
+    }
 }
 
 /// Run one guest display operation with a JSON request on stdin.

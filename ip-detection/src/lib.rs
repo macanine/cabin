@@ -278,10 +278,7 @@ impl DetectorBuilder {
             .redirects(0)
             .timeout(self.timeout)
             .timeout_connect(self.timeout.max(Duration::from_secs(8)))
-            .user_agent(concat!(
-                "cabin-ip-detection/",
-                env!("CARGO_PKG_VERSION")
-            ));
+            .user_agent(concat!("cabin-ip-detection/", env!("CARGO_PKG_VERSION")));
         if self.ipv4_only {
             agent = agent.resolver(|netloc: &str| {
                 use std::net::ToSocketAddrs;

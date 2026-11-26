@@ -86,7 +86,9 @@ fn install_service(paths: &AppPaths) -> Result<(), String> {
 
 #[cfg(unix)]
 fn guest_desktop(args: &[String]) -> ExitCode {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
     let result: Result<(), String> = match args.first().map(String::as_str) {
         Some("apps") => serde_json::to_writer(
             std::io::stdout().lock(),
@@ -96,7 +98,9 @@ fn guest_desktop(args: &[String]) -> ExitCode {
         Some("launch") => args
             .get(1)
             .ok_or_else(|| "guest-desktop launch needs an app id".into())
-            .and_then(|id| agent_core::guest_desktop::launch_app(&home, id).map_err(|e| e.to_string())),
+            .and_then(|id| {
+                agent_core::guest_desktop::launch_app(&home, id).map_err(|e| e.to_string())
+            }),
         Some("screen") | Some("output-name") | Some("focused") => (|| {
             let mut input = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut input)
@@ -108,13 +112,21 @@ fn guest_desktop(args: &[String]) -> ExitCode {
                     Err(error) => Err(error.to_string()),
                 },
                 "screen" => {
-                    println!("{}", agent_core::guest_desktop::selected_output(&input)
-                        .map_err(|e| e.to_string())?.screen());
+                    println!(
+                        "{}",
+                        agent_core::guest_desktop::selected_output(&input)
+                            .map_err(|e| e.to_string())?
+                            .screen()
+                    );
                     Ok(0)
                 }
                 _ => {
-                    println!("{}", agent_core::guest_desktop::selected_output(&input)
-                        .map_err(|e| e.to_string())?.name);
+                    println!(
+                        "{}",
+                        agent_core::guest_desktop::selected_output(&input)
+                            .map_err(|e| e.to_string())?
+                            .name
+                    );
                     Ok(0)
                 }
             }
@@ -192,16 +204,31 @@ fn main() -> ExitCode {
             let app = match App::open(paths.clone()) {
                 Ok(app) => Arc::new(app),
                 Err(error) => {
-                    cabin_diagnostics::event(cabin_diagnostics::Level::Error, "daemon", "state_open_failed", format_args!("{error}"));
+                    cabin_diagnostics::event(
+                        cabin_diagnostics::Level::Error,
+                        "daemon",
+                        "state_open_failed",
+                        format_args!("{error}"),
+                    );
                     return ExitCode::FAILURE;
                 }
             };
             app.start_services();
-            cabin_diagnostics::event(cabin_diagnostics::Level::Info, "daemon", "services_started", format_args!("{}", agent_core::rpc::VERSION));
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Info,
+                "daemon",
+                "services_started",
+                format_args!("{}", agent_core::rpc::VERSION),
+            );
             match agent_core::rpc::serve(app, &socket(&paths)) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
-                    cabin_diagnostics::event(cabin_diagnostics::Level::Error, "daemon", "serve_failed", format_args!("{error}"));
+                    cabin_diagnostics::event(
+                        cabin_diagnostics::Level::Error,
+                        "daemon",
+                        "serve_failed",
+                        format_args!("{error}"),
+                    );
                     ExitCode::FAILURE
                 }
             }
@@ -226,8 +253,12 @@ fn main() -> ExitCode {
         }
         Some("native-channel") => {
             let result = match args.as_slice() {
-                [_, lane, device] => agent_core::native_serve::serve(lane, std::path::Path::new(device), &paths),
-                _ => Err(std::io::Error::other("usage: cabind native-channel <exec|sync|watch> <device>")),
+                [_, lane, device] => {
+                    agent_core::native_serve::serve(lane, std::path::Path::new(device), &paths)
+                }
+                _ => Err(std::io::Error::other(
+                    "usage: cabind native-channel <exec|sync|watch> <device>",
+                )),
             };
             match result {
                 Ok(()) => ExitCode::SUCCESS,

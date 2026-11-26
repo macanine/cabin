@@ -130,15 +130,12 @@ impl Drop for Rpc {
 #[test]
 #[ignore = "boots a disposable VM using an explicit cloud image and test-only CLI stubs"]
 fn account_import_export_and_limits_over_guest_ssh() {
-    let image = PathBuf::from(
-        std::env::var_os("CABIN_TEST_IMAGE").expect("set CABIN_TEST_IMAGE"),
-    );
+    let image = PathBuf::from(std::env::var_os("CABIN_TEST_IMAGE").expect("set CABIN_TEST_IMAGE"));
     let engine_home = PathBuf::from(
         std::env::var_os("CABIN_TEST_ENGINE_HOME").expect("set CABIN_TEST_ENGINE_HOME"),
     );
-    let agentd = PathBuf::from(
-        std::env::var_os("CABIN_TEST_AGENTD").expect("set CABIN_TEST_AGENTD"),
-    );
+    let agentd =
+        PathBuf::from(std::env::var_os("CABIN_TEST_AGENTD").expect("set CABIN_TEST_AGENTD"));
     assert!(image.is_file() && agentd.is_file());
     let dir = PathBuf::from(format!("/tmp/va-accounts-{}", std::process::id()));
     assert!(!dir.exists(), "refusing to reuse a test directory");
@@ -187,7 +184,12 @@ fn account_import_export_and_limits_over_guest_ssh() {
             .unwrap(),
     )
     .unwrap();
-    vm_core::platform::build_seed_iso(&seed, &cfg.seed_path(), &["user-data", "meta-data", "network-config"]).unwrap();
+    vm_core::platform::build_seed_iso(
+        &seed,
+        &cfg.seed_path(),
+        &["user-data", "meta-data", "network-config"],
+    )
+    .unwrap();
     let engine_path = vm_core::qemu_engine::root(&home);
     std::fs::create_dir_all(engine_path.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(vm_core::qemu_engine::root(&engine_home), engine_path).unwrap();
@@ -237,7 +239,9 @@ fn account_import_export_and_limits_over_guest_ssh() {
     let account = &login["account"];
     assert_eq!(account["email"], "claude@example.test");
     assert_eq!(account["verified"], true);
-    let account_id = account["id"].as_str().expect("identified Claude subscription seat");
+    let account_id = account["id"]
+        .as_str()
+        .expect("identified Claude subscription seat");
     let usage = rpc.call("claude_usage", json!({ "accountId": account_id }));
     assert_eq!(usage["windows"][0]["usedPercent"], 37.5);
     assert_eq!(usage["windows"][0]["resetsAt"], 1_900_000_000_000i64);

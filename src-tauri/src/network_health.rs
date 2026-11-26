@@ -112,7 +112,11 @@ fn trace_exit(agent: &ureq::Agent, url: &str) -> Option<(Ipv4Addr, Option<String
         return None;
     }
     let mut body = Vec::new();
-    response.into_reader().take(8192).read_to_end(&mut body).ok()?;
+    response
+        .into_reader()
+        .take(8192)
+        .read_to_end(&mut body)
+        .ok()?;
     let trace = cabin_ip_detection::parse_cloudflare_trace(&body).ok()?;
     if let std::net::IpAddr::V4(ip) = trace.ip
         && cabin_ip_detection::public_ip(trace.ip)
@@ -161,7 +165,9 @@ mod macos {
     use dispatch2::{DispatchQueue, DispatchRetained};
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, ProtocolObject};
-    use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification};
+    use objc2_app_kit::{
+        NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
+    };
     use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol};
 
     struct PowerWatch {
@@ -287,7 +293,10 @@ mod tests {
         let next = traffic_sample(1, 1500, 1500, 900, Some(&initial));
         assert_eq!((next.rx_bps, next.tx_bps), (Some(600), Some(400)));
         assert_eq!(traffic_sample(2, 2000, 100, 50, Some(&next)).rx_bps, None);
-        assert_eq!(traffic_sample(1, 5000, 2000, 1000, Some(&next)).rx_bps, None);
+        assert_eq!(
+            traffic_sample(1, 5000, 2000, 1000, Some(&next)).rx_bps,
+            None
+        );
         assert_eq!(traffic_sample(1, 2000, 1000, 999, Some(&next)).tx_bps, None);
     }
 }

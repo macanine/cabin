@@ -9,13 +9,23 @@ pub fn region_follow_zone(
     report: &NetworkCheckReport,
     exits: &[Result<GeoInfo, String>],
 ) -> Option<String> {
-    let status = |id: &str| report.checks.iter().find(|check| check.id == id).map(|check| check.status);
-    if status("exit") != Some(NetworkCheckStatus::Pass) || status("timezone") != Some(NetworkCheckStatus::Fail) {
+    let status = |id: &str| {
+        report
+            .checks
+            .iter()
+            .find(|check| check.id == id)
+            .map(|check| check.status)
+    };
+    if status("exit") != Some(NetworkCheckStatus::Pass)
+        || status("timezone") != Some(NetworkCheckStatus::Fail)
+    {
         return None;
     }
     let follows_machine = ["timezone", "browser", "browserLive"];
     if report.checks.iter().any(|check| {
-        check.required && check.status != NetworkCheckStatus::Pass && !follows_machine.contains(&check.id.as_str())
+        check.required
+            && check.status != NetworkCheckStatus::Pass
+            && !follows_machine.contains(&check.id.as_str())
     }) {
         return None;
     }
@@ -29,8 +39,8 @@ pub fn region_follow_zone(
 pub(super) fn normalized_zone(value: &str) -> &str {
     match value {
         "Etc/GMT" | "Etc/UTC" | "Etc/GMT+0" | "Etc/GMT-0" | "Etc/GMT0" | "Etc/UCT"
-        | "Etc/Universal" | "Etc/Zulu" | "GMT" | "GMT0" | "Greenwich" | "UCT"
-        | "Universal" | "Zulu" => "UTC",
+        | "Etc/Universal" | "Etc/Zulu" | "GMT" | "GMT0" | "Greenwich" | "UCT" | "Universal"
+        | "Zulu" => "UTC",
         other => other,
     }
 }
@@ -53,14 +63,23 @@ mod tests {
         );
         // Already matching: nothing to follow.
         let matching = probe("203.0.113.8", "America/New_York");
-        assert_eq!(region_follow_zone(&exit_report(&matching, &samples), &samples), None);
+        assert_eq!(
+            region_follow_zone(&exit_report(&matching, &samples), &samples),
+            None
+        );
         // The exit itself is unverified (machine sees another address): never follow it.
         let other_exit = probe("198.51.100.9", "Etc/UTC");
-        assert_eq!(region_follow_zone(&exit_report(&other_exit, &samples), &samples), None);
+        assert_eq!(
+            region_follow_zone(&exit_report(&other_exit, &samples), &samples),
+            None
+        );
         // Another required failure (DNS) must be fixed first.
         let mut no_dns = probe("203.0.113.8", "Etc/UTC");
         no_dns.dns_ok = false;
-        assert_eq!(region_follow_zone(&exit_report(&no_dns, &samples), &samples), None);
+        assert_eq!(
+            region_follow_zone(&exit_report(&no_dns, &samples), &samples),
+            None
+        );
     }
 
     #[test]

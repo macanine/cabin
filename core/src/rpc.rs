@@ -18,9 +18,13 @@
 
 use crate::util::LockExt;
 use std::io::{BufRead, BufReader, Write};
+use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -801,20 +805,121 @@ pub fn handle_line(app: &App, line: &str) -> Option<Value> {
     })
 }
 
-type Writer = Arc<Mutex<UnixStream>>;
+/// Bound on queued output lines per client, concurrent requests, and clients.
+/// The daemon serves one desktop plus agent CLIs; a peer past these bounds has
+/// stopped reading or is flooding, and is dropped instead of growing forever.
+const EVENT_QUEUE: usize = 256;
+const MAX_INFLIGHT: usize = 64;
+const MAX_CLIENTS: usize = 16;
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn send(writer: &Writer, value: &Value) -> bool {
+fn line_of(value: Value) -> String {
     let mut line = value.to_string();
     line.push('\n');
-    let mut stream = writer.locked();
-    stream
-        .write_all(line.as_bytes())
-        .and_then(|()| stream.flush())
-        .is_ok()
+    line
+}
+
+/// One connected client. Output goes through a bounded queue drained by its
+/// own writer thread, so a stalled pipe never blocks the event sink or another
+/// request.
+#[derive(Clone)]
+struct Out {
+    id: u64,
+    queue: mpsc::SyncSender<String>,
+    socket: Arc<UnixStream>,
+}
+
+impl Out {
+    /// Queue one line. A full queue means the peer stopped reading, so the
+    /// caller treats the client as dead.
+    fn send(&self, line: String) -> bool {
+        self.queue.try_send(line).is_ok()
+    }
+}
+
+/// The connected clients.
+#[derive(Default, Clone)]
+struct Clients(Arc<Mutex<Vec<Out>>>);
+
+impl Clients {
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.locked().len()
+    }
+
+    fn add(&self, out: Out) -> bool {
+        let mut clients = self.0.locked();
+        if clients.len() >= MAX_CLIENTS {
+            return false;
+        }
+        clients.push(out);
+        true
+    }
+
+    fn remove(&self, id: u64) {
+        self.0.locked().retain(|out| out.id != id);
+    }
+
+    /// Queue one line for every client. The lock is held only to snapshot and
+    /// prune the list, never while writing.
+    fn broadcast(&self, line: &str) {
+        let snapshot = self.0.locked().clone();
+        let dead: Vec<u64> = snapshot
+            .iter()
+            .filter(|out| !out.send(line.to_owned()))
+            .map(|out| out.id)
+            .collect();
+        if dead.is_empty() {
+            return;
+        }
+        self.0.locked().retain(|out| !dead.contains(&out.id));
+        for out in &snapshot {
+            if dead.contains(&out.id) {
+                let _ = out.socket.shutdown(Shutdown::Both);
+            }
+        }
+    }
+}
+
+/// Caps how many requests run at once, so a client that pipelines thousands of
+/// calls cannot spawn thousands of threads.
+struct Gate {
+    live: Mutex<usize>,
+}
+
+struct GateGuard<'a>(&'a Gate);
+
+impl Gate {
+    fn new() -> Self {
+        Self { live: Mutex::new(0) }
+    }
+
+    fn enter(&self) -> Option<GateGuard<'_>> {
+        let mut live = self.live.locked();
+        if *live >= MAX_INFLIGHT {
+            return None;
+        }
+        *live += 1;
+        Some(GateGuard(self))
+    }
+}
+
+impl Drop for GateGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.live.locked() -= 1;
+    }
+}
+
+fn request_id(line: &str) -> Value {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|value| value.get("id").cloned())
+        .unwrap_or(Value::Null)
 }
 
 /// Serve the app on a Unix socket until the process exits. Every client gets
-/// the hello line, its responses, and every `AppEvent`.
+/// the hello line, its responses, and every `AppEvent`. Output per client is
+/// queued and bounded; concurrent requests are capped.
 pub fn serve(app: Arc<App>, socket: &Path) -> Result<()> {
     if let Some(parent) = socket.parent() {
         crate::fsx::ensure_dir(parent)?;
@@ -828,35 +933,60 @@ pub fn serve(app: Arc<App>, socket: &Path) -> Result<()> {
         UnixListener::bind(socket).map_err(|error| Error::path("listen on", socket, error))?;
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
+        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| Error::path("secure", socket, error))?;
     }
 
     let build = build_id();
-    let clients: Arc<Mutex<Vec<Writer>>> = Arc::default();
+    let clients = Clients::default();
     {
         let clients = clients.clone();
         app.set_event_sink(move |event: AppEvent| {
-            let value = json!({ "event": event });
-            clients.locked()
-                .retain(|writer| send(writer, &value));
+            clients.broadcast(&line_of(json!({ "event": event })));
         });
     }
+    let gate = Arc::new(Gate::new());
+    let next_id = AtomicU64::new(1);
 
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        let Ok(write_half) = stream.try_clone() else {
+        let Ok(mut write_half) = stream.try_clone() else {
             continue;
         };
-        let writer: Writer = Arc::new(Mutex::new(write_half));
-        if !send(
-            &writer,
-            &json!({ "hello": { "version": VERSION, "protocol": PROTOCOL, "build": build } }),
-        ) {
+        let Ok(control) = stream.try_clone() else {
+            continue;
+        };
+        let (queue, lines) = mpsc::sync_channel::<String>(EVENT_QUEUE);
+        let out = Out {
+            id: next_id.fetch_add(1, Ordering::Relaxed),
+            queue,
+            socket: Arc::new(control),
+        };
+        if !out.send(line_of(json!({
+            "hello": { "version": VERSION, "protocol": PROTOCOL, "build": build }
+        }))) {
             continue;
         }
-        clients.locked()
-            .push(writer.clone());
+        let _ = write_half.set_write_timeout(Some(WRITE_TIMEOUT));
+        std::thread::spawn(move || {
+            for line in lines {
+                if write_half
+                    .write_all(line.as_bytes())
+                    .and_then(|()| write_half.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            let _ = write_half.shutdown(Shutdown::Both);
+        });
+        if !clients.add(out.clone()) {
+            continue;
+        }
+        let id = out.id;
         let app = app.clone();
+        let gate = gate.clone();
+        let clients = clients.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stream).lines() {
                 let Ok(line) = line else { break };
@@ -864,15 +994,27 @@ pub fn serve(app: Arc<App>, socket: &Path) -> Result<()> {
                     continue;
                 }
                 // Requests run concurrently: a long install must not block
-                // terminal input.
+                // terminal input. The gate keeps that concurrency bounded.
                 let app = app.clone();
-                let writer = writer.clone();
+                let out = out.clone();
+                let gate = gate.clone();
                 std::thread::spawn(move || {
+                    let Some(_permit) = gate.enter() else {
+                        out.send(line_of(json!({
+                            "id": request_id(&line),
+                            "error": {
+                                "code": "unavailable",
+                                "message": "too many requests are already running"
+                            }
+                        })));
+                        return;
+                    };
                     if let Some(response) = handle_line(&app, &line) {
-                        send(&writer, &response);
+                        out.send(line_of(response));
                     }
                 });
             }
+            clients.remove(id);
         });
     }
     Ok(())
@@ -1074,6 +1216,50 @@ mod tests {
         ));
         let legacy = json!({ "hello": { "version": VERSION, "protocol": PROTOCOL } });
         assert!(matches!(check_hello(&legacy, &build), Handshake::Outdated(_)));
+    }
+
+    #[test]
+    fn a_stalled_client_is_dropped_without_affecting_others() {
+        use std::os::unix::net::UnixStream;
+
+        let clients = Clients::default();
+        let (stalled_tx, stalled_rx) = mpsc::sync_channel(1);
+        let (healthy_tx, healthy_rx) = mpsc::sync_channel(4);
+        let (stalled_socket, _stalled_peer) = UnixStream::pair().unwrap();
+        let (healthy_socket, _healthy_peer) = UnixStream::pair().unwrap();
+        assert!(clients.add(Out {
+            id: 1,
+            queue: stalled_tx,
+            socket: Arc::new(stalled_socket),
+        }));
+        assert!(clients.add(Out {
+            id: 2,
+            queue: healthy_tx,
+            socket: Arc::new(healthy_socket),
+        }));
+
+        clients.broadcast("one\n");
+        assert_eq!(healthy_rx.try_recv().unwrap(), "one\n");
+
+        // The stalled client never drains its one-slot queue, so the next
+        // broadcast fills it and drops the client; the healthy one still gets
+        // the line, and the stalled client keeps what it was owed.
+        clients.broadcast("two\n");
+        assert_eq!(clients.len(), 1);
+        assert_eq!(healthy_rx.try_recv().unwrap(), "two\n");
+        assert_eq!(stalled_rx.try_recv().unwrap(), "one\n");
+    }
+
+    #[test]
+    fn the_gate_caps_concurrent_requests() {
+        let gate = Gate::new();
+        let mut permits = Vec::new();
+        for _ in 0..MAX_INFLIGHT {
+            permits.push(gate.enter().expect("under the limit"));
+        }
+        assert!(gate.enter().is_none(), "the cap is enforced");
+        drop(permits.pop());
+        assert!(gate.enter().is_some(), "a finished request frees a slot");
     }
 
     #[test]

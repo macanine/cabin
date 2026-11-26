@@ -2,14 +2,14 @@
 //! to `cabind` inside it (see `host/`).
 
 mod app_error;
-#[cfg(unix)]
-#[doc(hidden)]
-pub mod native_cli;
 mod global_network;
 mod host;
 mod host_permissions;
 mod lifecycle;
 mod machine_service;
+#[cfg(unix)]
+#[doc(hidden)]
+pub mod native_cli;
 mod network_gate;
 mod network_health;
 mod storage;
@@ -104,7 +104,11 @@ fn data_dir() -> PathBuf {
     }
     // Application Support on macOS, %APPDATA% on Windows, ~/.local/share on Linux.
     let base = dirs::data_dir().unwrap_or_else(std::env::temp_dir);
-    base.join(if cfg!(target_os = "linux") { "cabin-host" } else { "cabin" })
+    base.join(if cfg!(target_os = "linux") {
+        "cabin-host"
+    } else {
+        "cabin"
+    })
 }
 
 /// The bundled QEMU and OpenSSH: the app's `vendor/` resource folder, or
@@ -166,7 +170,12 @@ fn frontend_diagnostic(kind: &str) {
     }
     last[index] = Some(Instant::now());
     drop(last);
-    cabin_diagnostics::event(cabin_diagnostics::Level::Error, "frontend", event, format_args!(""));
+    cabin_diagnostics::event(
+        cabin_diagnostics::Level::Error,
+        "frontend",
+        event,
+        format_args!(""),
+    );
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -195,23 +204,32 @@ pub fn run() {
                 vm_core::vendor::set_vendor_dir(dir);
             }
             let agentd = agentd_binary(resources);
-            let machine = vm_core::machine::Machine::new(
-                home,
-                vm_core::paths::default_project_root(),
-            )
-            .with_agentd(&agentd);
+            let machine =
+                vm_core::machine::Machine::new(home, vm_core::paths::default_project_root())
+                    .with_agentd(&agentd);
             let host = host::Host::new(machine, agentd)
                 .map_err(|error| std::io::Error::other(error.message))?;
             app.manage(host.clone());
             #[cfg(unix)]
             match native_cli::start_broker(host.sync.clone()) {
-                Ok(()) => {
+                Ok(()) =>
+                {
                     #[cfg(target_os = "macos")]
                     if let Err(error) = native_cli::maintain_launcher() {
-                        cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "cli", "launcher_setup_failed", format_args!("{error}"));
+                        cabin_diagnostics::event(
+                            cabin_diagnostics::Level::Warn,
+                            "cli",
+                            "launcher_setup_failed",
+                            format_args!("{error}"),
+                        );
                     }
                 }
-                Err(error) => cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "cli", "broker_start_failed", format_args!("{error}")),
+                Err(error) => cabin_diagnostics::event(
+                    cabin_diagnostics::Level::Warn,
+                    "cli",
+                    "broker_start_failed",
+                    format_args!("{error}"),
+                ),
             }
             lifecycle::install_tray(app.handle())?;
             #[cfg(target_os = "macos")]
@@ -225,14 +243,26 @@ pub fn run() {
     let app = match app {
         Ok(app) => app,
         Err(error) => {
-            cabin_diagnostics::event(cabin_diagnostics::Level::Error, "lifecycle", "startup_failed", format_args!("{error}"));
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Error,
+                "lifecycle",
+                "startup_failed",
+                format_args!("{error}"),
+            );
             std::process::exit(1);
         }
     };
-    cabin_diagnostics::event(cabin_diagnostics::Level::Info, "lifecycle", "desktop_ready", format_args!("{}", env!("CARGO_PKG_VERSION")));
+    cabin_diagnostics::event(
+        cabin_diagnostics::Level::Info,
+        "lifecycle",
+        "desktop_ready",
+        format_args!("{}", env!("CARGO_PKG_VERSION")),
+    );
     app.run(|handle, event| match event {
         // ⌘Q and the Dock's Quit ask first; only the dialog's answer leaves.
-        RunEvent::ExitRequested { api, code, .. } if code.is_none() && !lifecycle::is_quitting() => {
+        RunEvent::ExitRequested { api, code, .. }
+            if code.is_none() && !lifecycle::is_quitting() =>
+        {
             api.prevent_exit();
             lifecycle::request_quit(handle);
         }
@@ -262,12 +292,18 @@ mod tests {
     fn app_and_guest_versions_agree() -> Result<(), Box<dyn std::error::Error>> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let read = |path: &str| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-            Ok(serde_json::from_str(&std::fs::read_to_string(root.join(path))?)?)
+            Ok(serde_json::from_str(&std::fs::read_to_string(
+                root.join(path),
+            )?)?)
         };
         let app = env!("CARGO_PKG_VERSION");
         assert_eq!(agent_core::hello::VERSION, app, "core/Cargo.toml");
         assert_eq!(read("package.json")?["version"], app, "package.json");
-        assert_eq!(read("src-tauri/tauri.conf.json")?["version"], app, "tauri.conf.json");
+        assert_eq!(
+            read("src-tauri/tauri.conf.json")?["version"],
+            app,
+            "tauri.conf.json"
+        );
         Ok(())
     }
 
@@ -285,7 +321,9 @@ mod tests {
             "export {}\n",
             crate::window_chrome::WindowChrome::decl(&config)
         ));
-        use vm_core::machine_details::{DeviceDetails, DeviceFinding, DeviceReportState, MachineDetails};
+        use vm_core::machine_details::{
+            DeviceDetails, DeviceFinding, DeviceReportState, MachineDetails,
+        };
         for declaration in [
             DeviceReportState::decl(&config),
             DeviceFinding::decl(&config),

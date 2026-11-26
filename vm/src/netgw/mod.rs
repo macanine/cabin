@@ -171,60 +171,76 @@ impl Gateway {
         // QEMU can reconnect after an app restart.
         {
             let shared = gateway.shared.clone();
-            gateway.threads.push(std::thread::Builder::new().name("vm-net-up".into()).spawn(
-                move || {
-                    while !shared.stop.load(Ordering::Relaxed) {
-                        let stream = match listener.accept() {
-                            Ok((stream, _)) => stream,
-                            Err(_) => {
-                                std::thread::sleep(Duration::from_millis(100));
-                                continue;
-                            }
-                        };
-                        // A blocking stream without timeouts could prevent shutdown.
-                        if stream.set_nonblocking(false)
-                            .and_then(|()| stream.set_read_timeout(Some(Duration::from_millis(250))))
-                            .and_then(|()| stream.set_write_timeout(Some(Duration::from_millis(200))))
-                            .is_err()
-                        {
-                            continue;
-                        }
-                        let stream = Arc::new(stream);
-                        {
-                            let mut guest = shared.guest.locked();
-                            if shared.stop.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            *guest = Some(stream.clone());
-                        }
-                        let mut frame = Vec::new();
-                        while !shared.stop.load(Ordering::Relaxed) {
-                            match read_frame_until(&mut &*stream, &mut frame, &shared.stop) {
-                                Ok(()) => {}
-                                Err(_) => break,
-                            }
-                            match handle_frame(&frame, &shared.dns) {
-                                Action::ToGuest(reply) => {
-                                    shared.write_guest(&reply);
+            gateway
+                .threads
+                .push(
+                    std::thread::Builder::new()
+                        .name("vm-net-up".into())
+                        .spawn(move || {
+                            while !shared.stop.load(Ordering::Relaxed) {
+                                let stream = match listener.accept() {
+                                    Ok((stream, _)) => stream,
+                                    Err(_) => {
+                                        std::thread::sleep(Duration::from_millis(100));
+                                        continue;
+                                    }
+                                };
+                                // A blocking stream without timeouts could prevent shutdown.
+                                if stream
+                                    .set_nonblocking(false)
+                                    .and_then(|()| {
+                                        stream.set_read_timeout(Some(Duration::from_millis(250)))
+                                    })
+                                    .and_then(|()| {
+                                        stream.set_write_timeout(Some(Duration::from_millis(200)))
+                                    })
+                                    .is_err()
+                                {
+                                    continue;
                                 }
-                                Action::ToStack(packet) => shared.send_ip(packet),
-                                Action::Forward(frame) => forward.deliver(frame),
-                                Action::Dns {
-                                    src,
-                                    dst,
-                                    port,
-                                    ip_len,
-                                    query,
-                                } => {
-                                    shared.resolve(DnsRequest { src, dst, port, ip_len, query });
+                                let stream = Arc::new(stream);
+                                {
+                                    let mut guest = shared.guest.locked();
+                                    if shared.stop.load(Ordering::Relaxed) {
+                                        break;
+                                    }
+                                    *guest = Some(stream.clone());
                                 }
-                                Action::Drop => {}
+                                let mut frame = Vec::new();
+                                while !shared.stop.load(Ordering::Relaxed) {
+                                    match read_frame_until(&mut &*stream, &mut frame, &shared.stop)
+                                    {
+                                        Ok(()) => {}
+                                        Err(_) => break,
+                                    }
+                                    match handle_frame(&frame, &shared.dns) {
+                                        Action::ToGuest(reply) => {
+                                            shared.write_guest(&reply);
+                                        }
+                                        Action::ToStack(packet) => shared.send_ip(packet),
+                                        Action::Forward(frame) => forward.deliver(frame),
+                                        Action::Dns {
+                                            src,
+                                            dst,
+                                            port,
+                                            ip_len,
+                                            query,
+                                        } => {
+                                            shared.resolve(DnsRequest {
+                                                src,
+                                                dst,
+                                                port,
+                                                ip_len,
+                                                query,
+                                            });
+                                        }
+                                        Action::Drop => {}
+                                    }
+                                }
+                                shared.disconnect_guest();
                             }
-                        }
-                        shared.disconnect_guest();
-                    }
-                },
-            )?);
+                        })?,
+                );
         }
         // Stack → VM.
         {
@@ -237,8 +253,11 @@ impl Gateway {
         }
         {
             let held = gateway.shared.clone();
-            gateway.threads.push(std::thread::Builder::new().name("vm-net-held".into())
-                .spawn(move || held.run_held())?);
+            gateway.threads.push(
+                std::thread::Builder::new()
+                    .name("vm-net-held".into())
+                    .spawn(move || held.run_held())?,
+            );
         }
         Ok(gateway)
     }
@@ -268,7 +287,8 @@ impl Gateway {
             *self.shared.error.locked() = None;
             if let Err(rollback) = stacks.activate(&self.shared, mode) {
                 stacks.close();
-                let message = format!("{error}; could not restore the previous network path: {rollback}");
+                let message =
+                    format!("{error}; could not restore the previous network path: {rollback}");
                 *self.shared.error.locked() = Some(message.clone());
                 return Err(Error::Message(message));
             }
@@ -342,10 +362,7 @@ impl Gateway {
 
     /// The stack's last error (it stopped), if any.
     pub fn error(&self) -> Option<String> {
-        self.shared
-            .error
-            .locked()
-            .clone()
+        self.shared.error.locked().clone()
     }
 
     /// Where the Mac side reaches the guest's SSH (may differ from the
@@ -366,10 +383,7 @@ impl Gateway {
 
     /// Whether QEMU is connected right now.
     pub fn connected(&self) -> bool {
-        self.shared
-            .guest
-            .locked()
-            .is_some()
+        self.shared.guest.locked().is_some()
     }
 }
 
@@ -392,16 +406,8 @@ impl Drop for Gateway {
         }
         let _ = self.shared.down_wake.0.send(&[0]);
         self.set_egress_mode(EgressMode::Closed);
-        *self
-            .shared
-            .resolver
-            .locked() = None;
-        if let Some(guest) = self
-            .shared
-            .guest
-            .locked()
-            .take()
-        {
+        *self.shared.resolver.locked() = None;
+        if let Some(guest) = self.shared.guest.locked().take() {
             let _ = guest.shutdown(std::net::Shutdown::Both);
         }
         for thread in self.threads.drain(..) {

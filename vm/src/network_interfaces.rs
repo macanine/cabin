@@ -22,7 +22,10 @@ pub struct NetworkInterface {
 /// Windows (the numeric device name is a GUID), the BSD/Linux name elsewhere.
 fn key(interface: &Interface) -> String {
     if cfg!(windows) {
-        interface.friendly_name.clone().unwrap_or_else(|| interface.name.clone())
+        interface
+            .friendly_name
+            .clone()
+            .unwrap_or_else(|| interface.name.clone())
     } else {
         interface.name.clone()
     }
@@ -30,15 +33,23 @@ fn key(interface: &Interface) -> String {
 
 fn kind(interface: &Interface) -> &'static str {
     let name = interface.name.to_ascii_lowercase();
-    let label = interface.friendly_name.as_deref().unwrap_or_default().to_ascii_lowercase();
+    let label = interface
+        .friendly_name
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     // Friendly names are localized, so the numeric type decides where it can.
     let tunnel = matches!(
         interface.if_type,
         InterfaceType::Tunnel | InterfaceType::Ppp | InterfaceType::ProprietaryVirtual
     );
     if tunnel
-        || ["utun", "tun", "ppp", "ipsec", "wg"].iter().any(|prefix| name.starts_with(prefix))
-        || ["tap", "wireguard", "vpn", "tunnel"].iter().any(|word| label.contains(word))
+        || ["utun", "tun", "ppp", "ipsec", "wg"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        || ["tap", "wireguard", "vpn", "tunnel"]
+            .iter()
+            .any(|word| label.contains(word))
     {
         return "vpn";
     }
@@ -52,7 +63,10 @@ fn kind(interface: &Interface) -> &'static str {
         return "hardware";
     }
     // Ethernet-class device names remain identifiable without a port label.
-    if ["eth", "en", "wl"].iter().any(|prefix| name.starts_with(prefix)) {
+    if ["eth", "en", "wl"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+    {
         "hardware"
     } else {
         "other"
@@ -82,7 +96,10 @@ impl Link {
 
 fn links() -> BTreeMap<String, Link> {
     let mut found = BTreeMap::new();
-    for interface in netdev::get_interfaces().into_iter().filter(|item| !item.is_loopback()) {
+    for interface in netdev::get_interfaces()
+        .into_iter()
+        .filter(|item| !item.is_loopback())
+    {
         let mut ipv4: Vec<_> = interface
             .ipv4
             .iter()
@@ -131,7 +148,13 @@ pub fn paths() -> Result<BTreeMap<String, InterfacePath>> {
         .filter(|(_, link)| link.usable())
         .map(|(name, mut link)| {
             link.ipv4.retain(|(ip, _)| !ip.is_link_local());
-            (name, InterfacePath { index: link.index, ipv4: link.ipv4 })
+            (
+                name,
+                InterfacePath {
+                    index: link.index,
+                    ipv4: link.ipv4,
+                },
+            )
         })
         .collect())
 }
@@ -158,12 +181,19 @@ pub fn host_ip(name: &str) -> Option<Ipv4Addr> {
         let default = netdev::get_default_interface().ok()?;
         links.get(&key(&default)).filter(|link| link.usable())
     };
-    named.or_else(routed)?.ipv4.iter().map(|(ip, _)| *ip).find(|ip| !ip.is_link_local())
+    named
+        .or_else(routed)?
+        .ipv4
+        .iter()
+        .map(|(ip, _)| *ip)
+        .find(|ip| !ip.is_link_local())
 }
 
 /// Whether an address belongs to one of this host's interfaces.
 pub fn is_host_address(ip: Ipv4Addr) -> bool {
-    netdev::get_interfaces().iter().any(|item| item.ipv4.iter().any(|net| net.addr() == ip))
+    netdev::get_interfaces()
+        .iter()
+        .any(|item| item.ipv4.iter().any(|net| net.addr() == ip))
 }
 
 #[cfg(test)]
@@ -181,14 +211,29 @@ mod tests {
     #[test]
     fn kinds_come_from_type_label_and_name() {
         let kind = |name, label, ty| super::kind(&interface(name, label, ty));
-        assert_eq!(kind("en0", Some("Ethernet"), InterfaceType::Ethernet), "ethernet");
-        assert_eq!(kind("en8", Some("Wi-Fi"), InterfaceType::Wireless80211), "wifi");
-        assert_eq!(kind("en9", Some("USB adapter"), InterfaceType::Ethernet), "hardware");
+        assert_eq!(
+            kind("en0", Some("Ethernet"), InterfaceType::Ethernet),
+            "ethernet"
+        );
+        assert_eq!(
+            kind("en8", Some("Wi-Fi"), InterfaceType::Wireless80211),
+            "wifi"
+        );
+        assert_eq!(
+            kind("en9", Some("USB adapter"), InterfaceType::Ethernet),
+            "hardware"
+        );
         assert_eq!(kind("en9", None, InterfaceType::Ethernet), "hardware");
         assert_eq!(kind("utun3", None, InterfaceType::Tunnel), "vpn");
-        assert_eq!(kind("{guid}", Some("WireGuard Tunnel"), InterfaceType::Ethernet), "vpn");
+        assert_eq!(
+            kind("{guid}", Some("WireGuard Tunnel"), InterfaceType::Ethernet),
+            "vpn"
+        );
         assert_eq!(kind("{guid}", Some("Dial-up"), InterfaceType::Ppp), "vpn");
-        assert_eq!(kind("awdl0", None, InterfaceType::PeerToPeerWireless), "other");
+        assert_eq!(
+            kind("awdl0", None, InterfaceType::PeerToPeerWireless),
+            "other"
+        );
     }
 
     #[test]

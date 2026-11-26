@@ -34,10 +34,13 @@ const ALWAYS_IGNORED: &[&str] = &[".DS_Store", "._*", "*.vasync-tmp"];
 
 /// Keep the watcher and the scanner in agreement about internal files.
 fn ignored_patterns() -> impl Iterator<Item = String> {
-    ALWAYS_IGNORED.iter().map(|pattern| (*pattern).to_owned()).chain([
-        format!("{ACCESS_PROBE_PREFIX}*.tmp"),
-        format!("{STAGED_FILE_PREFIX}*.tmp"),
-    ])
+    ALWAYS_IGNORED
+        .iter()
+        .map(|pattern| (*pattern).to_owned())
+        .chain([
+            format!("{ACCESS_PROBE_PREFIX}*.tmp"),
+            format!("{STAGED_FILE_PREFIX}*.tmp"),
+        ])
 }
 
 /// What flows where.
@@ -108,7 +111,12 @@ impl Default for SyncRules {
 impl SyncRules {
     /// The rules for one `.git` copy: everything inside it, nothing else.
     pub fn git_only() -> Self {
-        Self { gitignore: false, ignore: Vec::new(), excluded: Vec::new(), git: GitHandling::Sync }
+        Self {
+            gitignore: false,
+            ignore: Vec::new(),
+            excluded: Vec::new(),
+            git: GitHandling::Sync,
+        }
     }
 }
 
@@ -135,7 +143,9 @@ pub fn expand_home(path: &str) -> PathBuf {
     if path == "~" {
         return home.unwrap_or_else(|| PathBuf::from(path));
     }
-    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("$HOME/"))
+    if let Some(rest) = path
+        .strip_prefix("~/")
+        .or_else(|| path.strip_prefix("$HOME/"))
         && let Some(home) = home
     {
         return home.join(rest);
@@ -167,7 +177,8 @@ pub fn run_command(args: &[String]) -> Result<(), String> {
         "scan" => {
             let request: ScanRequest = read_json(&mut stdin.lock())?;
             let entries = match root.metadata() {
-                Ok(_) => scan(&root, &request.rules, request.scope.as_deref()).map_err(|e| e.to_string())?,
+                Ok(_) => scan(&root, &request.rules, request.scope.as_deref())
+                    .map_err(|e| e.to_string())?,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
                 Err(error) => return Err(error.to_string()),
             };
@@ -202,7 +213,9 @@ fn read_json<T: for<'de> Deserialize<'de>>(input: &mut impl BufRead) -> Result<T
 
 fn write_json<T: Serialize>(out: &mut impl Write, value: &T) -> Result<(), String> {
     serde_json::to_writer(&mut *out, value).map_err(|e| e.to_string())?;
-    out.write_all(b"\n").and_then(|()| out.flush()).map_err(|e| e.to_string())
+    out.write_all(b"\n")
+        .and_then(|()| out.flush())
+        .map_err(|e| e.to_string())
 }
 
 /// The top level of `root` as the New project dialog shows it: what would
@@ -220,12 +233,26 @@ pub fn preview(root: &Path, rules: &SyncRules) -> std::io::Result<crate::model::
         })
         .filter(|(name, _)| name != ".DS_Store")
         .collect();
-    names.sort_by(|(a, a_dir), (b, b_dir)| b_dir.cmp(a_dir).then_with(|| a.to_lowercase().cmp(&b.to_lowercase())));
+    names.sort_by(|(a, a_dir), (b, b_dir)| {
+        b_dir
+            .cmp(a_dir)
+            .then_with(|| a.to_lowercase().cmp(&b.to_lowercase()))
+    });
     let (mut files, mut bytes) = (0, 0);
     for (name, dir) in names {
         let prefix = format!("{name}/");
-        let mut item = SyncPreviewItem { name: name.clone(), dir, files: 0, bytes: 0, included: false, reason: None };
-        for entry in entries.iter().filter(|e| e.path == name || e.path.starts_with(&prefix)) {
+        let mut item = SyncPreviewItem {
+            name: name.clone(),
+            dir,
+            files: 0,
+            bytes: 0,
+            included: false,
+            reason: None,
+        };
+        for entry in entries
+            .iter()
+            .filter(|e| e.path == name || e.path.starts_with(&prefix))
+        {
             item.included = true;
             if entry.kind != EntryKind::Dir {
                 item.files += 1;
@@ -234,7 +261,11 @@ pub fn preview(root: &Path, rules: &SyncRules) -> std::io::Result<crate::model::
         }
         if !item.included {
             item.reason = Some(
-                if rules.excluded.iter().any(|path| path.trim_matches('/') == name) {
+                if rules
+                    .excluded
+                    .iter()
+                    .any(|path| path.trim_matches('/') == name)
+                {
                     "unticked"
                 } else if name == ".git" {
                     "git"
@@ -265,15 +296,34 @@ mod tests {
     #[test]
     fn preview_counts_what_syncs_and_says_why_the_rest_does_not() {
         let dir = tempfile::tempdir().unwrap();
-        for (path, body) in [("src/a.rs", "12345"), ("node_modules/x.js", "x"), ("docs/r.md", "x"), (".gitignore", "node_modules/\n"), (".git/HEAD", "x")] {
+        for (path, body) in [
+            ("src/a.rs", "12345"),
+            ("node_modules/x.js", "x"),
+            ("docs/r.md", "x"),
+            (".gitignore", "node_modules/\n"),
+            (".git/HEAD", "x"),
+        ] {
             let full = dir.path().join(path);
             std::fs::create_dir_all(full.parent().unwrap()).unwrap();
             std::fs::write(full, body).unwrap();
         }
-        let rules = SyncRules { excluded: vec!["docs".into()], ..SyncRules::default() };
+        let rules = SyncRules {
+            excluded: vec!["docs".into()],
+            ..SyncRules::default()
+        };
         let preview = preview(dir.path(), &rules).unwrap();
-        let item = |name: &str| preview.items.iter().find(|i| i.name == name).unwrap().clone();
-        assert_eq!((item("src").files, item("src").bytes, item("src").included), (1, 5, true));
+        let item = |name: &str| {
+            preview
+                .items
+                .iter()
+                .find(|i| i.name == name)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            (item("src").files, item("src").bytes, item("src").included),
+            (1, 5, true)
+        );
         assert_eq!(item("node_modules").reason.as_deref(), Some("ignored"));
         assert_eq!(item("docs").reason.as_deref(), Some("unticked"));
         assert_eq!(item(".git").reason.as_deref(), Some("git"));

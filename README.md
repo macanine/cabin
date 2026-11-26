@@ -190,10 +190,18 @@ account names, and URL credentials. Review raw excerpts before sharing a report.
 | Run the desktop app (macOS or Windows) | `npm run app:dev` |
 | Build the app (`.app` on macOS, NSIS installer on Windows) | `npm run app:build` (add `-- --debug` for a debug build) |
 | Run frontend tests | `npm test` |
+| Lint the frontend | `npm run lint` |
+| Lint, type-check and test the frontend | `npm run check` |
 | Run the UI smoke test (needs Chromium; `CHROME` picks one) | `npm run test:ui` |
 | Type-check and bundle the frontend | `npm run build` |
 | Run Rust tests | `cargo test --manifest-path <crate>/Cargo.toml` for `core`, `diagnostics`, `usage`, `vm`, `src-tauri`, and `ip-detection` |
+| Check Rust formatting and lints | `cargo fmt --manifest-path <crate>/Cargo.toml --check` and `cargo clippy --manifest-path <crate>/Cargo.toml --all-targets -- -D warnings` |
 | Build the Linux ARM64 guest daemon | `npm run build:agentd` |
+
+CI runs formatting, clippy, ESLint, the type check and the test suites on every push. The
+live VM suites under `vm/tests/*_live.rs` need QEMU/HVF and a prepared image, so
+[the live workflow](.github/workflows/live.yml) runs them nightly on a self-hosted macOS
+runner, one suite per job, once the repository variable `CABIN_LIVE_CI` is true.
 
 On a fresh macOS or Windows checkout, run `npm run vendor` and `npm run build:agentd` before
 running the `src-tauri` tests directly. Tauri validates both resources while compiling

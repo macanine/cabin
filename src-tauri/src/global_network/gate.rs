@@ -9,7 +9,10 @@ use agent_core::model::{
 use agent_core::util::now_millis;
 use vm_core::netgw::Gateway;
 
-use super::{AUTO_RECOVER, CheckAttempt, GlobalNetwork, PAUSED, REGION_FOLLOWS_EXIT, RollbackPoint, Runtime, error};
+use super::{
+    AUTO_RECOVER, CheckAttempt, GlobalNetwork, PAUSED, REGION_FOLLOWS_EXIT, RollbackPoint, Runtime,
+    error,
+};
 use crate::app_error::AppError;
 #[cfg(test)]
 use crate::network_gate::GateState;
@@ -148,13 +151,19 @@ impl GlobalNetwork {
             let saved = self.route().ok();
             if runtime.active_route != saved {
                 if !self.revoke_drifted_route(&mut runtime, saved.as_ref()) {
-                    runtime.grant.fail(&attempt.token, "The saved route changed during verification");
+                    runtime.grant.fail(
+                        &attempt.token,
+                        "The saved route changed during verification",
+                    );
                     runtime.apply_policy();
                 }
                 return Ok(false);
             }
         }
-        let gateway_failed = runtime.gateway.as_ref().is_none_or(|gateway| gateway.error().is_some());
+        let gateway_failed = runtime
+            .gateway
+            .as_ref()
+            .is_none_or(|gateway| gateway.error().is_some());
         if matching && attempt.held && gateway_failed {
             return Err(error("The gateway stopped during verification"));
         }
@@ -174,10 +183,11 @@ impl GlobalNetwork {
         if attempt.held && public_ip.zip(runtime.verified_exit).is_none() {
             return Err(error("Could not confirm the verified public exit"));
         }
-        if report.can_open && let (Some(route), Some(baseline)) = (runtime.active_route.as_ref(), baseline) {
-            if self.exit_baseline(route)?.as_ref() != Some(baseline) {
-                self.save_exit_baseline(route, baseline)?;
-            }
+        if report.can_open
+            && let (Some(route), Some(baseline)) = (runtime.active_route.as_ref(), baseline)
+            && self.exit_baseline(route)?.as_ref() != Some(baseline)
+        {
+            self.save_exit_baseline(route, baseline)?;
         }
         if let Some(route) = candidate.filter(|_| report.can_open) {
             self.save(route)?;
@@ -195,7 +205,12 @@ impl GlobalNetwork {
         }
         runtime.apply_policy();
         if opened && attempt.held {
-            self.journal(&runtime, "recovered", "Network verification recovered. Held traffic resumed.", None);
+            self.journal(
+                &runtime,
+                "recovered",
+                "Network verification recovered. Held traffic resumed.",
+                None,
+            );
         }
         Ok(opened)
     }
@@ -302,7 +317,11 @@ impl GlobalNetwork {
         self.journal(
             &runtime,
             "regionPreference",
-            if enabled { "The machine's time zone follows the exit" } else { "The machine's time zone is set by hand" },
+            if enabled {
+                "The machine's time zone follows the exit"
+            } else {
+                "The machine's time zone is set by hand"
+            },
             None,
         );
         Ok(())
@@ -316,7 +335,11 @@ impl GlobalNetwork {
             self.journal(
                 &runtime,
                 "recoveryPreference",
-                if enabled { "Automatic recovery enabled" } else { "Automatic recovery disabled" },
+                if enabled {
+                    "Automatic recovery enabled"
+                } else {
+                    "Automatic recovery disabled"
+                },
                 None,
             );
         }
@@ -345,7 +368,11 @@ impl GlobalNetwork {
         true
     }
 
-    pub(super) fn revoke_drifted_route(&self, runtime: &mut Runtime, saved: Option<&NetworkRoute>) -> bool {
+    pub(super) fn revoke_drifted_route(
+        &self,
+        runtime: &mut Runtime,
+        saved: Option<&NetworkRoute>,
+    ) -> bool {
         if runtime.grant.mode != NetworkGateMode::Open
             || saved.is_some_and(|route| runtime.active_route.as_ref() == Some(route))
         {
@@ -353,7 +380,8 @@ impl GlobalNetwork {
         }
         self.cancel_hold(runtime);
         runtime.path_revision += 1;
-        let reason = "The saved network route changed or is unavailable. A fresh check is required.";
+        let reason =
+            "The saved network route changed or is unavailable. A fresh check is required.";
         runtime.grant.invalidate(reason);
         runtime.apply_policy();
         self.journal(runtime, "grantInvalidated", reason, None);
@@ -365,13 +393,17 @@ impl GlobalNetwork {
         let expired = self.expire(&mut runtime);
         let drifted = runtime.grant.mode == NetworkGateMode::Open
             && self.revoke_drifted_route(&mut runtime, self.route().ok().as_ref());
-        let exit_blocked = runtime.exit_policy_error.as_ref().is_some_and(|(revision, _)|
-            self.route().is_ok_and(|route| super::route_revision(&route) == *revision));
-        let due = !exit_blocked && !runtime.sleeping && runtime.connectivity.mode == NetworkConnectivity::Normal
-            && runtime
-                .gateway
-                .as_ref()
-                .is_some_and(Gateway::connected)
+        let exit_blocked = runtime
+            .exit_policy_error
+            .as_ref()
+            .is_some_and(|(revision, _)| {
+                self.route()
+                    .is_ok_and(|route| super::route_revision(&route) == *revision)
+            });
+        let due = !exit_blocked
+            && !runtime.sleeping
+            && runtime.connectivity.mode == NetworkConnectivity::Normal
+            && runtime.gateway.as_ref().is_some_and(Gateway::connected)
             && runtime.grant.due(now_millis());
         (due, expired || drifted)
     }
@@ -392,8 +424,17 @@ mod tests {
         network.start(&dir.join("gateway.sock"), 0).unwrap();
         open_gate(&network, &route);
         let check = network.begin_check(revision.clone(), true).unwrap();
-        network.save(&NetworkRoute { bind_interface: Some("en-test".into()), ..route.clone() }).unwrap();
-        assert!(!network.finish_check(&check, passing_report(&revision), None, &[], None, None).unwrap());
+        network
+            .save(&NetworkRoute {
+                bind_interface: Some("en-test".into()),
+                ..route.clone()
+            })
+            .unwrap();
+        assert!(
+            !network
+                .finish_check(&check, passing_report(&revision), None, &[], None, None)
+                .unwrap()
+        );
         assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Closed);
         network.stop();
         drop(network);

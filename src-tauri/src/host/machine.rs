@@ -79,12 +79,14 @@ impl Host {
             }
             let install_network = start_install_gateway(&self.network, &cfg)
                 .map_err(|error| vm_core::Error::Message(error.message))?;
-            let result = self.machine
-                .resume_with_progress(change_mirror.then_some(apt_mirror), move |steps| {
+            let result = self.machine.resume_with_progress(
+                change_mirror.then_some(apt_mirror),
+                move |steps| {
                     if let Ok(steps) = Self::convert(steps) {
                         me.emit(AppEvent::Install { steps });
                     }
-                });
+                },
+            );
             if install_network {
                 self.network.end_install();
             }
@@ -129,10 +131,14 @@ impl Host {
         let mut cancelled = false;
         let result = self.busy("Installing the machine", || {
             if self.machine.installed() {
-                return vm_core::util::message("The machine is already installed or has files to recover");
+                return vm_core::util::message(
+                    "The machine is already installed or has files to recover",
+                );
             }
             self.cancel_requested.store(false, Ordering::SeqCst);
-            self.network.reopen_store().map_err(|error| vm_core::Error::Message(error.message))?;
+            self.network
+                .reopen_store()
+                .map_err(|error| vm_core::Error::Message(error.message))?;
             let cfg = self.machine.install_config(&options)?;
             let install_network = start_install_gateway(&self.network, &cfg)
                 .map_err(|error| vm_core::Error::Message(error.message))?;
@@ -149,7 +155,8 @@ impl Host {
             if result.is_err() && !self.machine.info().running {
                 self.network.stop();
             }
-            cancelled = result.is_err() && self.cancel_requested.swap(false, Ordering::SeqCst)
+            cancelled = result.is_err()
+                && self.cancel_requested.swap(false, Ordering::SeqCst)
                 && !self.machine.installed();
             result
         });
@@ -165,9 +172,7 @@ impl Host {
     }
 
     pub fn start(self: &Arc<Self>) -> Result<MachineStatus, AppError> {
-        let status = self
-            .status.read_lock()
-            .clone();
+        let status = self.status.read_lock().clone();
         if status.state == MachineState::Running && status.connection == GuestConnection::Connected
         {
             return Ok(status);
@@ -177,9 +182,7 @@ impl Host {
         }
         let attempt = self.begin_start()?;
         self.start_machine(&attempt)?;
-        Ok(self
-            .status.read_lock()
-            .clone())
+        Ok(self.status.read_lock().clone())
     }
 
     pub(super) fn start_machine(&self, attempt: &Arc<Attempt>) -> Result<(), AppError> {
@@ -211,9 +214,7 @@ impl Host {
             Err(error) => {
                 self.finish_start(attempt, Some(error.message.clone()));
                 self.refresh_machine();
-                if self.status.read_lock().state
-                    != MachineState::Running
-                {
+                if self.status.read_lock().state != MachineState::Running {
                     self.network.stop();
                 }
             }
@@ -252,9 +253,7 @@ impl Host {
     pub fn chrome_status(&self) -> Result<Value, AppError> {
         let cfg = self.machine.config().map_err(Self::vm_error)?;
         let running = self.machine.info().running;
-        let current = self
-            .status.read_lock()
-            .clone();
+        let current = self.status.read_lock().clone();
         let busy = current.busy.is_some();
         let install = vm_core::chrome_feature::install_log_path(&cfg).map(|path| {
             let lines = std::fs::read_to_string(&path)
@@ -293,12 +292,22 @@ impl Host {
 
     /// The browser environment panel's data. `check` also audits the guest
     /// (installed profile and live Chrome; bounded, a few seconds at most).
-    pub fn browser_environment_view(&self, check: bool) -> Result<BrowserEnvironmentView, AppError> {
+    pub fn browser_environment_view(
+        &self,
+        check: bool,
+    ) -> Result<BrowserEnvironmentView, AppError> {
         let cfg = self.machine.config().map_err(Self::vm_error)?;
         let running = self.machine.info().running
             && self.status.read_lock().connection == GuestConnection::Connected;
         if !cfg.browser_enabled() {
-            return Ok(BrowserEnvironmentView { enabled: false, machine_running: running, settings: None, probe: None, live_matches: None, checked_at: None });
+            return Ok(BrowserEnvironmentView {
+                enabled: false,
+                machine_running: running,
+                settings: None,
+                probe: None,
+                live_matches: None,
+                checked_at: None,
+            });
         }
         let settings = self.machine.browser_settings().map_err(Self::vm_error)?;
         let settings = serde_json::to_value(settings)
@@ -320,11 +329,16 @@ impl Host {
     /// for a region change; otherwise the profile is written again and Chrome
     /// restarts). The environment revision changes, so the network gate
     /// rechecks on its own.
-    pub fn browser_settings_save(&self, settings: BrowserSettings) -> Result<BrowserEnvironmentView, AppError> {
+    pub fn browser_settings_save(
+        &self,
+        settings: BrowserSettings,
+    ) -> Result<BrowserEnvironmentView, AppError> {
         let settings: vm_core::browser::Settings = serde_json::to_value(settings)
             .and_then(serde_json::from_value)
             .map_err(|error| AppError::internal(error.to_string()))?;
-        self.machine.set_browser_settings(&settings).map_err(Self::vm_error)?;
+        self.machine
+            .set_browser_settings(&settings)
+            .map_err(Self::vm_error)?;
         let _ = self.emit_network();
         self.browser_environment_view(true)
     }
@@ -441,9 +455,7 @@ impl Host {
 
     pub fn destroy(&self) -> Result<MachineStatus, AppError> {
         self.busy("Destroying the environment", || {
-            let _guard = self
-                .network
-                .transaction.locked();
+            let _guard = self.network.transaction.locked();
             self.generation.fetch_add(1, Ordering::SeqCst);
             self.update(|status| status.connection = GuestConnection::Offline);
             self.sync.disconnect();
@@ -473,8 +485,7 @@ impl Host {
                 }
                 return Err(error);
             } else {
-                *self
-                    .guest_snapshot.write_lock() = None;
+                *self.guest_snapshot.write_lock() = None;
                 *self.startup.locked() = None;
                 self.update(|status| {
                     status.connection = GuestConnection::Offline;
@@ -491,17 +502,30 @@ impl Host {
     pub fn checks(&self, disk_gb: u32, memory_mb: u32) -> vm_core::readiness::ReadinessReport {
         let mut items = vm_core::readiness::host_readiness(self.machine.home(), disk_gb, memory_mb);
         if let Some(position) = items.iter().position(|item| item.id == "disk") {
-            items.insert(position, vm_core::readiness::service_check(self.agentd.is_file()));
+            items.insert(
+                position,
+                vm_core::readiness::service_check(self.agentd.is_file()),
+            );
         }
-        vm_core::readiness::ReadinessReport { items, host: vm_core::readiness::host_facts(self.machine.home()) }
+        vm_core::readiness::ReadinessReport {
+            items,
+            host: vm_core::readiness::host_facts(self.machine.home()),
+        }
     }
 
     fn install_result_path(&self) -> PathBuf {
-        vm_core::StatePaths::new(self.machine.home()).logs().join("last-install.json")
+        vm_core::StatePaths::new(self.machine.home())
+            .logs()
+            .join("last-install.json")
     }
 
     /// Keep the outcome even if setup stopped before the first step was logged.
-    pub fn record_install_result(&self, started_at: i64, result: &Result<MachineStatus, AppError>, username: Option<&str>) {
+    pub fn record_install_result(
+        &self,
+        started_at: i64,
+        result: &Result<MachineStatus, AppError>,
+        username: Option<&str>,
+    ) {
         let failure = result.as_ref().err();
         let state = match failure.map(|error| error.code.as_str()) {
             None => "succeeded",
@@ -515,8 +539,15 @@ impl Host {
             "error": failure.map(|error| &error.message),
             "username": username,
         });
-        if let Err(error) = vm_core::util::atomic_write_json(&self.install_result_path(), &report, 0o600) {
-            cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "install", "outcome_write_failed", format_args!("{error}"));
+        if let Err(error) =
+            vm_core::util::atomic_write_json(&self.install_result_path(), &report, 0o600)
+        {
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Warn,
+                "install",
+                "outcome_write_failed",
+                format_args!("{error}"),
+            );
         }
     }
 
@@ -533,17 +564,26 @@ impl Host {
 
         let home = self.machine.home();
         let machine = self.status.read_lock().clone();
-        let start = self.startup.locked().as_ref().map(|(_, report)| report.clone());
+        let start = self
+            .startup
+            .locked()
+            .as_ref()
+            .map(|(_, report)| report.clone());
         let mut history = diagnostic_history(home);
-        let guest_events = self.call_guest_with_timeout(
-            "diagnostic_events",
-            serde_json::json!({}),
-            std::time::Duration::from_secs(1),
-        ).ok().filter(serde_json::Value::is_array);
+        let guest_events = self
+            .call_guest_with_timeout(
+                "diagnostic_events",
+                serde_json::json!({}),
+                std::time::Duration::from_secs(1),
+            )
+            .ok()
+            .filter(serde_json::Value::is_array);
         let install = vm_core::util::read_json(&self.install_result_path()).unwrap_or_default();
         let mut recorded_events = history["lastInstall"].take();
         if let Some(started_at) = install["startedAt"].as_i64()
-            && recorded_events[0]["ts"].as_i64().is_some_and(|ts| ts < started_at)
+            && recorded_events[0]["ts"]
+                .as_i64()
+                .is_some_and(|ts| ts < started_at)
         {
             recorded_events = serde_json::json!([]);
         }
@@ -582,15 +622,28 @@ impl Host {
 
         let profile = std::env::home_dir();
         let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
-        let users: Vec<_> = [host_user.as_deref(), machine.username.as_deref(), install_user.as_deref(), install["username"].as_str()]
-            .into_iter().flatten().collect();
-        let roots: Vec<_> = [Some(home), profile.as_deref(), appdata.as_deref()].into_iter().flatten().collect();
+        let users: Vec<_> = [
+            host_user.as_deref(),
+            machine.username.as_deref(),
+            install_user.as_deref(),
+            install["username"].as_str(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let roots: Vec<_> = [Some(home), profile.as_deref(), appdata.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
         redact_diagnostics(&mut report, &roots, &users);
         serde_json::to_string_pretty(&report).map_err(|error| AppError::internal(error.to_string()))
     }
 
     /// Carry out a readiness fix.
-    pub fn fix(&self, fix: vm_core::readiness::Fix) -> Result<vm_core::readiness::FixOutcome, AppError> {
+    pub fn fix(
+        &self,
+        fix: vm_core::readiness::Fix,
+    ) -> Result<vm_core::readiness::FixOutcome, AppError> {
         vm_core::readiness::apply_fix(&fix).map_err(|error| AppError {
             code: "fixFailed".into(),
             message: error.to_string(),
@@ -657,10 +710,14 @@ mod tests {
         let host = Host::new(machine, PathBuf::from("/missing/agentd")).unwrap();
         host.busy("Stopping the machine", || {
             assert!(host.install(MachineInstallOptions::default()).is_err());
-            assert_eq!(host.snapshot().machine.busy.as_deref(), Some("Stopping the machine"));
+            assert_eq!(
+                host.snapshot().machine.busy.as_deref(),
+                Some("Stopping the machine")
+            );
             assert!(!host.network.is_up());
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(host.snapshot().machine.busy, None);
     }
 
@@ -683,7 +740,7 @@ mod tests {
                 enabled: true,
                 chain: vec![catalog.nodes[0].id.clone()],
                 bind_interface: None,
-            ..NetworkRoute::default()
+                ..NetworkRoute::default()
             })
             .unwrap();
         std::fs::create_dir_all(home.join("images")).unwrap();

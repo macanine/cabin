@@ -118,7 +118,12 @@ fn wait_ready(forward: &mut Forward) -> std::result::Result<(), String> {
             if let Some(mut pipe) = forward.child.stderr.take() {
                 let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr);
             }
-            return Err(stderr.trim().lines().last().unwrap_or("ssh exited").to_string());
+            return Err(stderr
+                .trim()
+                .lines()
+                .last()
+                .unwrap_or("ssh exited")
+                .to_string());
         }
         if TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok() {
             // Don't let a chatty stderr pipe fill up and stall ssh.

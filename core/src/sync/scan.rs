@@ -52,16 +52,35 @@ pub fn in_scope(path: &str, scope: Option<&[String]>) -> bool {
 /// The tree under `root` that the rules include, sorted by path. With a
 /// `scope`, only those folders (and the folders leading to them, so parent
 /// `.gitignore` files still apply) are walked.
-pub fn scan(root: &Path, rules: &SyncRules, scope: Option<&[String]>) -> std::io::Result<Vec<Entry>> {
+pub fn scan(
+    root: &Path,
+    rules: &SyncRules,
+    scope: Option<&[String]>,
+) -> std::io::Result<Vec<Entry>> {
     let mut overrides = OverrideBuilder::new(root);
-    let mut add = |glob: String| overrides.add(&glob).map(|_| ()).map_err(std::io::Error::other);
+    let mut add = |glob: String| {
+        overrides
+            .add(&glob)
+            .map(|_| ())
+            .map_err(std::io::Error::other)
+    };
     for pattern in ignored_patterns() {
         add(format!("!{pattern}"))?;
     }
-    for pattern in rules.ignore.iter().map(|p| p.trim()).filter(|p| !p.is_empty() && !p.starts_with('#')) {
+    for pattern in rules
+        .ignore
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty() && !p.starts_with('#'))
+    {
         add(format!("!{pattern}"))?;
     }
-    for path in rules.excluded.iter().map(|p| p.trim().trim_matches('/')).filter(|p| !p.is_empty()) {
+    for path in rules
+        .excluded
+        .iter()
+        .map(|p| p.trim().trim_matches('/'))
+        .filter(|p| !p.is_empty())
+    {
         add(format!("!/{path}"))?;
         add(format!("!/{path}/**"))?;
     }
@@ -87,7 +106,8 @@ pub fn scan(root: &Path, rules: &SyncRules, scope: Option<&[String]>) -> std::io
         .follow_links(false)
         .overrides(overrides)
         .filter_entry(move |entry| {
-            relative(&root_owned, entry.path()).is_none_or(|rel| in_scope(&rel, scope_owned.as_deref()))
+            relative(&root_owned, entry.path())
+                .is_none_or(|rel| in_scope(&rel, scope_owned.as_deref()))
         });
     walker.add_custom_ignore_filename(IGNORE_FILE);
 
@@ -96,7 +116,9 @@ pub fn scan(root: &Path, rules: &SyncRules, scope: Option<&[String]>) -> std::io
         let entry = match item {
             Ok(entry) => entry,
             Err(error) => {
-                let kind = error.io_error().map_or(io::ErrorKind::Other, io::Error::kind);
+                let kind = error
+                    .io_error()
+                    .map_or(io::ErrorKind::Other, io::Error::kind);
                 if kind == io::ErrorKind::NotFound && error.depth().is_some_and(|depth| depth > 0) {
                     continue;
                 }
@@ -105,11 +127,18 @@ pub fn scan(root: &Path, rules: &SyncRules, scope: Option<&[String]>) -> std::io
             }
         };
         if let Some(error) = entry.error().filter(|error| {
-            error.io_error().is_some_and(|cause| cause.kind() == io::ErrorKind::PermissionDenied)
+            error
+                .io_error()
+                .is_some_and(|cause| cause.kind() == io::ErrorKind::PermissionDenied)
         }) {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, error.clone()));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                error.clone(),
+            ));
         }
-        let Some(path) = relative(root, entry.path()) else { continue };
+        let Some(path) = relative(root, entry.path()) else {
+            continue;
+        };
         let meta = match std::fs::symlink_metadata(entry.path()) {
             Ok(meta) => meta,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -155,7 +184,11 @@ fn entry_from(path: String, kind: EntryKind, meta: &std::fs::Metadata, full: &Pa
     Entry {
         path,
         kind,
-        size: if kind == EntryKind::File { meta.len() } else { 0 },
+        size: if kind == EntryKind::File {
+            meta.len()
+        } else {
+            0
+        },
         mtime_ns: if kind == EntryKind::Dir {
             0
         } else {
@@ -163,7 +196,11 @@ fn entry_from(path: String, kind: EntryKind, meta: &std::fs::Metadata, full: &Pa
         },
         mode: crate::fsx::mode_of(meta),
         target: (kind == EntryKind::Symlink)
-            .then(|| std::fs::read_link(full).ok().map(|t| t.to_string_lossy().into_owned()))
+            .then(|| {
+                std::fs::read_link(full)
+                    .ok()
+                    .map(|t| t.to_string_lossy().into_owned())
+            })
             .flatten(),
     }
 }
@@ -194,11 +231,17 @@ pub fn read_binary(mut input: impl Read) -> io::Result<Vec<Entry>> {
     let mut magic = [0; 8];
     input.read_exact(&mut magic)?;
     if &magic != BINARY_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "not a sync scan listing"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a sync scan listing",
+        ));
     }
     let count = read_u32(&mut input)?;
     if count > MAX_BINARY_RECORDS {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "sync scan listing is too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sync scan listing is too large",
+        ));
     }
     // The count is supplied by the other process. Allocate as records arrive,
     // rather than trusting a short or corrupt listing to reserve its full size.
@@ -206,7 +249,10 @@ pub fn read_binary(mut input: impl Read) -> io::Result<Vec<Entry>> {
     for _ in 0..count {
         let path = read_string(&mut input)?;
         if super::safe_relative(&path).is_none() || path.contains('\0') {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid sync entry path"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid sync entry path",
+            ));
         }
         let mut kind = [0];
         input.read_exact(&mut kind)?;
@@ -214,25 +260,41 @@ pub fn read_binary(mut input: impl Read) -> io::Result<Vec<Entry>> {
             0 => EntryKind::File,
             1 => EntryKind::Dir,
             2 => EntryKind::Symlink,
-            _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid sync entry kind")),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid sync entry kind",
+                ));
+            }
         };
         let size = read_u64(&mut input)?;
         let mtime_ns = read_u64(&mut input)? as i64;
         let mode = read_u32(&mut input)?;
         let target = read_optional_string(&mut input)?;
-        entries.push(Entry { path, kind, size, mtime_ns, mode, target });
+        entries.push(Entry {
+            path,
+            kind,
+            size,
+            mtime_ns,
+            mode,
+            target,
+        });
     }
     let mut trailing = [0; 1];
     match input.read_exact(&mut trailing) {
         Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(entries),
         Err(error) => Err(error),
-        Ok(()) => Err(io::Error::new(io::ErrorKind::InvalidData, "trailing data in sync scan listing")),
+        Ok(()) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing data in sync scan listing",
+        )),
     }
 }
 
 pub fn write_binary(entries: &[Entry], mut out: impl Write) -> io::Result<()> {
     out.write_all(BINARY_MAGIC)?;
-    let count = u32::try_from(entries.len()).map_err(|_| io::Error::other("too many sync entries"))?;
+    let count =
+        u32::try_from(entries.len()).map_err(|_| io::Error::other("too many sync entries"))?;
     write_u32(&mut out, count)?;
     for entry in entries {
         write_string(&mut out, &entry.path)?;
@@ -252,11 +314,15 @@ pub fn write_binary(entries: &[Entry], mut out: impl Write) -> io::Result<()> {
 fn read_string(input: &mut impl Read) -> io::Result<String> {
     let len = read_u32(input)?;
     if len > MAX_BINARY_PATH {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "sync path is too long"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sync path is too long",
+        ));
     }
     let mut bytes = vec![0; len as usize];
     input.read_exact(&mut bytes)?;
-    String::from_utf8(bytes).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "sync path is not UTF-8"))
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "sync path is not UTF-8"))
 }
 
 fn write_string(out: &mut impl Write, value: &str) -> io::Result<()> {
@@ -272,7 +338,10 @@ fn read_optional_string(input: &mut impl Read) -> io::Result<Option<String>> {
     match present[0] {
         0 => Ok(None),
         1 => read_string(input).map(Some),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid sync target flag")),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid sync target flag",
+        )),
     }
 }
 
@@ -343,27 +412,58 @@ mod tests {
         let dir = tree();
         std::fs::create_dir_all(dir.path().join(".git/refs")).unwrap();
         std::fs::write(dir.path().join(".git/HEAD"), "ref").unwrap();
-        let rules = SyncRules { gitignore: true, ignore: vec!["*.log".into()], excluded: vec!["docs".into()], ..SyncRules::default() };
+        let rules = SyncRules {
+            gitignore: true,
+            ignore: vec!["*.log".into()],
+            excluded: vec!["docs".into()],
+            ..SyncRules::default()
+        };
         let entries = scan(dir.path(), &rules, None).unwrap();
         // The fixture adds a symlink only where the host can create one.
         let expected: Vec<&str> = if cfg!(unix) {
-            vec![".cabinignore", ".gitignore", "link", "src", "src/.gitignore", "src/main.rs"]
+            vec![
+                ".cabinignore",
+                ".gitignore",
+                "link",
+                "src",
+                "src/.gitignore",
+                "src/main.rs",
+            ]
         } else {
-            vec![".cabinignore", ".gitignore", "src", "src/.gitignore", "src/main.rs"]
+            vec![
+                ".cabinignore",
+                ".gitignore",
+                "src",
+                "src/.gitignore",
+                "src/main.rs",
+            ]
         };
         assert_eq!(paths(&entries), expected);
         if cfg!(unix) {
             let link = entries.iter().find(|e| e.path == "link").unwrap();
-            assert_eq!((link.kind, link.target.as_deref()), (EntryKind::Symlink, Some("src/main.rs")));
+            assert_eq!(
+                (link.kind, link.target.as_deref()),
+                (EntryKind::Symlink, Some("src/main.rs"))
+            );
         }
-        assert_eq!(entries.iter().find(|e| e.path == "src/main.rs").unwrap().size, 12);
+        assert_eq!(
+            entries
+                .iter()
+                .find(|e| e.path == "src/main.rs")
+                .unwrap()
+                .size,
+            12
+        );
     }
 
     #[test]
     fn missing_scan_root_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("missing");
-        assert_eq!(scan(&root, &SyncRules::default(), None).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            scan(&root, &SyncRules::default(), None).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
     }
 
     #[cfg(unix)]
@@ -388,9 +488,30 @@ mod tests {
     #[test]
     fn binary_listing_round_trips_and_rejects_garbage() {
         let entries = vec![
-            Entry { path: "src/main.rs".into(), kind: EntryKind::File, size: 12, mtime_ns: 1_700_000_000_123_456_789, mode: 0o644, target: None },
-            Entry { path: "link".into(), kind: EntryKind::Symlink, size: 0, mtime_ns: 1, mode: 0o777, target: Some("src/main.rs".into()) },
-            Entry { path: "src".into(), kind: EntryKind::Dir, size: 0, mtime_ns: 0, mode: 0o755, target: None },
+            Entry {
+                path: "src/main.rs".into(),
+                kind: EntryKind::File,
+                size: 12,
+                mtime_ns: 1_700_000_000_123_456_789,
+                mode: 0o644,
+                target: None,
+            },
+            Entry {
+                path: "link".into(),
+                kind: EntryKind::Symlink,
+                size: 0,
+                mtime_ns: 1,
+                mode: 0o777,
+                target: Some("src/main.rs".into()),
+            },
+            Entry {
+                path: "src".into(),
+                kind: EntryKind::Dir,
+                size: 0,
+                mtime_ns: 0,
+                mode: 0o755,
+                target: None,
+            },
         ];
         let mut bytes = Vec::new();
         write_binary(&entries, &mut bytes).unwrap();
@@ -401,24 +522,50 @@ mod tests {
 
     #[test]
     fn binary_listing_rejects_truncation_and_malformed_fields() {
-        let entry = Entry { path: "file".into(), kind: EntryKind::Symlink, size: 0, mtime_ns: -1, mode: 0o777, target: Some("target".into()) };
+        let entry = Entry {
+            path: "file".into(),
+            kind: EntryKind::Symlink,
+            size: 0,
+            mtime_ns: -1,
+            mode: 0o777,
+            target: Some("target".into()),
+        };
         let mut bytes = Vec::new();
         write_binary(std::slice::from_ref(&entry), &mut bytes).unwrap();
         for end in 0..bytes.len() {
-            assert!(read_binary(&bytes[..end]).is_err(), "accepted truncation at {end}");
+            assert!(
+                read_binary(&bytes[..end]).is_err(),
+                "accepted truncation at {end}"
+            );
         }
         let mut trailing = bytes.clone();
         trailing.push(0);
-        assert_eq!(read_binary(trailing.as_slice()).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            read_binary(trailing.as_slice()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
         for (offset, value) in [(16, 0xff), (20, 3), (41, 2)] {
             let mut malformed = bytes.clone();
             malformed[offset] = value;
-            assert!(read_binary(malformed.as_slice()).is_err(), "accepted malformed byte at {offset}");
+            assert!(
+                read_binary(malformed.as_slice()).is_err(),
+                "accepted malformed byte at {offset}"
+            );
         }
         for path in ["", "../escape", "/absolute", "bad\0path"] {
             let mut malformed = Vec::new();
-            write_binary(&[Entry { path: path.into(), ..entry.clone() }], &mut malformed).unwrap();
-            assert!(read_binary(malformed.as_slice()).is_err(), "accepted path {path:?}");
+            write_binary(
+                &[Entry {
+                    path: path.into(),
+                    ..entry.clone()
+                }],
+                &mut malformed,
+            )
+            .unwrap();
+            assert!(
+                read_binary(malformed.as_slice()).is_err(),
+                "accepted path {path:?}"
+            );
         }
         for count in [MAX_BINARY_RECORDS, MAX_BINARY_RECORDS + 1] {
             let mut short = BINARY_MAGIC.to_vec();
@@ -428,7 +575,10 @@ mod tests {
         let mut long_path = BINARY_MAGIC.to_vec();
         long_path.extend_from_slice(&1u32.to_le_bytes());
         long_path.extend_from_slice(&(MAX_BINARY_PATH + 1).to_le_bytes());
-        assert_eq!(read_binary(long_path.as_slice()).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            read_binary(long_path.as_slice()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]
@@ -440,7 +590,14 @@ mod tests {
                 self.0.read(&mut buf[..len])
             }
         }
-        let entry = Entry { path: "dir/file".into(), kind: EntryKind::File, size: 42, mtime_ns: -1, mode: 0o644, target: None };
+        let entry = Entry {
+            path: "dir/file".into(),
+            kind: EntryKind::File,
+            size: 42,
+            mtime_ns: -1,
+            mode: 0o644,
+            target: None,
+        };
         let mut bytes = Vec::new();
         write_binary(std::slice::from_ref(&entry), &mut bytes).unwrap();
         assert_eq!(read_binary(ShortReads(bytes.as_slice())).unwrap(), [entry]);
@@ -449,7 +606,10 @@ mod tests {
     #[test]
     fn gitignore_can_be_turned_off() {
         let dir = tree();
-        let rules = SyncRules { gitignore: false, ..SyncRules::default() };
+        let rules = SyncRules {
+            gitignore: false,
+            ..SyncRules::default()
+        };
         let entries = scan(dir.path(), &rules, None).unwrap();
         assert!(paths(&entries).contains(&"node_modules/a/index.js"));
         assert!(paths(&entries).contains(&"src/gen/out.rs"));
@@ -464,8 +624,15 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".git/refs")).unwrap();
         std::fs::write(dir.path().join(".git/HEAD"), "ref").unwrap();
         let default = scan(dir.path(), &SyncRules::default(), None).unwrap();
-        assert!(!paths(&default).iter().any(|p| p.starts_with(".git/") || *p == ".git"));
-        let synced = SyncRules { git: crate::sync::GitHandling::Sync, ..SyncRules::default() };
+        assert!(
+            !paths(&default)
+                .iter()
+                .any(|p| p.starts_with(".git/") || *p == ".git")
+        );
+        let synced = SyncRules {
+            git: crate::sync::GitHandling::Sync,
+            ..SyncRules::default()
+        };
         assert!(paths(&scan(dir.path(), &synced, None).unwrap()).contains(&".git/HEAD"));
         let git_scope = vec![".git".to_string()];
         let only = scan(dir.path(), &SyncRules::git_only(), Some(&git_scope)).unwrap();

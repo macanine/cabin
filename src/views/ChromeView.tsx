@@ -88,6 +88,9 @@ export function ChromeView() {
 
   useEffect(() => {
     if (machine && machine.state !== "notInstalled") void load();
+    // Narrowed to the fields this effect reads: the machine object changes on
+    // every resource sample, and `load` writes state this effect owns.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [machine?.state, machine?.connection, machine?.busy, load]);
 
   const installing = working === "install" || machine?.busy === INSTALLING;

@@ -23,7 +23,7 @@ function ghosttyCellMetrics(): Plugin {
   const backingSize = /this\.canvas\.width = ([\w$]+) \* this\.devicePixelRatio, this\.canvas\.height = ([\w$]+) \* this\.devicePixelRatio/;
   const needsResize = /this\.canvas\.width !== ([\w$]+)\.cols \* this\.metrics\.width \* this\.devicePixelRatio \|\| this\.canvas\.height !== \1\.rows \* this\.metrics\.height \* this\.devicePixelRatio/;
   const glyphPaint = /(String\.fromCodePoint\(([\w$]+)\.codepoint \|\| 32\), )this\.ctx\.fillText\(([\w$]+), ([\w$]+), ([\w$]+)\)/;
-  const duplicateSizing = /    const ([\w$]+) = this\.renderer\.getMetrics\(\);\n    this\.canvas\.width = \1\.width \* ([\w$.]+), this\.canvas\.height = \1\.height \* ([\w$.]+), this\.canvas\.style\.width = `\$\{\1\.width \* \2\}px`, this\.canvas\.style\.height = `\$\{\1\.height \* \3\}px`, /g;
+  const duplicateSizing = / {4}const ([\w$]+) = this\.renderer\.getMetrics\(\);\n {4}this\.canvas\.width = \1\.width \* ([\w$.]+), this\.canvas\.height = \1\.height \* ([\w$.]+), this\.canvas\.style\.width = `\$\{\1\.width \* \2\}px`, this\.canvas\.style\.height = `\$\{\1\.height \* \3\}px`, /g;
   return {
     name: "ghostty-cell-metrics",
     transform(code, id) {

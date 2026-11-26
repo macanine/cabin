@@ -72,9 +72,7 @@ printf 'running=%s\n' "$running"
 #[test]
 #[ignore = "boots a disposable QEMU VM and installs packages from Ubuntu archives"]
 fn first_boot_replaces_virtual_kernel_metapackage_and_boots_generic() {
-    let image = PathBuf::from(
-        std::env::var_os("CABIN_TEST_IMAGE").expect("set CABIN_TEST_IMAGE"),
-    );
+    let image = PathBuf::from(std::env::var_os("CABIN_TEST_IMAGE").expect("set CABIN_TEST_IMAGE"));
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let cfg = vm_core::config::build_config(
         &serde_json::json!({"name": "kernel-test", "username": "nettest", "hostname": "kernel-test", "network_mode": "user"}),
@@ -110,7 +108,12 @@ fn first_boot_replaces_virtual_kernel_metapackage_and_boots_generic() {
     .unwrap();
 
     let iso = temp.0.join("seed.iso");
-    vm_core::platform::build_seed_iso(&temp.0.join("seed"), &iso, &["user-data", "meta-data", "network-config"]).unwrap();
+    vm_core::platform::build_seed_iso(
+        &temp.0.join("seed"),
+        &iso,
+        &["user-data", "meta-data", "network-config"],
+    )
+    .unwrap();
     let disk = temp.0.join("disk.qcow2");
     run(Command::new("qemu-img")
         .args(["create", "-f", "qcow2", "-F", "qcow2", "-b"])
@@ -191,30 +194,50 @@ fn first_boot_replaces_virtual_kernel_metapackage_and_boots_generic() {
 fn expands_an_existing_ubuntu_root_without_cloud_init_or_data_loss() {
     let image = PathBuf::from(std::env::var_os("CABIN_TEST_IMAGE").expect("set CABIN_TEST_IMAGE"));
     let helper = PathBuf::from(std::env::var_os("CABIND_TEST_BIN").expect("set CABIND_TEST_BIN"));
-    let temp = Scratch(std::env::temp_dir().join(format!("cabin-grow-root-live-{}", std::process::id())));
+    let temp =
+        Scratch(std::env::temp_dir().join(format!("cabin-grow-root-live-{}", std::process::id())));
     std::fs::create_dir(&temp.0).unwrap();
     let key = temp.0.join("key");
-    run(Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-f"]).arg(&key));
+    run(Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&key));
     let public = std::fs::read_to_string(temp.0.join("key.pub")).unwrap();
-    let user_data = format!(r#"#cloud-config
+    let user_data = format!(
+        r#"#cloud-config
 users:
   - name: nettest
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: true
     ssh_authorized_keys: [{}]
-    "#, serde_json::to_string(public.trim()).unwrap());
+    "#,
+        serde_json::to_string(public.trim()).unwrap()
+    );
     let iso = temp.0.join("seed.iso");
-    vm_core::iso::build_iso(&iso, &[
-        ("user-data", user_data.as_bytes()),
-        ("meta-data", b"instance-id: cabin-grow-test\nlocal-hostname: cabin-grow-test\n"),
-    ]).unwrap();
+    vm_core::iso::build_iso(
+        &iso,
+        &[
+            ("user-data", user_data.as_bytes()),
+            (
+                "meta-data",
+                b"instance-id: cabin-grow-test\nlocal-hostname: cabin-grow-test\n",
+            ),
+        ],
+    )
+    .unwrap();
     let disk = temp.0.join("disk.qcow2");
-    run(Command::new("qemu-img").args(["convert", "-O", "qcow2"]).arg(&image).arg(&disk));
+    run(Command::new("qemu-img")
+        .args(["convert", "-O", "qcow2"])
+        .arg(&image)
+        .arg(&disk));
     run(Command::new("qemu-img").arg("resize").arg(&disk).arg("6G"));
     let vars = temp.0.join("vars.fd");
     std::fs::copy("/opt/homebrew/share/qemu/edk2-arm-vars.fd", &vars).unwrap();
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
 
     let start = |cpus: &str, memory: &str| {
         let log_path = temp.0.join("serial.log");
@@ -230,14 +253,23 @@ users:
         let vm = Vm(child);
         let deadline = Instant::now() + Duration::from_secs(120);
         while !ssh(port, &key, "true").status.success() {
-            assert!(Instant::now() < deadline, "{}", std::fs::read_to_string(&log_path).unwrap_or_default());
+            assert!(
+                Instant::now() < deadline,
+                "{}",
+                std::fs::read_to_string(&log_path).unwrap_or_default()
+            );
             std::thread::sleep(Duration::from_secs(1));
         }
         vm
     };
     let probe = |command: &str| {
         let output = ssh(port, &key, command);
-        assert!(output.status.success(), "{command}: {} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{command}: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         String::from_utf8(output.stdout).unwrap().trim().to_string()
     };
     let stop = |mut vm: Vm| {
@@ -248,24 +280,50 @@ users:
             std::thread::sleep(Duration::from_millis(200));
         }
     };
-    let root_bytes = || probe("findmnt --bytes --noheadings --output SIZE --mountpoint /").parse::<u64>().unwrap();
+    let root_bytes = || {
+        probe("findmnt --bytes --noheadings --output SIZE --mountpoint /")
+            .parse::<u64>()
+            .unwrap()
+    };
 
     let vm = start("1", "1024");
-    probe("timeout 90 cloud-init status --wait && printf cabin-sentinel > ~/disk-sentinel && sudo touch /etc/cloud/cloud-init.disabled");
+    probe(
+        "timeout 90 cloud-init status --wait && printf cabin-sentinel > ~/disk-sentinel && sudo touch /etc/cloud/cloud-init.disabled",
+    );
     let before = root_bytes();
     assert_eq!(probe("nproc"), "1");
     stop(vm);
 
     run(Command::new("qemu-img").arg("resize").arg(&disk).arg("8G"));
     let vm = start("2", "2048");
-    run(Command::new("scp").args(["-q", "-F", "/dev/null", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-i"])
-        .arg(&key).args(["-P", &port.to_string()]).arg(&helper).arg("nettest@127.0.0.1:/tmp/cabind-grow-test"));
+    run(Command::new("scp")
+        .args([
+            "-q",
+            "-F",
+            "/dev/null",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-i",
+        ])
+        .arg(&key)
+        .args(["-P", &port.to_string()])
+        .arg(&helper)
+        .arg("nettest@127.0.0.1:/tmp/cabind-grow-test"));
     assert_eq!(probe("nproc"), "2");
-    assert_eq!(root_bytes(), before, "cloud-init should not have expanded the root");
+    assert_eq!(
+        root_bytes(),
+        before,
+        "cloud-init should not have expanded the root"
+    );
     let grow = "chmod 0755 /tmp/cabind-grow-test && sudo -n /tmp/cabind-grow-test guest-system grow-root 8589934592";
     println!("{}", probe(grow));
     let after = root_bytes();
-    assert!(after > before + 1024 * 1024 * 1024, "root filesystem did not grow: {before} -> {after}");
+    assert!(
+        after > before + 1024 * 1024 * 1024,
+        "root filesystem did not grow: {before} -> {after}"
+    );
     assert_eq!(probe("cat ~/disk-sentinel"), "cabin-sentinel");
     probe(grow);
     assert_eq!(root_bytes(), after);

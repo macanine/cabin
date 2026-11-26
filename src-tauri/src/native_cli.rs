@@ -680,7 +680,9 @@ fn stream(dir: &Path, lane: &str, job: Job, tty: bool) -> io::Result<u8> {
     sock.set_read_timeout(Some(Duration::from_secs(5)))?;
     sock.set_write_timeout(Some(Duration::from_secs(5)))?;
     let initial_size = match &job {
-        Job::Agent { tty: Some(size), .. } => [size.cols, size.rows, size.pixel_width, size.pixel_height],
+        Job::Agent {
+            tty: Some(size), ..
+        } => [size.cols, size.rows, size.pixel_width, size.pixel_height],
         _ => winsize(),
     };
     let request = Request {
@@ -724,7 +726,7 @@ fn stream(dir: &Path, lane: &str, job: Job, tty: bool) -> io::Result<u8> {
                 let size = winsize();
                 if size != last {
                     let mut dimensions = [0; 8];
-                    for (bytes, value) in dimensions.chunks_exact_mut(2).zip(size) {
+                    for (bytes, value) in dimensions.as_chunks_mut::<2>().0.iter_mut().zip(size) {
                         bytes.copy_from_slice(&value.to_be_bytes());
                     }
                     if frame(&mut *tx.lock().unwrap(), RESIZE, &dimensions).is_err() {

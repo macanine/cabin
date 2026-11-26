@@ -838,7 +838,9 @@ impl Step for DeviceSealStep {
             {
                 return message(format!(
                     "device verification is not acceptable (errors={}, warnings={}, unverified={}); report: {}",
-                    report["errors"], report["warnings"], report["unverified"],
+                    report["errors"],
+                    report["warnings"],
+                    report["unverified"],
                     cfg.device_report_path().display()
                 ));
             }
@@ -891,7 +893,8 @@ impl Step for DeviceSealStep {
             Ok(())
         })();
         if result.is_err() {
-            let serial_tail = tail_file(&cfg.instance_logs_dir().join("serial-seal-runtime.log"), 80);
+            let serial_tail =
+                tail_file(&cfg.instance_logs_dir().join("serial-seal-runtime.log"), 80);
             if !serial_tail.is_empty() {
                 ctx.log(&format!("runtime serial log tail:\n{serial_tail}"));
             }

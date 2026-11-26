@@ -51,9 +51,7 @@ fn ssh(port: u16, key: &Path, command: &str) -> std::process::Output {
 #[test]
 #[ignore = "starts an isolated QEMU VM and accesses the network"]
 fn guest_dns_tcp_proxy_switch_and_fail_closed() {
-    let image = PathBuf::from(
-        std::env::var_os("CABIN_TEST_IMAGE").expect("set CABIN_TEST_IMAGE"),
-    );
+    let image = PathBuf::from(std::env::var_os("CABIN_TEST_IMAGE").expect("set CABIN_TEST_IMAGE"));
     let temp = std::env::temp_dir().join(format!("cabin-gw-{}", std::process::id()));
     std::fs::create_dir_all(temp.join("seed")).unwrap();
     let key = temp.join("key");
@@ -74,7 +72,12 @@ fn guest_dns_tcp_proxy_switch_and_fail_closed() {
         .join(":");
     std::fs::write(temp.join("seed/network-config"), format!("version: 2\nethernets:\n  mgmt0:\n    match: {{macaddress: '52:54:00:12:34:56'}}\n    set-name: mgmt0\n    dhcp4: true\n    dhcp4-overrides: {{use-routes: false, use-dns: false}}\n    optional: true\n  data0:\n    match: {{macaddress: '{data_mac}'}}\n    set-name: data0\n    dhcp4: true\n")).unwrap();
     let iso = temp.join("seed.iso");
-    vm_core::platform::build_seed_iso(&temp.join("seed"), &iso, &["user-data", "meta-data", "network-config"]).unwrap();
+    vm_core::platform::build_seed_iso(
+        &temp.join("seed"),
+        &iso,
+        &["user-data", "meta-data", "network-config"],
+    )
+    .unwrap();
     let disk = temp.join("disk.qcow2");
     run(Command::new("qemu-img")
         .args(["create", "-f", "qcow2", "-F", "qcow2", "-b"])
@@ -119,7 +122,19 @@ fn guest_dns_tcp_proxy_switch_and_fail_closed() {
     let helper = support::build_guest_helper(&helper_dir);
     let mut install = Command::new("ssh");
     install
-        .args(["-F", "none", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-i"])
+        .args([
+            "-F",
+            "none",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-i",
+        ])
         .arg(&key)
         .args(["-p", &port.to_string(), "nettest@127.0.0.1"]);
     support::install_guest_helper(&mut install, &helper);

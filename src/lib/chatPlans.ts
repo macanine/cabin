@@ -149,7 +149,7 @@ export const PLAN_EXECUTION_LABEL: Record<PlanExecutionStatus, string> = {
 export function planSummary(content: string, limit = 280): string {
   const text = content
     .replace(/```[\s\S]*?```/g, " ")
-    .replace(/[#>*_`[\]\-]+/g, " ")
+    .replace(/[#>*_`[\]-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   return text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text;

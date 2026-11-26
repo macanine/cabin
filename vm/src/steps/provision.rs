@@ -74,7 +74,7 @@ sudo -n true && echo yes || echo no
 fn verify_script(kernel: crate::os::KernelSwitch) -> String {
     let mut script = VERIFY_SCRIPT.to_string();
     script.push_str(&format!(
-            r#"echo __VMCTL_KERNEL_GENERIC__
+        r#"echo __VMCTL_KERNEL_GENERIC__
 dpkg-query -W -f='${{db:Status-Status}}' {install} 2>/dev/null
 echo
 echo __VMCTL_KERNEL_MANUAL__
@@ -86,9 +86,9 @@ for package in {replaces}; do
     fi
 done
 "#,
-            install = kernel.install,
-            replaces = kernel.replaces.join(" "),
-        ));
+        install = kernel.install,
+        replaces = kernel.replaces.join(" "),
+    ));
     script.push_str("echo __VMCTL_END__\n");
     script
 }
@@ -145,7 +145,10 @@ fn parse_cloud_init_poll(output: &str) -> Option<(&str, u64, &str)> {
 }
 
 fn cloud_init_still_running(status: &str) -> bool {
-    status.is_empty() || ["running", "not started", "not run"].iter().any(|s| status.contains(s))
+    status.is_empty()
+        || ["running", "not started", "not run"]
+            .iter()
+            .any(|s| status.contains(s))
 }
 
 /// Streams the guest's cloud-init output into the step log until cloud-init
@@ -156,8 +159,10 @@ fn follow_cloud_init(ctx: &StepContext, runtime: &Runtime, timeout: std::time::D
     let mut offset = 0u64;
     let mut pending = String::new();
     while std::time::Instant::now() < deadline {
-        let (rc, out) =
-            runtime.ssh_capture(&cloud_init_poll_command(offset), std::time::Duration::from_secs(30));
+        let (rc, out) = runtime.ssh_capture(
+            &cloud_init_poll_command(offset),
+            std::time::Duration::from_secs(30),
+        );
         if let Some((chunk, size, status)) = parse_cloud_init_poll(&out).filter(|_| rc != 255) {
             pending.push_str(chunk);
             while let Some(end) = pending.find('\n') {
@@ -575,7 +580,9 @@ impl Step for ProvisionStep {
     fn rollback(&self, ctx: &mut StepContext, _state: &Value, force: bool) -> Result<()> {
         let cfg = ctx.cfg.clone();
         if !force && cfg.disk_path().exists() {
-            return message("Provisioning rollback would erase the existing disk. The disk was kept.");
+            return message(
+                "Provisioning rollback would erase the existing disk. The disk was kept.",
+            );
         }
         ensure_stopped(&cfg, ctx)?;
         if cfg.identity_path().exists() {
@@ -672,7 +679,8 @@ mod tests {
 
     #[test]
     fn cloud_init_poll_keeps_partial_lines_and_reads_status() {
-        let out = "Get:1 http://ports\npartial\n__VMCTL_SIZE__\n42\n__VMCTL_STATUS__\nstatus: running\n";
+        let out =
+            "Get:1 http://ports\npartial\n__VMCTL_SIZE__\n42\n__VMCTL_STATUS__\nstatus: running\n";
         assert_eq!(
             parse_cloud_init_poll(out),
             Some(("Get:1 http://ports\npartial", 42, "status: running"))

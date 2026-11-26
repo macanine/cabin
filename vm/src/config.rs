@@ -382,7 +382,11 @@ impl Config {
     pub(crate) fn running_serial_log_path(&self) -> PathBuf {
         let path = self.serial_log_path();
         let legacy = self.instance_file("serial.log");
-        if !path.is_file() && legacy.is_file() { legacy } else { path }
+        if !path.is_file() && legacy.is_file() {
+            legacy
+        } else {
+            path
+        }
     }
     pub fn logs_dir(&self) -> PathBuf {
         StatePaths::new(&self.home).logs()

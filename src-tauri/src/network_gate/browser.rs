@@ -1,6 +1,6 @@
 use agent_core::model::{
-    BrowserEnvironmentProbe, BrowserEnvironmentState, BrowserLive, GuestNetworkProbe, NetworkCheckCategory,
-    NetworkCheckItem, NetworkCheckStatus, NetworkEvidence,
+    BrowserEnvironmentProbe, BrowserEnvironmentState, BrowserLive, GuestNetworkProbe,
+    NetworkCheckCategory, NetworkCheckItem, NetworkCheckStatus, NetworkEvidence,
 };
 
 use super::exit::normalized_zone;
@@ -20,14 +20,24 @@ fn normalized_language(value: &str) -> String {
     }
 }
 
-pub(super) fn browser_revision_material(browser: Option<&BrowserEnvironmentProbe>) -> Option<String> {
+pub(super) fn browser_revision_material(
+    browser: Option<&BrowserEnvironmentProbe>,
+) -> Option<String> {
     let browser = browser?;
     // Only what decides the gate: the live browser coming and going (closed,
     // asleep, reopened) must not invalidate a valid grant.
-    serde_json::to_string(&(browser.enabled, &browser.expected, browser.installed.as_ref())).ok()
+    serde_json::to_string(&(
+        browser.enabled,
+        &browser.expected,
+        browser.installed.as_ref(),
+    ))
+    .ok()
 }
 
-fn same_browser_environment(left: &BrowserEnvironmentState, right: &BrowserEnvironmentState) -> bool {
+fn same_browser_environment(
+    left: &BrowserEnvironmentState,
+    right: &BrowserEnvironmentState,
+) -> bool {
     normalized_zone(left.timezone.as_deref().unwrap_or(""))
         == normalized_zone(right.timezone.as_deref().unwrap_or(""))
         && normalized_language(left.language.as_deref().unwrap_or(""))
@@ -44,12 +54,31 @@ fn state_evidence(
     at: i64,
 ) {
     let or_unknown = |value: Option<&str>| value.unwrap_or("unknown").to_string();
-    out.push(evidence(&format!("{prefix} time zone"), or_unknown(state.timezone.as_deref()), source, at));
-    out.push(evidence(&format!("{prefix} language"), or_unknown(state.language.as_deref()), source, at));
-    out.push(evidence(&format!("{prefix} platform"), or_unknown(state.platform.as_deref()), source, at));
+    out.push(evidence(
+        &format!("{prefix} time zone"),
+        or_unknown(state.timezone.as_deref()),
+        source,
+        at,
+    ));
+    out.push(evidence(
+        &format!("{prefix} language"),
+        or_unknown(state.language.as_deref()),
+        source,
+        at,
+    ));
+    out.push(evidence(
+        &format!("{prefix} platform"),
+        or_unknown(state.platform.as_deref()),
+        source,
+        at,
+    ));
     out.push(evidence(
         &format!("{prefix} languages"),
-        if state.languages.is_empty() { "unknown".into() } else { state.languages.join(", ") },
+        if state.languages.is_empty() {
+            "unknown".into()
+        } else {
+            state.languages.join(", ")
+        },
         source,
         at,
     ));
@@ -59,8 +88,14 @@ fn state_evidence(
 /// when the installed profile could not be read); `None` without a live
 /// observation.
 pub fn live_matches(browser: &BrowserEnvironmentProbe) -> Option<bool> {
-    let observed = browser.observed.as_ref().filter(|_| browser.live == BrowserLive::Observed)?;
-    Some(same_browser_environment(browser.installed.as_ref().unwrap_or(&browser.expected), observed))
+    let observed = browser
+        .observed
+        .as_ref()
+        .filter(|_| browser.live == BrowserLive::Observed)?;
+    Some(same_browser_environment(
+        browser.installed.as_ref().unwrap_or(&browser.expected),
+        observed,
+    ))
 }
 
 /// Whether the browser should be brought in line with the machine: its
@@ -129,17 +164,37 @@ pub(super) fn browser_checks(
         "Chrome's time zone or language differs from the machine's".into()
     };
     let mut settings = Vec::new();
-    state_evidence(&mut settings, "Configured", expected, "browser settings", at);
+    state_evidence(
+        &mut settings,
+        "Configured",
+        expected,
+        "browser settings",
+        at,
+    );
     if let Some(installed) = browser.installed.as_ref() {
         state_evidence(&mut settings, "Installed", installed, "guest profile", at);
     }
-    settings.push(evidence("Machine time zone", guest.timezone.as_deref().unwrap_or("unknown"), "machine environment", at));
-    settings.push(evidence("Machine language", guest.language.as_deref().unwrap_or("unknown"), "machine environment", at));
+    settings.push(evidence(
+        "Machine time zone",
+        guest.timezone.as_deref().unwrap_or("unknown"),
+        "machine environment",
+        at,
+    ));
+    settings.push(evidence(
+        "Machine language",
+        guest.language.as_deref().unwrap_or("unknown"),
+        "machine environment",
+        at,
+    ));
     let installed_check = item(
         "browser",
         "Browser environment",
         NetworkCheckCategory::Environment,
-        if ok { NetworkCheckStatus::Pass } else { NetworkCheckStatus::Fail },
+        if ok {
+            NetworkCheckStatus::Pass
+        } else {
+            NetworkCheckStatus::Fail
+        },
         true,
         summary,
         settings,
@@ -151,7 +206,11 @@ pub(super) fn browser_checks(
             let mut values = Vec::new();
             state_evidence(&mut values, "Live", observed, "browser page", at);
             if live_matches(browser) == Some(true) {
-                (NetworkCheckStatus::Pass, "The open pages use the installed settings".to_string(), values)
+                (
+                    NetworkCheckStatus::Pass,
+                    "The open pages use the installed settings".to_string(),
+                    values,
+                )
             } else {
                 (
                     NetworkCheckStatus::Fail,
@@ -162,17 +221,23 @@ pub(super) fn browser_checks(
         }
         (BrowserLive::NotRunning, _) => (
             NetworkCheckStatus::Skipped,
-            detail.clone().unwrap_or_else(|| "Chrome is not running; it starts with the installed settings".into()),
+            detail.clone().unwrap_or_else(|| {
+                "Chrome is not running; it starts with the installed settings".into()
+            }),
             Vec::new(),
         ),
         (BrowserLive::Idle, _) | (BrowserLive::Observed, None) => (
             NetworkCheckStatus::Skipped,
-            detail.clone().unwrap_or_else(|| "No open page to inspect".into()),
+            detail
+                .clone()
+                .unwrap_or_else(|| "No open page to inspect".into()),
             Vec::new(),
         ),
         (BrowserLive::Unavailable, _) => (
             NetworkCheckStatus::Unknown,
-            detail.clone().unwrap_or_else(|| "The live browser could not be inspected".into()),
+            detail
+                .clone()
+                .unwrap_or_else(|| "The live browser could not be inspected".into()),
             Vec::new(),
         ),
     };
@@ -193,8 +258,8 @@ pub(super) fn browser_checks(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{CheckInputs, evaluate_report, revision_for};
     use super::super::test_support::*;
+    use super::super::{CheckInputs, evaluate_report, revision_for};
     use super::*;
     use agent_core::model::{NetworkCheckReport, NetworkRoute};
 
@@ -207,7 +272,10 @@ mod tests {
         }
     }
 
-    fn browser_report(guest: &GuestNetworkProbe, browser: &BrowserEnvironmentProbe) -> NetworkCheckReport {
+    fn browser_report(
+        guest: &GuestNetworkProbe,
+        browser: &BrowserEnvironmentProbe,
+    ) -> NetworkCheckReport {
         let route = NetworkRoute::default();
         let samples = vec![
             Ok(geo("one", "203.0.113.8", "America/New_York")),
@@ -280,7 +348,10 @@ mod tests {
         assert!(live.summary.contains("restart"));
 
         // The same Chrome on the right values passes.
-        let matching = BrowserEnvironmentProbe { observed: Some(browser_state("America/New_York")), ..browser };
+        let matching = BrowserEnvironmentProbe {
+            observed: Some(browser_state("America/New_York")),
+            ..browser
+        };
         assert!(browser_report(&guest, &matching).can_open);
     }
 
@@ -318,8 +389,16 @@ mod tests {
         let item = check(&report, "browser");
         assert_eq!(item.status, NetworkCheckStatus::Fail);
         assert!(item.summary.contains("differs from the machine's"));
-        assert!(item.evidence.iter().any(|entry| entry.label == "Machine language" && entry.value == "de_DE.UTF-8"));
-        assert!(item.evidence.iter().any(|entry| entry.label == "Installed languages"));
+        assert!(
+            item.evidence
+                .iter()
+                .any(|entry| entry.label == "Machine language" && entry.value == "de_DE.UTF-8")
+        );
+        assert!(
+            item.evidence
+                .iter()
+                .any(|entry| entry.label == "Installed languages")
+        );
     }
 
     #[test]

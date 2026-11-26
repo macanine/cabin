@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use agent_core::model::{NetworkConnectivity, NetworkGateMode};
 
-use super::{ExitBaseline, CheckAttempt, GlobalNetwork, HealthChange, HealthTarget, Runtime};
+use super::{CheckAttempt, ExitBaseline, GlobalNetwork, HealthChange, HealthTarget, Runtime};
 use crate::network_health::HoldCheck;
 
 impl GlobalNetwork {
@@ -42,7 +42,11 @@ impl GlobalNetwork {
         let mut runtime = self.runtime();
         runtime.sleeping = sleeping;
         runtime.path_revision += 1;
-        if runtime.active_route.as_ref().is_some_and(|route| route.bind_interface.is_some()) {
+        if runtime
+            .active_route
+            .as_ref()
+            .is_some_and(|route| route.bind_interface.is_some())
+        {
             runtime.clear_upstream();
         }
         runtime.connectivity.clear();
@@ -80,7 +84,8 @@ impl GlobalNetwork {
         self.expire(&mut runtime);
         let route = self.route().ok();
         self.revoke_drifted_route(&mut runtime, route.as_ref());
-        if runtime.sleeping || runtime.installing
+        if runtime.sleeping
+            || runtime.installing
             || runtime.grant.paused
             || (runtime.grant.mode != NetworkGateMode::Open
                 && !(runtime.connectivity.mode == NetworkConnectivity::Blocked
@@ -113,7 +118,10 @@ impl GlobalNetwork {
         target: &HealthTarget,
         result: Result<Option<Ipv4Addr>, String>,
     ) -> HealthChange {
-        if matches!(target.check, Some(HoldCheck::Guest | HoldCheck::Verification)) {
+        if matches!(
+            target.check,
+            Some(HoldCheck::Guest | HoldCheck::Verification)
+        ) {
             return HealthChange::default();
         }
         self.observe_reachability(target, result, None)
@@ -135,7 +143,10 @@ impl GlobalNetwork {
         target: &HealthTarget,
         result: Result<Option<(Ipv4Addr, Option<String>)>, String>,
     ) -> HealthChange {
-        if matches!(target.check, Some(HoldCheck::Guest | HoldCheck::Verification)) {
+        if matches!(
+            target.check,
+            Some(HoldCheck::Guest | HoldCheck::Verification)
+        ) {
             return HealthChange::default();
         }
         let (result, country) = match result {
@@ -157,7 +168,10 @@ impl GlobalNetwork {
         if runtime.grant.mode == NetworkGateMode::Open
             && self.revoke_drifted_route(&mut runtime, self.route().ok().as_ref())
         {
-            return HealthChange { changed: true, hard_block: false };
+            return HealthChange {
+                changed: true,
+                hard_block: false,
+            };
         }
         if !target.is_current(&runtime) || runtime.gateway.is_none() || runtime.grant.paused {
             return HealthChange::default();
@@ -168,23 +182,41 @@ impl GlobalNetwork {
             let baseline = self.exit_baseline(route);
             let violation = match &baseline {
                 Ok(Some(approved)) => approved.violation(Some(*ip), country, None),
-                Err(error) => Some(format!("Cannot read the approved exit policy. {}", error.message)),
+                Err(error) => Some(format!(
+                    "Cannot read the approved exit policy. {}",
+                    error.message
+                )),
                 Ok(None) => None,
             };
             if let Some(reason) = violation {
                 self.block_exit(&mut runtime, reason);
-                return HealthChange { changed: true, hard_block: true };
+                return HealthChange {
+                    changed: true,
+                    hard_block: true,
+                };
             }
-            if let Ok(Some(ExitBaseline::Region { country: approved, continent })) = baseline {
-                if runtime.verified_exit != Some(*ip) && !runtime.verified_samples.iter().flatten().any(|sample|
-                    sample.ip.parse::<Ipv4Addr>() == Ok(*ip)
-                        && sample.country_code.as_deref() == Some(approved.as_str())
-                        && sample.continent_code.as_deref() == Some(continent.as_str()))
+            if let Ok(Some(ExitBaseline::Region {
+                country: approved,
+                continent,
+            })) = baseline
+            {
+                if runtime.verified_exit != Some(*ip)
+                    && !runtime.verified_samples.iter().flatten().any(|sample| {
+                        sample.ip.parse::<Ipv4Addr>() == Ok(*ip)
+                            && sample.country_code.as_deref() == Some(approved.as_str())
+                            && sample.continent_code.as_deref() == Some(continent.as_str())
+                    })
                 {
                     self.cancel_hold(&mut runtime);
-                    let changed = self.start_hold(&mut runtime, HoldCheck::Verification,
-                        "Checking the new exit address against the approved region".into());
-                    return HealthChange { changed, hard_block: false };
+                    let changed = self.start_hold(
+                        &mut runtime,
+                        HoldCheck::Verification,
+                        "Checking the new exit address against the approved region".into(),
+                    );
+                    return HealthChange {
+                        changed,
+                        hard_block: false,
+                    };
                 }
                 runtime.verified_exit = Some(*ip);
             }
@@ -213,11 +245,17 @@ impl GlobalNetwork {
                     "Connectivity recovered. Waiting for a fresh environment check."
                 };
                 self.journal(&runtime, "recovered", message, None);
-                HealthChange { changed: true, hard_block: false }
+                HealthChange {
+                    changed: true,
+                    hard_block: false,
+                }
             }
             Err(reason) if target.check.is_some() => {
                 let hard_block = self.fail_hold(&mut runtime, reason);
-                HealthChange { changed: true, hard_block }
+                HealthChange {
+                    changed: true,
+                    hard_block,
+                }
             }
             Err(reason) => HealthChange {
                 changed: self.start_hold(&mut runtime, HoldCheck::Reachability, reason),
@@ -229,7 +267,12 @@ impl GlobalNetwork {
 
     /// A failed renewal must be retried by the verifier, which observes the
     /// guest path and required checks as well as the Mac's HTTPS connection.
-    pub fn recheck_verification(&self, attempt: &CheckAttempt, check: HoldCheck, reason: String) -> bool {
+    pub fn recheck_verification(
+        &self,
+        attempt: &CheckAttempt,
+        check: HoldCheck,
+        reason: String,
+    ) -> bool {
         let mut runtime = self.runtime();
         self.expire(&mut runtime);
         if !attempt.refresh
@@ -257,12 +300,19 @@ impl GlobalNetwork {
     pub fn fail_held_preflight(&self, target: &HealthTarget, reason: String) -> bool {
         let mut runtime = self.runtime();
         self.expire(&mut runtime);
-        target.check == Some(HoldCheck::Verification) && target.is_current(&runtime)
+        target.check == Some(HoldCheck::Verification)
+            && target.is_current(&runtime)
             && self.fail_hold(&mut runtime, reason)
     }
 
-    pub(super) fn start_hold(&self, runtime: &mut Runtime, check: HoldCheck, reason: String) -> bool {
-        if runtime.grant.mode != NetworkGateMode::Open || runtime.installing
+    pub(super) fn start_hold(
+        &self,
+        runtime: &mut Runtime,
+        check: HoldCheck,
+        reason: String,
+    ) -> bool {
+        if runtime.grant.mode != NetworkGateMode::Open
+            || runtime.installing
             || !runtime.connectivity.hold(check, reason.clone())
         {
             return false;
@@ -284,7 +334,12 @@ impl GlobalNetwork {
             runtime.path_revision += 1;
         }
         runtime.apply_policy();
-        self.journal(runtime, if blocked { "blocked" } else { "rechecking" }, &reason, None);
+        self.journal(
+            runtime,
+            if blocked { "blocked" } else { "rechecking" },
+            &reason,
+            None,
+        );
         blocked
     }
 
@@ -300,8 +355,8 @@ impl GlobalNetwork {
 mod tests {
     use super::*;
     use crate::global_network::test_support::*;
-    use agent_core::model::NetworkRoute;
     use crate::network_gate::route_revision;
+    use agent_core::model::NetworkRoute;
 
     #[test]
     fn connectivity_suspends_retries_and_rejects_stale_results() {
@@ -412,7 +467,11 @@ mod tests {
         for failures in 0..3 {
             network.observe_health(&target(), Err("temporary failure".into()));
             for _ in 0..failures {
-                assert!(!network.observe_health(&target(), Err("still unavailable".into())).hard_block);
+                assert!(
+                    !network
+                        .observe_health(&target(), Err("still unavailable".into()))
+                        .hard_block
+                );
             }
             assert!(network.observe_health(&target(), Ok(Some(exit))).changed);
             let status = network.status(true).unwrap();
@@ -435,14 +494,30 @@ mod tests {
         let exit = Ipv4Addr::new(203, 0, 113, 7);
         network.runtime().verified_exit = Some(exit);
         let renewal = network.begin_check(route_revision(&route), true).unwrap();
-        assert!(!network.recheck_verification(&renewal, HoldCheck::Guest, "Guest DNS failed".into()));
+        assert!(!network.recheck_verification(
+            &renewal,
+            HoldCheck::Guest,
+            "Guest DNS failed".into()
+        ));
         let target = network.health_target().unwrap();
         assert_eq!(target.check, Some(HoldCheck::Guest));
         assert!(!network.observe_health(&target, Ok(Some(exit))).changed);
-        assert!(!network.observe_guest_health(&target, Err("Guest DNS is still down".into())).hard_block);
+        assert!(
+            !network
+                .observe_guest_health(&target, Err("Guest DNS is still down".into()))
+                .hard_block
+        );
         assert_eq!(network.status(true).unwrap().failed_checks, 1);
-        assert!(!network.observe_guest_health(&target, Ok(Some(exit))).changed);
-        assert!(network.observe_guest_health(&network.health_target().unwrap(), Ok(Some(exit))).changed);
+        assert!(
+            !network
+                .observe_guest_health(&target, Ok(Some(exit)))
+                .changed
+        );
+        assert!(
+            network
+                .observe_guest_health(&network.health_target().unwrap(), Ok(Some(exit)))
+                .changed
+        );
         assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Open);
         network.stop();
         drop(network);
@@ -460,8 +535,15 @@ mod tests {
         let renewal = network.begin_check(revision.clone(), true).unwrap();
         network.recheck_verification(&renewal, HoldCheck::Verification, "Route stalled".into());
         let held = network.begin_check(revision.clone(), true).unwrap();
-        assert!(network.expire_hold(&mut network.runtime(), Instant::now() + crate::network_health::HOLD_TIMEOUT));
-        assert!(!network.finish_check(&held, passing_report(&revision), None, &[], None, None).unwrap());
+        assert!(network.expire_hold(
+            &mut network.runtime(),
+            Instant::now() + crate::network_health::HOLD_TIMEOUT
+        ));
+        assert!(
+            !network
+                .finish_check(&held, passing_report(&revision), None, &[], None, None)
+                .unwrap()
+        );
         let status = network.status(true).unwrap();
         assert_eq!(status.gate, NetworkGateMode::Closed);
         assert_eq!(status.connectivity, NetworkConnectivity::Blocked);
@@ -485,7 +567,11 @@ mod tests {
         network.runtime().verified_exit = Some(exit);
         let revision = route_revision(&route);
         let renewal = network.begin_check(revision.clone(), true).unwrap();
-        assert!(!network.recheck_verification(&renewal, HoldCheck::Verification, "Guest DNS failed".into()));
+        assert!(!network.recheck_verification(
+            &renewal,
+            HoldCheck::Verification,
+            "Guest DNS failed".into()
+        ));
         let held = network.health_target().unwrap();
         assert_eq!(held.check, Some(HoldCheck::Verification));
         assert!(!network.observe_health(&held, Ok(Some(exit))).changed);
@@ -494,12 +580,31 @@ mod tests {
         for failed in 1..=2 {
             let attempt = network.begin_check(revision.clone(), true).unwrap();
             assert!(attempt.held);
-            assert!(!network.recheck_verification(&attempt, HoldCheck::Verification, "Guest DNS still failed".into()));
-            assert!(!network.recheck_verification(&attempt, HoldCheck::Verification, "Duplicate result".into()));
+            assert!(!network.recheck_verification(
+                &attempt,
+                HoldCheck::Verification,
+                "Guest DNS still failed".into()
+            ));
+            assert!(!network.recheck_verification(
+                &attempt,
+                HoldCheck::Verification,
+                "Duplicate result".into()
+            ));
             assert_eq!(network.status(true).unwrap().failed_checks, failed);
         }
         let attempt = network.begin_check(revision.clone(), true).unwrap();
-        assert!(network.finish_check(&attempt, passing_report(&revision), Some(exit), &[], None, None).unwrap());
+        assert!(
+            network
+                .finish_check(
+                    &attempt,
+                    passing_report(&revision),
+                    Some(exit),
+                    &[],
+                    None,
+                    None
+                )
+                .unwrap()
+        );
         assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Open);
         assert_eq!(network.hold_check(), None);
         assert!(!network.fail_held_preflight(&held, "Stale failure".into()));
@@ -508,7 +613,18 @@ mod tests {
         network.recheck_verification(&renewal, HoldCheck::Verification, "Guest DNS failed".into());
         let attempt = network.begin_check(revision.clone(), true).unwrap();
         network.set_paused(true).unwrap();
-        assert!(!network.finish_check(&attempt, passing_report(&revision), Some(exit), &[], None, None).unwrap());
+        assert!(
+            !network
+                .finish_check(
+                    &attempt,
+                    passing_report(&revision),
+                    Some(exit),
+                    &[],
+                    None,
+                    None
+                )
+                .unwrap()
+        );
         assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Closed);
         assert_eq!(network.hold_check(), None);
         network.stop();
@@ -537,7 +653,11 @@ mod tests {
 
         let check = network.begin_check(revision.clone(), false).unwrap();
         network.system_sleep_changed(false); // Missed sleep notification.
-        assert!(!network.finish_check(&check, passing_report(&revision), None, &[], None, None).unwrap());
+        assert!(
+            !network
+                .finish_check(&check, passing_report(&revision), None, &[], None, None)
+                .unwrap()
+        );
         open_gate(&network, &route);
         network.stop();
         drop(network);

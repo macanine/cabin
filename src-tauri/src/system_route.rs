@@ -29,10 +29,15 @@ fn parse_route_get(output: &str) -> (Option<String>, Option<std::net::Ipv4Addr>)
     let field = |name: &str| {
         output.lines().find_map(|line| {
             let (key, value) = line.trim().split_once(':')?;
-            (key.trim() == name).then(|| value.trim().to_string()).filter(|value| !value.is_empty())
+            (key.trim() == name)
+                .then(|| value.trim().to_string())
+                .filter(|value| !value.is_empty())
         })
     };
-    (field("interface"), field("gateway").and_then(|value| value.parse().ok()))
+    (
+        field("interface"),
+        field("gateway").and_then(|value| value.parse().ok()),
+    )
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -47,10 +52,19 @@ fn classify(internet: &str, default: &str) -> SystemRoute {
     let (internet_interface, gateway) = parse_route_get(internet);
     let (default_interface, _) = parse_route_get(default);
     let tunnel = internet_interface.as_deref().is_some_and(|name| {
-        is_tunnel_name(name) || default_interface.as_deref().is_some_and(|default| default != name)
+        is_tunnel_name(name)
+            || default_interface
+                .as_deref()
+                .is_some_and(|default| default != name)
     });
-    let fake_ip = tunnel && gateway.is_some_and(|ip| ip.octets()[0] == 198 && (ip.octets()[1] & 0xfe) == 18);
-    SystemRoute { internet_interface, default_interface, tunnel, fake_ip }
+    let fake_ip =
+        tunnel && gateway.is_some_and(|ip| ip.octets()[0] == 198 && (ip.octets()[1] & 0xfe) == 18);
+    SystemRoute {
+        internet_interface,
+        default_interface,
+        tunnel,
+        fake_ip,
+    }
 }
 
 #[cfg(target_os = "macos")]

@@ -85,7 +85,11 @@ impl Host {
             .unwrap_or_else(|| "unknown rollback failure".into());
         let message = format!("The previous route could not be restored: {reason}");
         self.network.abandon_upstream(&message);
-        Err(AppError { code: "network_rollback".into(), message, details: None })
+        Err(AppError {
+            code: "network_rollback".into(),
+            message,
+            details: None,
+        })
     }
 
     fn candidate_error(&self, error: AppError, rollback: Result<(), AppError>) -> AppError {
@@ -113,7 +117,12 @@ impl Host {
         if let (Some(timezone), Some(language)) = (&guest.timezone, &guest.language)
             && crate::network_gate::browser_needs_follow(&probe, guest)
         {
-            match vm_core::shell::browser_follow_environment(self.machine.home(), &cfg.name, timezone, language) {
+            match vm_core::shell::browser_follow_environment(
+                self.machine.home(),
+                &cfg.name,
+                timezone,
+                language,
+            ) {
                 Ok(true) => {
                     if let Ok(cfg) = self.machine.config() {
                         probe = Self::audit_browser(&cfg);
@@ -121,7 +130,9 @@ impl Host {
                 }
                 Ok(false) => {}
                 Err(error) => {
-                    probe.error = Some(format!("The browser could not follow the machine environment: {error}"));
+                    probe.error = Some(format!(
+                        "The browser could not follow the machine environment: {error}"
+                    ));
                 }
             }
         }
@@ -136,20 +147,28 @@ impl Host {
         };
         match vm_core::browser::audit_environment(cfg) {
             Ok(value) => serde_json::from_value(value).unwrap_or_else(|error| {
-                failed(format!("The browser environment returned an invalid result: {error}"))
+                failed(format!(
+                    "The browser environment returned an invalid result: {error}"
+                ))
             }),
             Err(error) => failed(error.to_string()),
         }
     }
 
-    pub(super) fn apply_network_route(&self, route: &NetworkRoute) -> Result<NetworkStatus, AppError> {
+    pub(super) fn apply_network_route(
+        &self,
+        route: &NetworkRoute,
+    ) -> Result<NetworkStatus, AppError> {
         self.require_gateway()?;
         let connected = {
             let machine = self.status.read_lock();
-            machine.state == MachineState::Running && machine.connection == GuestConnection::Connected
+            machine.state == MachineState::Running
+                && machine.connection == GuestConnection::Connected
         };
         if !connected || self.network.status(true)?.paused {
-            return Err(unavailable("Start the machine and resume internet access to apply route changes."));
+            return Err(unavailable(
+                "Start the machine and resume internet access to apply route changes.",
+            ));
         }
         self.verify_route(route, VerificationKind::Candidate)
     }
@@ -169,7 +188,11 @@ impl Host {
             Err(error) if kind == VerificationKind::Candidate => {
                 let error = if let Some(point) = previous_gate {
                     let rollback = self.restore_network_transaction(&previous_route, point);
-                    let message = if rollback.is_ok() { "Previous route restored" } else { "Previous route could not be restored" };
+                    let message = if rollback.is_ok() {
+                        "Previous route restored"
+                    } else {
+                        "Previous route could not be restored"
+                    };
                     self.network.record_check("routeRollback", message, None);
                     self.candidate_error(error, rollback)
                 } else {
@@ -192,13 +215,16 @@ impl Host {
         let commit_candidate = kind == VerificationKind::Candidate;
         let cfg = self.machine.config().map_err(Self::vm_error)?;
         let profile_revision = cfg.environment_revision().map_err(Self::vm_error)?;
-        self.network.observe_environment_revision(Some(profile_revision.clone()));
+        self.network
+            .observe_environment_revision(Some(profile_revision.clone()));
         if self.status.read_lock().state != MachineState::Running {
             return Err(unavailable("Start the machine before checking its network"));
         }
         let state = self.network.status(true)?;
         if state.paused {
-            return Err(unavailable("Resume internet access before checking the route"));
+            return Err(unavailable(
+                "Resume internet access before checking the route",
+            ));
         }
         let held = self.network.hold_check();
         let candidate_changed = commit_candidate && route != previous_route;
@@ -217,11 +243,13 @@ impl Host {
         // Diagnose a broken candidate before disturbing the working path.
         let candidate_check = if candidate_changed && route.enabled {
             let check = self.network.check(route).inspect_err(|e| {
-                self.network.record_check(kind.journal_kind(), &e.message, None);
+                self.network
+                    .record_check(kind.journal_kind(), &e.message, None);
             })?;
             if let Some(index) = check.broken_at {
                 let message = format!("Route hop {} did not pass its transport probe", index + 1);
-                self.network.record_check(kind.journal_kind(), &message, None);
+                self.network
+                    .record_check(kind.journal_kind(), &message, None);
                 return Err(AppError {
                     code: "network_check".into(),
                     message,
@@ -236,7 +264,8 @@ impl Host {
             *previous_gate = Some(self.network.rollback_point());
         }
         if candidate_changed {
-            self.network.invalidate_gate("Internet access is paused while the candidate route is checked");
+            self.network
+                .invalidate_gate("Internet access is paused while the candidate route is checked");
         }
         let prepared = if self.network.is_up() {
             self.network.switch(route)
@@ -250,16 +279,23 @@ impl Host {
             }
             return Err(error);
         }
-        let Some(attempt) = self.network.begin_check(route_revision(route), !candidate_changed) else {
-            return Err(unavailable("The network changed before verification could start. Check again when the connection is ready."));
+        let Some(attempt) = self
+            .network
+            .begin_check(route_revision(route), !candidate_changed)
+        else {
+            return Err(unavailable(
+                "The network changed before verification could start. Check again when the connection is ready.",
+            ));
         };
         self.notify_hold_timeout();
         self.emit_network()?;
 
         let observed = std::thread::scope(|scope| {
-            let exits = std::thread::Builder::new().name("network-exit-samples".into())
+            let exits = std::thread::Builder::new()
+                .name("network-exit-samples".into())
                 .spawn_scoped(scope, || self.network.exit_samples());
-            let route_check = std::thread::Builder::new().name("network-route-check".into())
+            let route_check = std::thread::Builder::new()
+                .name("network-route-check".into())
                 .spawn_scoped(scope, || {
                     if candidate_check.is_some() || !route.enabled {
                         Ok(candidate_check)
@@ -267,50 +303,73 @@ impl Host {
                         self.network.check(route).map(Some)
                     }
                 });
-            let probe = self.guest_network_probe(attempt.checks_closed_boundary(), Duration::from_secs(20));
-            let browser = probe.as_ref().ok().and_then(|probe| self.browser_environment(probe));
+            let probe =
+                self.guest_network_probe(attempt.checks_closed_boundary(), Duration::from_secs(20));
+            let browser = probe
+                .as_ref()
+                .ok()
+                .and_then(|probe| self.browser_environment(probe));
             // Join both before propagating an error. An unjoined panic would
             // otherwise unwind the scope and leave the gate in checking mode.
             let exits = exits
                 .map_err(|error| unavailable(format!("Could not start exit sampling: {error}")))
-                .and_then(|worker| worker.join().map_err(|_| unavailable("Exit sampling stopped"))?);
+                .and_then(|worker| {
+                    worker
+                        .join()
+                        .map_err(|_| unavailable("Exit sampling stopped"))?
+                });
             let route_check = route_check
                 .map_err(|error| unavailable(format!("Could not start route checking: {error}")))
-                .and_then(|worker| worker.join().map_err(|_| unavailable("Route checking stopped"))?);
+                .and_then(|worker| {
+                    worker
+                        .join()
+                        .map_err(|_| unavailable("Route checking stopped"))?
+                });
             Ok::<_, AppError>((probe?, browser, exits?, route_check?))
         });
         let (mut probe, browser, exits, route_check) = match observed {
             Ok(observed) => observed,
             Err(error) => {
                 if attempt.refresh {
-                    if self.network.recheck_verification(&attempt, HoldCheck::Verification, error.message.clone()) {
+                    if self.network.recheck_verification(
+                        &attempt,
+                        HoldCheck::Verification,
+                        error.message.clone(),
+                    ) {
                         self.stop_chats_after_hold();
                     }
                 } else {
                     self.network.fail_check(&attempt, &error.message);
                 }
-                self.network.record_check(kind.journal_kind(), &error.message, None);
+                self.network
+                    .record_check(kind.journal_kind(), &error.message, None);
                 self.emit_network()?;
                 return Err(error);
             }
         };
         let verify_exit = |probe: &GuestNetworkProbe| {
             let public_ip = probe.public_ip.as_deref().and_then(|ip| ip.parse().ok());
-            let guest_geo = if route.exit_policy == agent_core::model::ExitPolicy::DynamicResidential {
-                public_ip
-                    .filter(|ip| !exits.iter().flatten().any(|geo| {
-                        geo.ip.parse::<std::net::Ipv4Addr>() == Ok(*ip)
-                            && geo.continent_code.is_some()
-                    }))
-                    .and_then(|ip| self.network.locate_guest_exit(ip).ok())
-            } else {
-                None
-            };
+            let guest_geo =
+                if route.exit_policy == agent_core::model::ExitPolicy::DynamicResidential {
+                    public_ip
+                        .filter(|ip| {
+                            !exits.iter().flatten().any(|geo| {
+                                geo.ip.parse::<std::net::Ipv4Addr>() == Ok(*ip)
+                                    && geo.continent_code.is_some()
+                            })
+                        })
+                        .and_then(|ip| self.network.locate_guest_exit(ip).ok())
+                } else {
+                    None
+                };
             self.network.check_exit_policy(
                 &attempt,
                 route,
                 public_ip,
-                probe.trace_location.as_deref().filter(|country| *country != "XX"),
+                probe
+                    .trace_location
+                    .as_deref()
+                    .filter(|country| *country != "XX"),
                 &exits,
                 guest_geo.as_ref(),
                 kind == VerificationKind::ReplaceExit,
@@ -319,8 +378,12 @@ impl Host {
         };
         let mut baseline = verify_exit(&probe);
         let mut report_exits = exits.clone();
-        self.network.reuse_exit_samples(&attempt, &probe, &mut report_exits);
-        let evaluate = |probe: &GuestNetworkProbe, browser: Option<&BrowserEnvironmentProbe>, exits: &[_], exit_policy_error: Option<&str>| {
+        self.network
+            .reuse_exit_samples(&attempt, &probe, &mut report_exits);
+        let evaluate = |probe: &GuestNetworkProbe,
+                        browser: Option<&BrowserEnvironmentProbe>,
+                        exits: &[_],
+                        exit_policy_error: Option<&str>| {
             evaluate_report(
                 CheckInputs {
                     route,
@@ -337,11 +400,24 @@ impl Host {
                 started_at,
             )
         };
-        let mut report = evaluate(&probe, browser.as_ref(), &report_exits, baseline.as_ref().err().map(|error| error.message.as_str()));
-        if baseline.is_ok() && !report.can_open
-            && let Some(followed) = self.follow_exit_region(&report, &report_exits, &probe, attempt.checks_closed_boundary())
+        let mut report = evaluate(
+            &probe,
+            browser.as_ref(),
+            &report_exits,
+            baseline.as_ref().err().map(|error| error.message.as_str()),
+        );
+        if baseline.is_ok()
+            && !report.can_open
+            && let Some(followed) = self.follow_exit_region(
+                &report,
+                &report_exits,
+                &probe,
+                attempt.checks_closed_boundary(),
+            )
         {
-            if followed.public_ip != probe.public_ip || followed.trace_location != probe.trace_location {
+            if followed.public_ip != probe.public_ip
+                || followed.trace_location != probe.trace_location
+            {
                 baseline = baseline.and_then(|approved| {
                     let observed = verify_exit(&followed)?;
                     if observed == approved {
@@ -351,13 +427,21 @@ impl Host {
                     }
                 });
                 report_exits.clone_from(&exits);
-                self.network.reuse_exit_samples(&attempt, &followed, &mut report_exits);
+                self.network
+                    .reuse_exit_samples(&attempt, &followed, &mut report_exits);
             }
             let browser = self.browser_environment(&followed);
-            report = evaluate(&followed, browser.as_ref(), &report_exits, baseline.as_ref().err().map(|error| error.message.as_str()));
+            report = evaluate(
+                &followed,
+                browser.as_ref(),
+                &report_exits,
+                baseline.as_ref().err().map(|error| error.message.as_str()),
+            );
             probe = followed;
         }
-        if let Err(error) = &baseline && error.code == "exit_policy" {
+        if let Err(error) = &baseline
+            && error.code == "exit_policy"
+        {
             if candidate_changed {
                 return Err(error.clone());
             }
@@ -365,18 +449,35 @@ impl Host {
             self.fail_guest_chats(error.message.clone());
             return self.network.status(true);
         }
-        let verification = if report.can_open { "Network and environment checks passed".into() } else { failure_summary(&report) };
-        self.network.record_check(kind.journal_kind(), &verification, Some(&report));
+        let verification = if report.can_open {
+            "Network and environment checks passed".into()
+        } else {
+            failure_summary(&report)
+        };
+        self.network
+            .record_check(kind.journal_kind(), &verification, Some(&report));
         self.sync_environment_revision();
         if attempt.refresh && !report.can_open {
-            let check = if report.checks.iter().filter(|check| {
-                check.required && check.status != agent_core::model::NetworkCheckStatus::Pass
-            }).all(|check| matches!(check.id.as_str(), "dns" | "transport" | "boundary" | "gateway")) {
+            let check = if report
+                .checks
+                .iter()
+                .filter(|check| {
+                    check.required && check.status != agent_core::model::NetworkCheckStatus::Pass
+                })
+                .all(|check| {
+                    matches!(
+                        check.id.as_str(),
+                        "dns" | "transport" | "boundary" | "gateway"
+                    )
+                }) {
                 HoldCheck::Guest
             } else {
                 HoldCheck::Verification
             };
-            if self.network.recheck_verification(&attempt, check, verification.clone()) {
+            if self
+                .network
+                .recheck_verification(&attempt, check, verification.clone())
+            {
                 self.stop_chats_after_hold();
             }
             self.emit_network()?;
@@ -392,7 +493,11 @@ impl Host {
         ) {
             Ok(opened) => opened,
             Err(error) if attempt.refresh => {
-                if self.network.recheck_verification(&attempt, HoldCheck::Verification, error.message) {
+                if self.network.recheck_verification(
+                    &attempt,
+                    HoldCheck::Verification,
+                    error.message,
+                ) {
                     self.stop_chats_after_hold();
                 }
                 false
@@ -402,7 +507,11 @@ impl Host {
         if commit_candidate && !opened {
             return Err(AppError {
                 code: "network_check".into(),
-                message: if report.can_open { "The network changed before the candidate could be committed".into() } else { verification },
+                message: if report.can_open {
+                    "The network changed before the candidate could be committed".into()
+                } else {
+                    verification
+                },
                 details: serde_json::to_string(&report).ok(),
             });
         }
@@ -416,10 +525,14 @@ impl Host {
         }
         self.emit_network()?;
         let status = self.network.status(true)?;
-        if state.gate == NetworkGateMode::Open && status.gate == NetworkGateMode::Closed
-            && status.connectivity == NetworkConnectivity::Normal && !opened
+        if state.gate == NetworkGateMode::Open
+            && status.gate == NetworkGateMode::Closed
+            && status.connectivity == NetworkConnectivity::Normal
+            && !opened
         {
-            self.fail_guest_chats(format!("The machine's internet access was blocked. {verification}"));
+            self.fail_guest_chats(format!(
+                "The machine's internet access was blocked. {verification}"
+            ));
         }
         Ok(status)
     }
@@ -449,21 +562,37 @@ impl Host {
             )
             .and_then(|record| {
                 let record: agent_core::model::OperationRecord = serde_json::from_value(record)
-                    .map_err(|error| unavailable(format!("The machine returned an invalid operation: {error}")))?;
+                    .map_err(|error| {
+                        unavailable(format!(
+                            "The machine returned an invalid operation: {error}"
+                        ))
+                    })?;
                 match record.state {
                     agent_core::model::OperationState::Succeeded => Ok(()),
-                    _ => Err(unavailable(record.error.unwrap_or_else(|| "The time zone change did not finish".into()))),
+                    _ => {
+                        Err(unavailable(record.error.unwrap_or_else(|| {
+                            "The time zone change did not finish".into()
+                        })))
+                    }
                 }
             });
         match applied {
             Ok(()) => {
-                self.network.record_check("regionFollowed", &format!("The machine's time zone now follows the exit: {zone}"), None);
-                self.guest_network_probe(check_boundary, Duration::from_secs(20)).ok()
+                self.network.record_check(
+                    "regionFollowed",
+                    &format!("The machine's time zone now follows the exit: {zone}"),
+                    None,
+                );
+                self.guest_network_probe(check_boundary, Duration::from_secs(20))
+                    .ok()
             }
             Err(error) => {
                 self.network.record_check(
                     "regionFollowFailed",
-                    &format!("The machine's time zone could not follow the exit ({zone}): {}", error.message),
+                    &format!(
+                        "The machine's time zone could not follow the exit ({zone}): {}",
+                        error.message
+                    ),
                     None,
                 );
                 None
@@ -471,24 +600,40 @@ impl Host {
         }
     }
 
-    fn guest_network_probe(&self, check_boundary: bool, timeout: Duration) -> Result<GuestNetworkProbe, AppError> {
+    fn guest_network_probe(
+        &self,
+        check_boundary: bool,
+        timeout: Duration,
+    ) -> Result<GuestNetworkProbe, AppError> {
         let probe = self.call_guest_with_timeout(
-            "network_probe", json!({ "checkClosedBoundary": check_boundary }), timeout,
+            "network_probe",
+            json!({ "checkClosedBoundary": check_boundary }),
+            timeout,
         )?;
         serde_json::from_value(probe).map_err(|error| {
-            unavailable(format!("The machine returned an invalid probe result: {error}"))
+            unavailable(format!(
+                "The machine returned an invalid probe result: {error}"
+            ))
         })
     }
 
     fn retry_guest_network(&self) -> Result<Option<std::net::Ipv4Addr>, String> {
-        let probe = self.guest_network_probe(true, Duration::from_secs(7)).map_err(|error| error.message)?;
+        let probe = self
+            .guest_network_probe(true, Duration::from_secs(7))
+            .map_err(|error| error.message)?;
         if !probe.dns_ok {
             return Err("The machine could not resolve the check hostname".into());
         }
         if !(probe.connect_ok && probe.https_ok) {
-            return Err(probe.error.unwrap_or_else(|| "The machine could not complete the HTTPS check".into()));
+            return Err(probe
+                .error
+                .unwrap_or_else(|| "The machine could not complete the HTTPS check".into()));
         }
-        if !(probe.private_blocked && probe.ipv6_blocked && probe.udp_blocked && probe.unlisted_blocked == Some(true)) {
+        if !(probe.private_blocked
+            && probe.ipv6_blocked
+            && probe.udp_blocked
+            && probe.unlisted_blocked == Some(true))
+        {
             return Err("The machine's traffic boundary did not pass".into());
         }
         Ok(probe.public_ip.and_then(|ip| ip.parse().ok()))
@@ -511,7 +656,9 @@ impl Host {
         if self.status.read_lock().connection != GuestConnection::Connected {
             return;
         }
-        let Ok(_transaction) = self.network.transaction.try_lock() else { return; };
+        let Ok(_transaction) = self.network.transaction.try_lock() else {
+            return;
+        };
         // Keep delivery ordered with verification so a late notice cannot stop
         // chats that started after a fresh grant opened the route.
         if self.notify_hold_timeout() && !expired_here {
@@ -522,8 +669,18 @@ impl Host {
         if expired {
             let _ = self.emit_network();
         }
-        if due && let Err(error) = self.network.route().and_then(|route| self.verify_route(&route, VerificationKind::Automatic)) {
-            cabin_diagnostics::event(cabin_diagnostics::Level::Warn, "network", "automatic_check_failed", format_args!("{}", error.code));
+        if due
+            && let Err(error) = self
+                .network
+                .route()
+                .and_then(|route| self.verify_route(&route, VerificationKind::Automatic))
+        {
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Warn,
+                "network",
+                "automatic_check_failed",
+                format_args!("{}", error.code),
+            );
         }
     }
 
@@ -547,13 +704,17 @@ impl Host {
             .name("network-authorization".into())
             .spawn(move || {
                 while let Some(me) = weak.upgrade() {
-                    if me.stopping.load(Ordering::Relaxed) { break; }
+                    if me.stopping.load(Ordering::Relaxed) {
+                        break;
+                    }
                     me.recover_network_if_due();
                     drop(me);
                     std::thread::sleep(Duration::from_secs(2));
                 }
             })
-            .map_err(|error| unavailable(format!("Could not start network authorization: {error}")))?;
+            .map_err(|error| {
+                unavailable(format!("Could not start network authorization: {error}"))
+            })?;
         Ok(())
     }
 
@@ -581,8 +742,12 @@ impl Host {
                         let _ = me.emit_network();
                         me.recover_network_if_due();
                     }
-                    let Some(me) = weak.upgrade() else { break; };
-                    if me.stopping.load(Ordering::Relaxed) { break; }
+                    let Some(me) = weak.upgrade() else {
+                        break;
+                    };
+                    if me.stopping.load(Ordering::Relaxed) {
+                        break;
+                    }
                     delay = network_health::CHECK_INTERVAL;
                     if let Some(target) = me.network.health_target() {
                         if target.check == Some(HoldCheck::Verification) {
@@ -591,9 +756,14 @@ impl Host {
                                 && me.network.held_target_is_current(&target)
                             {
                                 let result = match &target.proxy_url {
-                                    Ok(_) => me.network.route().and_then(|route| {
-                                        me.verify_route(&route, VerificationKind::Hold)
-                                    }).map(|_| ()).map_err(|error| error.message),
+                                    Ok(_) => me
+                                        .network
+                                        .route()
+                                        .and_then(|route| {
+                                            me.verify_route(&route, VerificationKind::Hold)
+                                        })
+                                        .map(|_| ())
+                                        .map_err(|error| error.message),
                                     Err(reason) => Err(reason.clone()),
                                 };
                                 if let Err(reason) = result {
@@ -616,7 +786,9 @@ impl Host {
                                 let _ = me.emit_network();
                             }
                             if change.hard_block {
-                                if let Ok(status) = me.network.status(true) && let Some(reason) = status.exit_policy_error {
+                                if let Ok(status) = me.network.status(true)
+                                    && let Some(reason) = status.exit_policy_error
+                                {
                                     me.fail_guest_chats(reason);
                                 } else {
                                     me.stop_chats_after_hold();
@@ -657,34 +829,60 @@ mod tests {
     fn desktop_migrates_legacy_bindings_and_requires_live_verification_for_route_edits() {
         let home = tempfile::tempdir().unwrap();
         let machine = Machine::new(home.path(), concat!(env!("CARGO_MANIFEST_DIR"), "/../vm"));
-        machine.install_config(&InstallOptions::default()).unwrap().save_instance_meta().unwrap();
+        machine
+            .install_config(&InstallOptions::default())
+            .unwrap()
+            .save_instance_meta()
+            .unwrap();
         let system = NetworkRoute {
             chain: vec!["saved-node".into()],
             exit_policy: agent_core::model::ExitPolicy::DynamicResidential,
             ..NetworkRoute::default()
         };
-        let legacy = NetworkRoute { bind_interface: Some("en-missing".into()), ..system.clone() };
+        let legacy = NetworkRoute {
+            bind_interface: Some("en-missing".into()),
+            ..system.clone()
+        };
         {
-            let network = crate::global_network::GlobalNetwork::open(&home.path().join("network")).unwrap();
+            let network =
+                crate::global_network::GlobalNetwork::open(&home.path().join("network")).unwrap();
             network.save(&legacy).unwrap();
         }
         let host = Host::new(machine, PathBuf::from("/missing/agentd")).unwrap();
         assert_eq!(host.network.route().unwrap(), system);
 
-        let proxy = NetworkRoute { enabled: true, ..legacy };
-        for (running, connected, paused) in [(false, false, false), (true, false, false), (true, true, true)] {
+        let proxy = NetworkRoute {
+            enabled: true,
+            ..legacy
+        };
+        for (running, connected, paused) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
             if running {
-                host.network.start(&home.path().join("gateway.sock"), 0).unwrap();
+                host.network
+                    .start(&home.path().join("gateway.sock"), 0)
+                    .unwrap();
                 host.network.set_paused(paused).unwrap();
                 host.update(|status| {
                     status.state = MachineState::Running;
-                    status.connection = if connected { GuestConnection::Connected } else { GuestConnection::Offline };
+                    status.connection = if connected {
+                        GuestConnection::Connected
+                    } else {
+                        GuestConnection::Offline
+                    };
                 });
             }
-            let error = host.call("network_apply", json!({ "route": proxy })).unwrap_err();
+            let error = host
+                .call("network_apply", json!({ "route": proxy }))
+                .unwrap_err();
             assert!(error.message.contains("resume internet access"), "{error}");
             assert_eq!(host.network.route().unwrap(), system);
-            assert_eq!(host.network.status(true).unwrap().gate, NetworkGateMode::Closed);
+            assert_eq!(
+                host.network.status(true).unwrap().gate,
+                NetworkGateMode::Closed
+            );
         }
         host.shutdown();
     }
@@ -695,9 +893,16 @@ mod tests {
         let machine = Machine::new(home.path(), concat!(env!("CARGO_MANIFEST_DIR"), "/../vm"));
         let host = Host::new(machine, PathBuf::from("/missing/agentd")).unwrap();
         let route = NetworkRoute::default();
-        host.network.start(&home.path().join("gateway.sock"), 0).unwrap();
-        host.network.begin_check(route_revision(&route), false).unwrap();
-        assert_eq!(host.network.status(true).unwrap().gate, NetworkGateMode::Checking);
+        host.network
+            .start(&home.path().join("gateway.sock"), 0)
+            .unwrap();
+        host.network
+            .begin_check(route_revision(&route), false)
+            .unwrap();
+        assert_eq!(
+            host.network.status(true).unwrap().gate,
+            NetworkGateMode::Checking
+        );
         host.sync_environment_revision();
         let status = host.network.status(true).unwrap();
         assert_eq!(status.gate, NetworkGateMode::Closed);

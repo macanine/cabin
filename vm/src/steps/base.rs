@@ -83,7 +83,8 @@ impl StepContext {
         };
         ensure_dir(&log_dir)?;
         let log_path = log_dir.join(format!("{step_id}-{action}-{}.log", localstamp()));
-        let mut file = cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
+        let mut file =
+            cabin_diagnostics::open_capture(&log_path, cabin_diagnostics::Capture::Append)?;
         let started_at = now_millis();
         writeln!(
             file,
@@ -196,11 +197,7 @@ pub fn ensure_stopped(cfg: &Config, ctx: &StepContext) -> Result<()> {
     Ok(())
 }
 
-fn qemu_img_capture(
-    cfg: &Config,
-    disk: &Path,
-    args: &[&str],
-) -> (i32, String) {
+fn qemu_img_capture(cfg: &Config, disk: &Path, args: &[&str]) -> (i32, String) {
     let executable = resolve_qemu_img(cfg).and_then(|path| Ok(std::path::absolute(path)?));
     let qemu_img = match executable {
         Ok(path) => path,

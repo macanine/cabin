@@ -36,10 +36,7 @@ impl Host {
                 | "network_pause"
                 | "network_auto_recover"
         )
-        .then(|| {
-            self.network
-                .transaction.locked()
-        });
+        .then(|| self.network.transaction.locked());
         let changed = match method {
             "network_state" => {
                 self.sync_environment_revision();
@@ -48,19 +45,25 @@ impl Host {
                 ));
             }
             "network_interfaces" => {
-                let interfaces = vm_core::network_interfaces::list().map_err(|e| unavailable(e.to_string()))?;
+                let interfaces =
+                    vm_core::network_interfaces::list().map_err(|e| unavailable(e.to_string()))?;
                 return to_value(serde_json::to_value(interfaces));
             }
             "network_traffic" => return to_value(serde_json::to_value(self.network.traffic())),
             "network_history" => {
                 let before = params.get("beforeId").and_then(Value::as_i64);
                 let max = u64::from(agent_core::store::NETWORK_HISTORY_LIMIT);
-                let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(max).clamp(1, max) as u32;
+                let limit = params
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(max)
+                    .clamp(1, max) as u32;
                 return to_value(serde_json::to_value(self.network.history(before, limit)?));
             }
             "network_apply" => {
-                let mut route: NetworkRoute = serde_json::from_value(params.get("route").cloned().unwrap_or(Value::Null))
-                    .map_err(|e| unavailable(format!("Invalid route: {e}")))?;
+                let mut route: NetworkRoute =
+                    serde_json::from_value(params.get("route").cloned().unwrap_or(Value::Null))
+                        .map_err(|e| unavailable(format!("Invalid route: {e}")))?;
                 route.bind_interface = None;
                 return to_value(serde_json::to_value(self.apply_network_route(&route)?));
             }
@@ -69,7 +72,11 @@ impl Host {
                 if rebind && self.network.status(true)?.exit_policy_error.is_none() {
                     return Err(unavailable("There is no blocked exit to replace"));
                 }
-                let kind = if rebind { VerificationKind::ReplaceExit } else { VerificationKind::Manual };
+                let kind = if rebind {
+                    VerificationKind::ReplaceExit
+                } else {
+                    VerificationKind::Manual
+                };
                 let status = self.verify_route(&self.network.route()?, kind)?;
                 return to_value(serde_json::to_value(status));
             }
@@ -95,7 +102,9 @@ impl Host {
                     .ok_or_else(|| unavailable("Missing enabled"))?;
                 self.network.set_region_follows_exit(enabled)?;
                 self.emit_network()?;
-                return to_value(serde_json::to_value(self.network.status(self.uses_gateway())?));
+                return to_value(serde_json::to_value(
+                    self.network.status(self.uses_gateway())?,
+                ));
             }
             "network_system_route" => {
                 return to_value(serde_json::to_value(crate::system_route::detect()));
@@ -112,10 +121,15 @@ impl Host {
             }
             "network_check" => {
                 let mut route: NetworkRoute = if let Some(value) = params.get("route") {
-                    serde_json::from_value(value.clone()).map_err(|e| unavailable(format!("Invalid route: {e}")))?
+                    serde_json::from_value(value.clone())
+                        .map_err(|e| unavailable(format!("Invalid route: {e}")))?
                 } else {
                     // Older clients sent only the candidate chain.
-                    NetworkRoute { enabled: true, chain: ids("chain")?, ..self.network.route()? }
+                    NetworkRoute {
+                        enabled: true,
+                        chain: ids("chain")?,
+                        ..self.network.route()?
+                    }
                 };
                 route.bind_interface = None;
                 return to_value(serde_json::to_value(self.network.check(&route)?));
@@ -126,8 +140,13 @@ impl Host {
             }
             "network_exit_type" => {
                 self.require_gateway()?;
-                let refresh = params.get("refresh").and_then(Value::as_bool).unwrap_or(false);
-                return to_value(serde_json::to_value(self.network.exit_type(required("ip")?, refresh)?));
+                let refresh = params
+                    .get("refresh")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                return to_value(serde_json::to_value(
+                    self.network.exit_type(required("ip")?, refresh)?,
+                ));
             }
             "network_origin" => return to_value(serde_json::to_value(self.network.origin()?)),
             "network_locate" => {
@@ -140,8 +159,9 @@ impl Host {
             }
             "proxy_catalog" => return to_value(serde_json::to_value(self.network.catalog()?)),
             "proxy_node_test" => {
-                let kind = serde_json::from_value(params.get("kind").cloned().unwrap_or(Value::Null))
-                    .map_err(|_| unavailable("Choose a latency or download test"))?;
+                let kind =
+                    serde_json::from_value(params.get("kind").cloned().unwrap_or(Value::Null))
+                        .map_err(|_| unavailable("Choose a latency or download test"))?;
                 return to_value(serde_json::to_value(self.network.test_node(
                     required("nodeId")?,
                     required("configRevision")?,
@@ -154,17 +174,24 @@ impl Host {
                 required("name")?,
                 &ids("nodeIds")?,
             )?),
-            "proxy_group_remove" => serde_json::to_value(self.network.remove_node_group(required("id")?)?),
+            "proxy_group_remove" => {
+                serde_json::to_value(self.network.remove_node_group(required("id")?)?)
+            }
             "proxy_import" => serde_json::to_value(self.network.import(
                 required("name")?,
                 text("url"),
                 text("contents"),
             )?),
             "proxy_add_url" => serde_json::to_value(self.network.add_manual(required("url")?)?),
-            "proxy_refresh" => serde_json::to_value(self.network.refresh(
-                required("id")?,
-                params.get("automatic").and_then(Value::as_bool).unwrap_or(false),
-            )?),
+            "proxy_refresh" => serde_json::to_value(
+                self.network.refresh(
+                    required("id")?,
+                    params
+                        .get("automatic")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                )?,
+            ),
             "proxy_refresh_from_host" => {
                 serde_json::to_value(self.network.refresh_from_host(required("id")?)?)
             }

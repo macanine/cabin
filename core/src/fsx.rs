@@ -26,11 +26,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> 
         .ok_or_else(|| Error::invalid(format!("{} has no parent directory", path.display())))?;
     ensure_dir(parent)?;
     let mode = mode
-        .or_else(|| {
-            fs::metadata(path)
-                .ok()
-                .map(|meta| mode_of(&meta))
-        })
+        .or_else(|| fs::metadata(path).ok().map(|meta| mode_of(&meta)))
         .unwrap_or(0o644);
     let name = path
         .file_name()
@@ -95,45 +91,6 @@ pub fn restore(path: &Path, backup: Option<&Path>) -> Result<()> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(Error::path("remove", path, error)),
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(unix)]
-    #[test]
-    fn atomic_write_replaces_and_keeps_mode() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("nested/config.json");
-        atomic_write(&path, b"one", Some(0o600))?;
-        atomic_write(&path, b"two", None)?;
-        assert_eq!(fs::read_to_string(&path)?, "two");
-        assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
-        let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())?
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
-            .collect();
-        assert!(leftovers.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn backup_and_restore_round_trip() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("settings.json");
-        let backups = dir.path().join("backups");
-        assert_eq!(backup(&path, &backups)?, None);
-        fs::write(&path, "original")?;
-        let saved = backup(&path, &backups)?.expect("backup written");
-        fs::write(&path, "changed")?;
-        restore(&path, Some(&saved))?;
-        assert_eq!(fs::read_to_string(&path)?, "original");
-        restore(&path, None)?;
-        assert!(!path.exists());
-        Ok(())
     }
 }
 
@@ -202,4 +159,43 @@ pub fn mtime_secs_of(meta: &fs::Metadata) -> u64 {
 /// Modified time in nanoseconds since the epoch.
 pub fn mtime_nanos_of(meta: &fs::Metadata) -> u64 {
     u64::try_from(mtime_of(meta).as_nanos()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_replaces_and_keeps_mode() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("nested/config.json");
+        atomic_write(&path, b"one", Some(0o600))?;
+        atomic_write(&path, b"two", None)?;
+        assert_eq!(fs::read_to_string(&path)?, "two");
+        assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+        let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn backup_and_restore_round_trip() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("settings.json");
+        let backups = dir.path().join("backups");
+        assert_eq!(backup(&path, &backups)?, None);
+        fs::write(&path, "original")?;
+        let saved = backup(&path, &backups)?.expect("backup written");
+        fs::write(&path, "changed")?;
+        restore(&path, Some(&saved))?;
+        assert_eq!(fs::read_to_string(&path)?, "original");
+        restore(&path, None)?;
+        assert!(!path.exists());
+        Ok(())
+    }
 }

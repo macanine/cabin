@@ -5,8 +5,8 @@
 
 use crate::util::LockExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -350,7 +350,8 @@ impl Machine {
     pub fn installed(&self) -> bool {
         let instance = StatePaths::new(&self.home).instance(NAME);
         [instance.meta(), instance.disk()].iter().any(|path| {
-            !std::fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            !std::fs::symlink_metadata(path)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
         }) || crate::vm::pid_alive(crate::vm::read_pid(&instance.pidfile()))
     }
 
@@ -390,12 +391,16 @@ impl Machine {
         if old.browser == updated.browser {
             return Ok(());
         }
-        if crate::browser::identity_fingerprint(&old)? == crate::browser::identity_fingerprint(&updated)? {
+        if crate::browser::identity_fingerprint(&old)?
+            == crate::browser::identity_fingerprint(&updated)?
+        {
             let runtime = Runtime::new(&old);
             if !runtime.running() {
                 return crate::util::message("Start the machine to change the browser settings");
             }
-            let _browser = FileLock::acquire(&crate::paths::InstancePaths::new(old.instance_dir()).browser_lock())?;
+            let _browser = FileLock::acquire(
+                &crate::paths::InstancePaths::new(old.instance_dir()).browser_lock(),
+            )?;
             crate::shell::apply_browser_region(&runtime, &old, &updated).map(|_| ())
         } else {
             crate::chrome_feature::apply_profile(&old, &updated, &self.agentd_binary)
@@ -447,7 +452,10 @@ impl Machine {
         !matches!(recorded_qemu_pid(&instance, NAME), Ok(None))
     }
 
-    pub fn clean_storage(&self, target: crate::storage::CleanupTarget) -> Result<crate::storage::CleanupResult> {
+    pub fn clean_storage(
+        &self,
+        target: crate::storage::CleanupTarget,
+    ) -> Result<crate::storage::CleanupResult> {
         reject_symlink(&self.home)?;
         let _lock = self.lock()?;
         let paths = StatePaths::new(&self.home);
@@ -459,7 +467,11 @@ impl Machine {
         crate::storage::clean(&self.home, target)
     }
 
-    pub fn save_resources(&self, request: crate::resources::ResourceRequest, cancel_disk: bool) -> Result<Option<crate::resources::ResourceRequest>> {
+    pub fn save_resources(
+        &self,
+        request: crate::resources::ResourceRequest,
+        cancel_disk: bool,
+    ) -> Result<Option<crate::resources::ResourceRequest>> {
         let _lock = self.lock()?;
         self.lifecycle.check()?;
         let cfg = self.config()?;
@@ -628,7 +640,9 @@ impl Machine {
             qemu_release: if cfg!(target_os = "macos") {
                 crate::qemu_engine::RELEASE.to_string()
             } else {
-                crate::arch::GuestArch::current().qemu_system_binary().to_string()
+                crate::arch::GuestArch::current()
+                    .qemu_system_binary()
+                    .to_string()
             },
             qemu_installed: engine.is_some(),
             cpus: cfg.cpus,
@@ -660,7 +674,9 @@ impl Machine {
         Self::validate(options)?;
         let lock = self.lock()?;
         if self.installed() {
-            return crate::util::message("The machine is already installed or has files to recover");
+            return crate::util::message(
+                "The machine is already installed or has files to recover",
+            );
         }
         let mut cfg = build_config(&self.install_overrides(options), &self.root)?;
         crate::vm::validate_socket_paths(&cfg)?;
@@ -706,12 +722,19 @@ impl Machine {
             let cfg = cfg.clone();
             let done = done.clone();
             let on_progress = on_progress.clone();
-            std::thread::Builder::new().name("install-progress".into()).spawn(move || {
-                while !done.load(Ordering::Relaxed) {
-                    on_progress(progress(&cfg, since));
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-            }).map_err(|error| crate::Error::Message(format!("Could not start reporting installation progress: {error}")))?
+            std::thread::Builder::new()
+                .name("install-progress".into())
+                .spawn(move || {
+                    while !done.load(Ordering::Relaxed) {
+                        on_progress(progress(&cfg, since));
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                })
+                .map_err(|error| {
+                    crate::Error::Message(format!(
+                        "Could not start reporting installation progress: {error}"
+                    ))
+                })?
         };
         let _stop = StopPoller(done.clone());
         let result = self.lifecycle.check().and_then(|()| work());
@@ -726,7 +749,9 @@ impl Machine {
     pub fn verify(&self) -> Result<Vec<StepProgress>> {
         let lock = self.lock()?;
         let cfg = self.config()?;
-        let rows = Runner::new(cfg.clone())?.with_agentd(&self.agentd_binary).plan_locked(&lock)?;
+        let rows = Runner::new(cfg.clone())?
+            .with_agentd(&self.agentd_binary)
+            .plan_locked(&lock)?;
         let recorded = progress(&cfg, SystemTime::now());
         Ok(rows
             .iter()
@@ -896,7 +921,9 @@ impl Machine {
         }
         let cfg = if let Some(request) = crate::resources::pending(&cfg)? {
             if self.storage_in_use() {
-                return crate::message("Stop the previous QEMU process before applying machine resources");
+                return crate::message(
+                    "Stop the previous QEMU process before applying machine resources",
+                );
             }
             attempt.note("Applying saved machine resources before boot");
             crate::resources::apply_stopped(cfg, request)?
@@ -914,14 +941,7 @@ impl Machine {
         let Some(pid) = recorded_qemu_pid(instance, NAME)? else {
             return Ok(());
         };
-        if !crate::vm::stop_process(
-            pid,
-            instance,
-            NAME,
-            timeout,
-            |_| false,
-            || {},
-        ) {
+        if !crate::vm::stop_process(pid, instance, NAME, timeout, |_| false, || {}) {
             return crate::util::message("The machine could not be stopped; its files were kept");
         }
         Ok(())
@@ -951,11 +971,13 @@ impl Machine {
     pub fn destroy(&self) -> Result<MachineInfo> {
         reject_symlink(&self.home)?;
         if let Ok(root) = self.home.canonicalize()
-            && (root.parent().is_none() || std::env::home_dir().is_some_and(|home| {
-                home.canonicalize().is_ok_and(|home| home == root)
-            }))
+            && (root.parent().is_none()
+                || std::env::home_dir()
+                    .is_some_and(|home| home.canonicalize().is_ok_and(|home| home == root)))
         {
-            return crate::util::message("Refusing to erase app data from the system root or user home directory");
+            return crate::util::message(
+                "Refusing to erase app data from the system root or user home directory",
+            );
         }
         let lock = self.lock()?;
         let paths = StatePaths::new(&self.home);
@@ -985,22 +1007,37 @@ impl Machine {
             self.stop_without_config(&instance, Duration::from_secs(12))?;
         }
         if recorded_qemu_pid(&instance, NAME)?.is_some() {
-            return crate::util::message("A recorded machine process still exists; the disk and files were kept");
+            return crate::util::message(
+                "A recorded machine process still exists; the disk and files were kept",
+            );
         }
         let proxy = crate::proxy::stop(&self.home, false)?;
         if proxy.running {
-            return crate::util::message("The proxy could not be stopped; the machine disk was kept");
+            return crate::util::message(
+                "The proxy could not be stopped; the machine disk was kept",
+            );
         }
         // Remove only paths owned by the app. The data root may be shared
         // with user files, and other processes need the same lock inode.
         for path in [
-            paths.instances(), paths.images(), paths.engines(), paths.logs(), paths.tmp(),
-            paths.legacy_journal(), paths.global_state(), paths.proxy(),
-            self.home.join("network"), self.home.join("sync"), self.home.join("destroy.log"),
+            paths.instances(),
+            paths.images(),
+            paths.engines(),
+            paths.logs(),
+            paths.tmp(),
+            paths.legacy_journal(),
+            paths.global_state(),
+            paths.proxy(),
+            self.home.join("network"),
+            self.home.join("sync"),
+            self.home.join("destroy.log"),
         ] {
-            crate::util::remove_path(&path).map_err(|error| crate::Error::Message(format!(
-                "Could not remove {}: {error}. Retry the reset to finish cleanup.", path.display()
-            )))?;
+            crate::util::remove_path(&path).map_err(|error| {
+                crate::Error::Message(format!(
+                    "Could not remove {}: {error}. Retry the reset to finish cleanup.",
+                    path.display()
+                ))
+            })?;
         }
         drop(lock);
         Ok(self.info())
@@ -1061,7 +1098,8 @@ pub fn hostname_problem(name: &str) -> Option<&'static str> {
 fn reject_symlink(path: &Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => crate::util::message(format!(
-            "Refusing to destroy a machine through a symlink: {}", path.display()
+            "Refusing to destroy a machine through a symlink: {}",
+            path.display()
         )),
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1167,7 +1205,10 @@ mod tests {
         assert!(!home.join("instances").exists());
         assert!(!home.join("images").exists());
         assert!(!home.join("network").exists());
-        assert_eq!(std::fs::read_to_string(home.join("personal.txt")).unwrap(), "keep me");
+        assert_eq!(
+            std::fs::read_to_string(home.join("personal.txt")).unwrap(),
+            "keep me"
+        );
         assert_eq!(
             std::fs::read_to_string(shared.join("important")).unwrap(),
             "keep"
@@ -1223,7 +1264,11 @@ mod tests {
 
     #[test]
     fn a_damaged_install_preserves_its_disk_until_an_explicit_reset() {
-        let home = std::env::temp_dir().join(format!("vm-damaged-install-{}-{}", std::process::id(), crate::util::now_millis()));
+        let home = std::env::temp_dir().join(format!(
+            "vm-damaged-install-{}-{}",
+            std::process::id(),
+            crate::util::now_millis()
+        ));
         let machine = Machine::new(&home, env!("CARGO_MANIFEST_DIR"));
         let instance = StatePaths::new(&home).instance(NAME);
         std::fs::create_dir_all(instance.root()).unwrap();
@@ -1233,16 +1278,32 @@ mod tests {
                 std::fs::write(instance.meta(), "{broken").unwrap();
             }
             assert!(machine.info().installed);
-            assert!(machine.install(&InstallOptions::default()).unwrap_err().to_string().contains("files to recover"));
-            assert_eq!(std::fs::read_to_string(instance.disk()).unwrap(), "workspace data");
+            assert!(
+                machine
+                    .install(&InstallOptions::default())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("files to recover")
+            );
+            assert_eq!(
+                std::fs::read_to_string(instance.disk()).unwrap(),
+                "workspace data"
+            );
         }
         use crate::steps::base::{Step, StepContext};
         let cfg = machine.install_config(&InstallOptions::default()).unwrap();
         let mut disk = StepContext::new(&cfg, "disk", "test").unwrap();
         assert!(crate::steps::disk::DiskStep.apply(&mut disk).is_err());
         let mut provision = StepContext::new(&cfg, "provision", "test").unwrap();
-        assert!(crate::steps::provision::ProvisionStep.rollback(&mut provision, &Value::Null, false).is_err());
-        assert_eq!(std::fs::read_to_string(instance.disk()).unwrap(), "workspace data");
+        assert!(
+            crate::steps::provision::ProvisionStep
+                .rollback(&mut provision, &Value::Null, false)
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(instance.disk()).unwrap(),
+            "workspace data"
+        );
         assert!(!machine.destroy().unwrap().installed);
         assert!(!instance.disk().exists());
         std::fs::remove_dir_all(home).unwrap();
@@ -1385,10 +1446,7 @@ mod tests {
         );
         let legacy = crate::util::utcstamp_from_millis(ms);
         assert_eq!(
-            state_millis(
-                Some(&json!({ "rolled_back_at": legacy })),
-                "rolled_back_at"
-            ),
+            state_millis(Some(&json!({ "rolled_back_at": legacy })), "rolled_back_at"),
             Some(ms)
         );
     }

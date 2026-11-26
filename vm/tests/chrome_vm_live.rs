@@ -109,15 +109,12 @@ impl VncStream {
 #[test]
 #[ignore = "boots a disposable VM and downloads Chrome and desktop packages"]
 fn chrome_setup_installs_in_place_and_reverts_settings_on_failure() {
-    let image = PathBuf::from(
-        std::env::var_os("CABIN_TEST_IMAGE").expect("set CABIN_TEST_IMAGE"),
-    );
+    let image = PathBuf::from(std::env::var_os("CABIN_TEST_IMAGE").expect("set CABIN_TEST_IMAGE"));
     let engine_home = PathBuf::from(
         std::env::var_os("CABIN_TEST_ENGINE_HOME").expect("set CABIN_TEST_ENGINE_HOME"),
     );
-    let agentd = PathBuf::from(
-        std::env::var_os("CABIN_TEST_AGENTD").expect("set CABIN_TEST_AGENTD"),
-    );
+    let agentd =
+        PathBuf::from(std::env::var_os("CABIN_TEST_AGENTD").expect("set CABIN_TEST_AGENTD"));
     let path = std::env::temp_dir().join(format!("chrome-live-{}", std::process::id()));
     let port = TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -152,7 +149,12 @@ fn chrome_setup_installs_in_place_and_reverts_settings_on_failure() {
             .unwrap(),
     )
     .unwrap();
-    vm_core::platform::build_seed_iso(&seed, &cfg.seed_path(), &["user-data", "meta-data", "network-config"]).unwrap();
+    vm_core::platform::build_seed_iso(
+        &seed,
+        &cfg.seed_path(),
+        &["user-data", "meta-data", "network-config"],
+    )
+    .unwrap();
     let engine_path = vm_core::qemu_engine::root(&path);
     std::fs::create_dir_all(engine_path.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(vm_core::qemu_engine::root(&engine_home), engine_path).unwrap();
@@ -315,7 +317,7 @@ fn chrome_setup_installs_in_place_and_reverts_settings_on_failure() {
     runtime
         .start(&log, Boot::new(Duration::from_secs(240)))
         .unwrap();
-    vm_core::chrome_feature::verify_started(&configured, &agentd).unwrap();
+    vm_core::chrome_feature::verify_started(&configured).unwrap();
     let state = display(serde_json::json!({"action": "status"}));
     assert_eq!(state["width"], 1512);
     assert_eq!(state["height"], 982);

@@ -1,9 +1,9 @@
 //! Guest DNS: query checks, the DoH resolver with its pool and hedging, and
 //! the bootstrap servers used on a bound adapter.
 
+use super::MTU;
 use super::chain::{Upstream, client_chain};
 use super::relay::MAX_DNS_QUERY;
-use super::MTU;
 use crate::util::LockExt;
 use std::io::Read;
 use std::net::{Ipv4Addr, TcpListener};
@@ -17,8 +17,11 @@ use crate::{Error, Result};
 
 /// Offset after one uncompressed DNS question, and its type and class.
 pub(super) fn dns_question(query: &[u8]) -> Option<(usize, u16, u16)> {
-    if query.len() < 17 || query[2] & 0xf8 != 0 || query[4..6] != [0, 1]
-        || query[6..10] != [0, 0, 0, 0] {
+    if query.len() < 17
+        || query[2] & 0xf8 != 0
+        || query[4..6] != [0, 1]
+        || query[6..10] != [0, 0, 0, 0]
+    {
         return None;
     }
     let mut pos = 12;
@@ -27,29 +30,47 @@ pub(super) fn dns_question(query: &[u8]) -> Option<(usize, u16, u16)> {
         let len = *query.get(pos)? as usize;
         pos += 1;
         name_len += len + 1;
-        if len > 63 || name_len > 255 { return None; }
-        if len == 0 { break; }
+        if len > 63 || name_len > 255 {
+            return None;
+        }
+        if len == 0 {
+            break;
+        }
         pos = pos.checked_add(len)?;
-        if pos > query.len() { return None; }
+        if pos > query.len() {
+            return None;
+        }
     }
     let end = pos.checked_add(4)?;
     let fields = query.get(pos..end)?;
-    Some((end, u16::from_be_bytes([fields[0], fields[1]]), u16::from_be_bytes([fields[2], fields[3]])))
+    Some((
+        end,
+        u16::from_be_bytes([fields[0], fields[1]]),
+        u16::from_be_bytes([fields[2], fields[3]]),
+    ))
 }
 
 /// Keep one Internet question and a bare EDNS record when requested. EDNS
 /// options may contain client addresses or other data the resolver needn't see.
 pub(super) fn sanitize_dns_query(query: &mut Vec<u8>) -> bool {
-    let Some((end, _, 1)) = dns_question(query) else { return false };
+    let Some((end, _, 1)) = dns_question(query) else {
+        return false;
+    };
     let opt = if query[10..12] == [0, 1] {
-        query.get(end..end + 11).filter(|record| {
-            record[..3] == [0, 0, 41]
-                && record[5..7] == [0, 0]
-                && query.len() == end + 11 + usize::from(u16::from_be_bytes([record[9], record[10]]))
-        }).map(|record| {
-            let size = u16::from_be_bytes([record[3], record[4]]).clamp(512, 1232).to_be_bytes();
-            [0, 0, 41, size[0], size[1], 0, 0, record[7] & 0x80, 0, 0, 0]
-        })
+        query
+            .get(end..end + 11)
+            .filter(|record| {
+                record[..3] == [0, 0, 41]
+                    && record[5..7] == [0, 0]
+                    && query.len()
+                        == end + 11 + usize::from(u16::from_be_bytes([record[9], record[10]]))
+            })
+            .map(|record| {
+                let size = u16::from_be_bytes([record[3], record[4]])
+                    .clamp(512, 1232)
+                    .to_be_bytes();
+                [0, 0, 41, size[0], size[1], 0, 0, record[7] & 0x80, 0, 0, 0]
+            })
     } else {
         None
     };
@@ -66,7 +87,9 @@ pub(super) fn sanitize_dns_query(query: &mut Vec<u8>) -> bool {
 
 /// Only accept a DNS response to the question we sent; retry transient server failures.
 fn valid_doh_response(query: &[u8], response: &[u8]) -> bool {
-    let Some((end, _, _)) = dns_question(query) else { return false; };
+    let Some((end, _, _)) = dns_question(query) else {
+        return false;
+    };
     response.len() >= end
         && response[..2] == query[..2]
         && response[2] & 0xf8 == 0x80
@@ -78,7 +101,9 @@ fn valid_doh_response(query: &[u8], response: &[u8]) -> bool {
 /// Answer IPv6 address queries locally; no IPv6 answer or upstream request.
 pub(super) fn dns_ipv6_nodata(query: &[u8]) -> Option<Vec<u8>> {
     let (end, kind, _) = dns_question(query)?;
-    if kind != 28 { return None; }
+    if kind != 28 {
+        return None;
+    }
     let mut answer = query[..end].to_vec();
     answer[2] = 0x80 | (query[2] & 1); // response, preserve recursion desired
     answer[3] = 0x80; // recursion available, NOERROR
@@ -97,17 +122,26 @@ const BOUND_DNS_FALLBACK: [Ipv4Addr; 3] = [
 /// bypassing any TUN. Networks that block public resolvers still answer
 /// through the servers macOS has configured for that adapter.
 pub(super) fn bound_dns(upstream: &Upstream) -> Result<Option<shoes::embed::BoundDns>> {
-    upstream.interface().map(|name| {
-        let servers = bootstrap_dns(&interface_dns(name))
-            .into_iter().map(|ip| std::net::SocketAddr::from((ip, 53))).collect();
-        shoes::embed::BoundDns::new(name.to_string(), servers).map_err(Error::Io)
-    }).transpose()
+    upstream
+        .interface()
+        .map(|name| {
+            let servers = bootstrap_dns(&interface_dns(name))
+                .into_iter()
+                .map(|ip| std::net::SocketAddr::from((ip, 53)))
+                .collect();
+            shoes::embed::BoundDns::new(name.to_string(), servers).map_err(Error::Io)
+        })
+        .transpose()
 }
 
 /// The interface's usable servers first, then the public fallback, once each.
 fn bootstrap_dns(interface: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
     let mut servers = Vec::new();
-    for &ip in interface.iter().filter(|ip| usable_bootstrap_dns(**ip)).chain(&BOUND_DNS_FALLBACK) {
+    for &ip in interface
+        .iter()
+        .filter(|ip| usable_bootstrap_dns(**ip))
+        .chain(&BOUND_DNS_FALLBACK)
+    {
         if !servers.contains(&ip) {
             servers.push(ip);
         }
@@ -118,7 +152,10 @@ fn bootstrap_dns(interface: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
 /// Excludes local and fake-IP (198.18.0.0/15) servers, which a TUN answers.
 fn usable_bootstrap_dns(ip: Ipv4Addr) -> bool {
     let [a, b, ..] = ip.octets();
-    !(ip.is_loopback() || ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast()
+    !(ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_multicast()
         || (a == 198 && b & 0xfe == 18))
 }
 
@@ -127,7 +164,11 @@ fn usable_bootstrap_dns(ip: Ipv4Addr) -> bool {
 #[cfg(any(target_os = "macos", test))]
 fn scutil_interface_dns(output: &str, interface: &str) -> Vec<Ipv4Addr> {
     #[derive(Default)]
-    struct Entry { servers: Vec<Ipv4Addr>, matches: bool, domain: bool }
+    struct Entry {
+        servers: Vec<Ipv4Addr>,
+        matches: bool,
+        domain: bool,
+    }
     let mut found = Vec::new();
     let mut entry = Entry::default();
     let mut finish = |entry: &mut Entry| {
@@ -141,13 +182,18 @@ fn scutil_interface_dns(output: &str, interface: &str) -> Vec<Ipv4Addr> {
             finish(&mut entry);
             continue;
         }
-        let Some((key, value)) = line.split_once(':') else { continue };
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
         let (key, value) = (key.trim(), value.trim());
         if key.starts_with("nameserver[") {
             // IPv6 values split at their first colon and fail to parse.
-            if let Ok(ip) = value.parse() { entry.servers.push(ip); }
+            if let Ok(ip) = value.parse() {
+                entry.servers.push(ip);
+            }
         } else if key == "if_index" {
-            entry.matches = value.split_once('(')
+            entry.matches = value
+                .split_once('(')
                 .and_then(|(_, name)| name.strip_suffix(')'))
                 .is_some_and(|name| name == interface);
         } else if key == "domain" {
@@ -165,17 +211,24 @@ fn interface_dns(interface: &str) -> Vec<Ipv4Addr> {
     use std::time::Instant;
     const FRESH: Duration = Duration::from_secs(30);
     static CACHE: Mutex<Vec<(String, Instant, Vec<Ipv4Addr>)>> = Mutex::new(Vec::new());
-    if let Some((_, _, servers)) = CACHE.locked().iter()
+    if let Some((_, _, servers)) = CACHE
+        .locked()
+        .iter()
         .find(|(name, at, _)| name == interface && at.elapsed() < FRESH)
     {
         return servers.clone();
     }
     let (sender, receiver) = std::sync::mpsc::channel();
-    let _ = std::thread::Builder::new().name("vm-net-scutil".into()).spawn(move || {
-        let output = std::process::Command::new("/usr/sbin/scutil").arg("--dns")
-            .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
-        let _ = sender.send(output);
-    });
+    let _ = std::thread::Builder::new()
+        .name("vm-net-scutil".into())
+        .spawn(move || {
+            let output = std::process::Command::new("/usr/sbin/scutil")
+                .arg("--dns")
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output();
+            let _ = sender.send(output);
+        });
     let servers = match receiver.recv_timeout(Duration::from_millis(200)) {
         Ok(Ok(output)) if output.status.success() => {
             scutil_interface_dns(&String::from_utf8_lossy(&output.stdout), interface)
@@ -251,7 +304,11 @@ fn doh_netloc(endpoint: &str) -> Option<String> {
 }
 
 /// Carry `client` to `target` through one CONNECT on `relay`.
-async fn doh_tunnel(relay: HttpRelay, mut client: tokio::net::TcpStream, target: Arc<str>) -> std::io::Result<()> {
+async fn doh_tunnel(
+    relay: HttpRelay,
+    mut client: tokio::net::TcpStream,
+    target: Arc<str>,
+) -> std::io::Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let mut proxy = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
@@ -261,7 +318,9 @@ async fn doh_tunnel(relay: HttpRelay, mut client: tokio::net::TcpStream, target:
     }
     drop(listener);
     let tunnel = async {
-        proxy.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes()).await?;
+        proxy
+            .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+            .await?;
         // Read the reply byte by byte so no tunnel data is consumed.
         let mut head = Vec::new();
         while !head.ends_with(b"\r\n\r\n") {
@@ -272,9 +331,13 @@ async fn doh_tunnel(relay: HttpRelay, mut client: tokio::net::TcpStream, target:
             head.push(byte[0]);
         }
         if !(head.starts_with(b"HTTP/1.1 200") || head.starts_with(b"HTTP/1.0 200")) {
-            return Err(std::io::Error::other("the upstream refused the DoH connection"));
+            return Err(std::io::Error::other(
+                "the upstream refused the DoH connection",
+            ));
         }
-        tokio::io::copy_bidirectional(&mut client, &mut proxy).await.map(|_| ())
+        tokio::io::copy_bidirectional(&mut client, &mut proxy)
+            .await
+            .map(|_| ())
     };
     tokio::select! {
         result = relay.relay(server) => result,
@@ -308,7 +371,11 @@ pub(super) struct Resolver {
 
 impl Resolver {
     pub(super) fn start(upstream: &Upstream) -> Result<Self> {
-        let mut resolver = Self::start_with(upstream, DOH_ENDPOINTS.map(String::from).to_vec(), |agent| agent)?;
+        let mut resolver = Self::start_with(
+            upstream,
+            DOH_ENDPOINTS.map(String::from).to_vec(),
+            |agent| agent,
+        )?;
         // Gateway tests count upstream connections; they would see warm-ups.
         resolver.warm_on_resume = !cfg!(test);
         Ok(resolver)
@@ -384,7 +451,11 @@ impl Resolver {
             .map_err(|_| std::io::Error::other("DNS proxy failed to start"))??;
         Ok(Self {
             port,
-            preferred_doh: AtomicUsize::new(if matches!(upstream, Upstream::BoundDirect(_)) { 1 } else { 0 }),
+            preferred_doh: AtomicUsize::new(if matches!(upstream, Upstream::BoundDirect(_)) {
+                1
+            } else {
+                0
+            }),
             endpoints,
             configure,
             pool: Mutex::new(None),
@@ -412,7 +483,11 @@ impl Resolver {
         }
         let mut routes: Vec<(String, std::net::SocketAddr)> = Vec::new();
         let mut accept = Vec::new();
-        for netloc in self.endpoints.iter().filter_map(|endpoint| doh_netloc(endpoint)) {
+        for netloc in self
+            .endpoints
+            .iter()
+            .filter_map(|endpoint| doh_netloc(endpoint))
+        {
             if routes.iter().any(|(known, _)| *known == netloc) {
                 continue;
             }
@@ -422,24 +497,39 @@ impl Resolver {
             let target: Arc<str> = netloc.into();
             let relay = self.relay.clone();
             let (gate, connections) = (ticket.clone(), ticket.clone());
-            accept.push(self.runtime.spawn(async move {
-                let Ok(listener) = tokio::net::TcpListener::from_std(listener) else { return };
-                gate.run(async move {
-                    loop {
-                        let Ok((stream, _)) = listener.accept().await else {
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                            continue;
+            accept.push(
+                self.runtime
+                    .spawn(async move {
+                        let Ok(listener) = tokio::net::TcpListener::from_std(listener) else {
+                            return;
                         };
-                        let (relay, ticket, target) = (relay.clone(), connections.clone(), target.clone());
-                        tokio::spawn(async move { let _ = ticket.run(doh_tunnel(relay, stream, target)).await; });
-                    }
-                }).await;
-            }).abort_handle());
+                        gate.run(async move {
+                            loop {
+                                let Ok((stream, _)) = listener.accept().await else {
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                    continue;
+                                };
+                                let (relay, ticket, target) =
+                                    (relay.clone(), connections.clone(), target.clone());
+                                tokio::spawn(async move {
+                                    let _ = ticket.run(doh_tunnel(relay, stream, target)).await;
+                                });
+                            }
+                        })
+                        .await;
+                    })
+                    .abort_handle(),
+            );
         }
         // Only the endpoints resolve, each to its tunnel: no system DNS.
         let resolve = move |netloc: &str| {
-            routes.iter().find(|(known, _)| known == netloc).map(|(_, addr)| vec![*addr])
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "not a DoH endpoint"))
+            routes
+                .iter()
+                .find(|(known, _)| known == netloc)
+                .map(|(_, addr)| vec![*addr])
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "not a DoH endpoint")
+                })
         };
         let agent = (self.configure)(
             ureq::AgentBuilder::new()
@@ -447,22 +537,37 @@ impl Resolver {
                 .try_proxy_from_env(false)
                 .redirects(0)
                 .max_idle_connections_per_host(DOH_IDLE_PER_HOST),
-        ).build();
-        let pool = Arc::new(DohPool { ticket: ticket.clone(), agent, accept });
+        )
+        .build();
+        let pool = Arc::new(DohPool {
+            ticket: ticket.clone(),
+            agent,
+            accept,
+        });
         *slot = Some(pool.clone());
         Some(pool)
     }
 
     /// Open the preferred endpoint's connection for this epoch in the
     /// background, so the guest's first query costs one round trip.
-    pub(super) fn warm(self: &Arc<Self>, ticket: RelayTicket) -> Option<std::thread::JoinHandle<()>> {
-        if self.pool.locked().as_ref().is_some_and(|pool| pool.ticket.is_current()) {
+    pub(super) fn warm(
+        self: &Arc<Self>,
+        ticket: RelayTicket,
+    ) -> Option<std::thread::JoinHandle<()>> {
+        if self
+            .pool
+            .locked()
+            .as_ref()
+            .is_some_and(|pool| pool.ticket.is_current())
+        {
             return None;
         }
         let resolver = self.clone();
         std::thread::Builder::new()
             .name("vm-net-doh".into())
-            .spawn(move || { resolver.lookup(&ticket, &DOH_WARM_QUERY); })
+            .spawn(move || {
+                resolver.lookup(&ticket, &DOH_WARM_QUERY);
+            })
             .ok()
     }
 
@@ -480,7 +585,9 @@ impl Resolver {
         let preferred = self.preferred_doh.load(Ordering::Relaxed) % count;
         // GET is idempotent, so the client retries a request on a fresh
         // connection when the server has closed a pooled one.
-        let dns: Arc<str> = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(query).into();
+        let dns: Arc<str> = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(query)
+            .into();
         let (answers, results) = std::sync::mpsc::channel();
         let (mut started, mut pending) = (0, 0);
         let mut hedge = Some(std::time::Instant::now() + DOH_HEDGE);
@@ -495,7 +602,9 @@ impl Resolver {
                 started += 1;
             }
             if pending == 0 {
-                if started == count { return None; }
+                if started == count {
+                    return None;
+                }
                 hedge = None;
                 continue;
             }
@@ -503,8 +612,12 @@ impl Resolver {
             match results.recv_timeout(wake.saturating_duration_since(std::time::Instant::now())) {
                 Ok((index, response)) => {
                     pending -= 1;
-                    if let Some(mut bytes) = response.filter(|bytes| valid_doh_response(query, bytes)) {
-                        if !ticket.is_current() { return None; }
+                    if let Some(mut bytes) =
+                        response.filter(|bytes| valid_doh_response(query, bytes))
+                    {
+                        if !ticket.is_current() {
+                            return None;
+                        }
                         self.preferred_doh.store(index, Ordering::Relaxed);
                         if bytes.len() > MTU - 28 {
                             // Signal truncation so a DNS client can retry over TCP.
@@ -546,19 +659,30 @@ impl Resolver {
         }
         let (pool, attempts) = (pool.clone(), self.attempts.clone());
         let url = format!("{}?dns={dns}", self.endpoints[index]);
-        let spawned = std::thread::Builder::new().name("vm-net-doh".into()).spawn(move || {
-            let response = pool.agent.get(&url)
-                .set("Accept", "application/dns-message")
-                .timeout(timeout)
-                .call();
-            let mut bytes = Vec::new();
-            // Reading the body to its end returns the connection to the pool.
-            let body = response.ok().filter(|response| response.status() == 200).and_then(|response| {
-                response.into_reader().take(65536).read_to_end(&mut bytes).ok()
+        let spawned = std::thread::Builder::new()
+            .name("vm-net-doh".into())
+            .spawn(move || {
+                let response = pool
+                    .agent
+                    .get(&url)
+                    .set("Accept", "application/dns-message")
+                    .timeout(timeout)
+                    .call();
+                let mut bytes = Vec::new();
+                // Reading the body to its end returns the connection to the pool.
+                let body = response
+                    .ok()
+                    .filter(|response| response.status() == 200)
+                    .and_then(|response| {
+                        response
+                            .into_reader()
+                            .take(65536)
+                            .read_to_end(&mut bytes)
+                            .ok()
+                    });
+                attempts.fetch_sub(1, Ordering::SeqCst);
+                let _ = answers.send((index, body.map(|_| bytes)));
             });
-            attempts.fetch_sub(1, Ordering::SeqCst);
-            let _ = answers.send((index, body.map(|_| bytes)));
-        });
         if spawned.is_err() {
             self.attempts.fetch_sub(1, Ordering::SeqCst);
         }
@@ -593,7 +717,12 @@ mod tests {
         query[2] = 1;
         query[5] = 1;
         query.extend_from_slice(b"\x03one\x03one\x03one\x03one\x00\x00\x1c\x00\x01");
-        for mode in [EgressMode::Open, EgressMode::Install, EgressMode::Checking, EgressMode::Rechecking] {
+        for mode in [
+            EgressMode::Open,
+            EgressMode::Install,
+            EgressMode::Checking,
+            EgressMode::Rechecking,
+        ] {
             let mut accepted = query.clone();
             assert!(mode.allows_dns(&mut accepted));
             let answer = dns_ipv6_nodata(&accepted).unwrap();
@@ -690,14 +819,24 @@ resolver #2
   flags    : Scoped, Request A records
 ";
         let en0 = scutil_interface_dns(output, "en0");
-        assert_eq!(en0, [Ipv4Addr::new(114, 114, 114, 114), Ipv4Addr::LOCALHOST, Ipv4Addr::new(223, 5, 5, 5)]);
+        assert_eq!(
+            en0,
+            [
+                Ipv4Addr::new(114, 114, 114, 114),
+                Ipv4Addr::LOCALHOST,
+                Ipv4Addr::new(223, 5, 5, 5)
+            ]
+        );
         assert!(scutil_interface_dns(output, "en1").is_empty());
         assert!(scutil_interface_dns(output, "en").is_empty());
         let mut expected = vec![Ipv4Addr::new(114, 114, 114, 114)];
         expected.extend(BOUND_DNS_FALLBACK);
         assert_eq!(bootstrap_dns(&en0), expected);
         // A TUN's fake-IP resolver is never a bootstrap server.
-        assert_eq!(bootstrap_dns(&scutil_interface_dns(output, "utun1024")), BOUND_DNS_FALLBACK);
+        assert_eq!(
+            bootstrap_dns(&scutil_interface_dns(output, "utun1024")),
+            BOUND_DNS_FALLBACK
+        );
         assert!(!usable_bootstrap_dns(Ipv4Addr::new(198, 19, 255, 1)));
         assert!(usable_bootstrap_dns(Ipv4Addr::new(198, 20, 0, 1)));
     }
@@ -706,7 +845,11 @@ resolver #2
     struct PlainTls;
 
     impl ureq::TlsConnector for PlainTls {
-        fn connect(&self, _: &str, io: Box<dyn ureq::ReadWrite>) -> std::result::Result<Box<dyn ureq::ReadWrite>, ureq::Error> {
+        fn connect(
+            &self,
+            _: &str,
+            io: Box<dyn ureq::ReadWrite>,
+        ) -> std::result::Result<Box<dyn ureq::ReadWrite>, ureq::Error> {
             Ok(io)
         }
     }
@@ -716,7 +859,11 @@ resolver #2
     }
 
     #[derive(Clone, Copy, PartialEq)]
-    enum DohBehavior { Answer, Stall, Fail }
+    enum DohBehavior {
+        Answer,
+        Stall,
+        Fail,
+    }
 
     /// A loopback DoH server over HTTP/1.1 keep-alive that counts connections.
     struct FakeDoh {
@@ -746,7 +893,10 @@ resolver #2
                             loop {
                                 line.clear();
                                 match std::io::BufRead::read_line(&mut reader, &mut line) {
-                                    Ok(0) | Err(_) => { finished.fetch_add(1, Ordering::SeqCst); return; }
+                                    Ok(0) | Err(_) => {
+                                        finished.fetch_add(1, Ordering::SeqCst);
+                                        return;
+                                    }
                                     Ok(_) if line == "\r\n" => break,
                                     Ok(_) => request.push_str(&line),
                                 }
@@ -754,8 +904,16 @@ resolver #2
                             if behavior == DohBehavior::Stall {
                                 continue;
                             }
-                            let dns = request.split_once("?dns=").unwrap().1.split_once(' ').unwrap().0;
-                            let mut answer = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(dns).unwrap();
+                            let dns = request
+                                .split_once("?dns=")
+                                .unwrap()
+                                .1
+                                .split_once(' ')
+                                .unwrap()
+                                .0;
+                            let mut answer = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                                .decode(dns)
+                                .unwrap();
                             answer[2] |= 0x80;
                             answer[3] = 0x80;
                             let (status, body) = match behavior {
@@ -766,14 +924,22 @@ resolver #2
                                 "HTTP/1.1 {status}\r\nContent-Type: application/dns-message\r\nContent-Length: {}\r\n\r\n",
                                 body.len(),
                             );
-                            if writer.write_all(head.as_bytes()).and_then(|_| writer.write_all(&body)).is_err() {
+                            if writer
+                                .write_all(head.as_bytes())
+                                .and_then(|_| writer.write_all(&body))
+                                .is_err()
+                            {
                                 return;
                             }
                         }
                     });
                 }
             });
-            Self { url, opened, closed }
+            Self {
+                url,
+                opened,
+                closed,
+            }
         }
 
         fn resolver(endpoints: &[&Self]) -> Resolver {
@@ -792,7 +958,10 @@ resolver #2
     fn wait_for(what: &str, condition: impl Fn() -> bool) {
         let start = Instant::now();
         while !condition() {
-            assert!(start.elapsed() < Duration::from_secs(3), "timed out waiting for {what}");
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "timed out waiting for {what}"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -805,18 +974,27 @@ resolver #2
         let ticket = gate.ticket().unwrap();
         resolver.warm(ticket.clone()).unwrap().join().unwrap();
         assert_eq!(server.opened.load(Ordering::SeqCst), 1);
-        assert!(resolver.warm(ticket.clone()).is_none(), "the pool is already warm");
+        assert!(
+            resolver.warm(ticket.clone()).is_none(),
+            "the pool is already warm"
+        );
         for id in 1..=3 {
             let query = a_query(id);
             let answer = resolver.lookup(&ticket, &query).expect("answer");
             assert!(valid_doh_response(&query, &answer));
         }
-        assert_eq!(server.opened.load(Ordering::SeqCst), 1, "warm queries reuse the pooled connection");
+        assert_eq!(
+            server.opened.load(Ordering::SeqCst),
+            1,
+            "warm queries reuse the pooled connection"
+        );
 
         // A policy change cuts the pooled connection and the old ticket.
         gate.suspend(|| {});
         gate.resume();
-        wait_for("the stale connection to close", || server.closed.load(Ordering::SeqCst) == 1);
+        wait_for("the stale connection to close", || {
+            server.closed.load(Ordering::SeqCst) == 1
+        });
         assert!(resolver.lookup(&ticket, &a_query(4)).is_none());
         let ticket = gate.ticket().unwrap();
         assert!(resolver.lookup(&ticket, &a_query(5)).is_some());
@@ -836,7 +1014,10 @@ resolver #2
         let start = Instant::now();
         assert!(resolver.lookup(&ticket, &a_query(1)).is_some());
         let elapsed = start.elapsed();
-        assert!(elapsed >= DOH_HEDGE && elapsed < DOH_HEDGE + Duration::from_millis(500), "{elapsed:?}");
+        assert!(
+            elapsed >= DOH_HEDGE && elapsed < DOH_HEDGE + Duration::from_millis(500),
+            "{elapsed:?}"
+        );
         // The answering endpoint goes first next time, without a hedge delay.
         let start = Instant::now();
         assert!(resolver.lookup(&ticket, &a_query(2)).is_some());
@@ -853,6 +1034,9 @@ resolver #2
         let start = Instant::now();
         assert!(resolver.lookup(&ticket, &a_query(4)).is_none());
         let elapsed = start.elapsed();
-        assert!(elapsed >= DOH_BUDGET && elapsed < DOH_BUDGET + Duration::from_millis(500), "{elapsed:?}");
+        assert!(
+            elapsed >= DOH_BUDGET && elapsed < DOH_BUDGET + Duration::from_millis(500),
+            "{elapsed:?}"
+        );
     }
 }

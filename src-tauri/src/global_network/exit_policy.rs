@@ -78,6 +78,10 @@ impl GlobalNetwork {
     }
 
     /// Compare fresh observations with the persisted baseline before region-follow can change the guest.
+    ///
+    /// Every argument is one fresh observation; grouping them into a struct
+    /// would only move the same fields to five call sites.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn check_exit_policy(
         &self,
         attempt: &CheckAttempt,

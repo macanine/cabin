@@ -1,6 +1,6 @@
 use agent_core::model::{
-    BrowserEnvironmentProbe, GeoInfo, GuestNetworkProbe, NetworkCheckCategory, NetworkCheckItem, NetworkCheckReport,
-    NetworkCheckStatus, NetworkEvidence, NetworkRoute, RouteCheck,
+    BrowserEnvironmentProbe, GeoInfo, GuestNetworkProbe, NetworkCheckCategory, NetworkCheckItem,
+    NetworkCheckReport, NetworkCheckStatus, NetworkEvidence, NetworkRoute, RouteCheck,
 };
 use agent_core::util::{new_id, now_millis};
 
@@ -209,8 +209,10 @@ pub fn evaluate_report(inputs: CheckInputs<'_>, started_at: i64) -> NetworkCheck
         ],
     ));
 
-    let boundary_ok =
-        guest.ipv6_blocked && guest.private_blocked && (!inputs.require_closed_boundary || guest.unlisted_blocked == Some(true)) && guest.udp_blocked;
+    let boundary_ok = guest.ipv6_blocked
+        && guest.private_blocked
+        && (!inputs.require_closed_boundary || guest.unlisted_blocked == Some(true))
+        && guest.udp_blocked;
     checks.push(item(
         "boundary",
         "Traffic boundary",
@@ -295,13 +297,17 @@ pub fn evaluate_report(inputs: CheckInputs<'_>, started_at: i64) -> NetworkCheck
         .as_deref()
         .is_some_and(|ip| ips.iter().all(|sample| *sample == ip));
     let guest_country_matches = guest
-            .trace_location
-            .as_deref()
-            .zip(countries.first().copied())
-            .is_some_and(|(trace, country)| trace.eq_ignore_ascii_case(country));
+        .trace_location
+        .as_deref()
+        .zip(countries.first().copied())
+        .is_some_and(|(trace, country)| trace.eq_ignore_ascii_case(country));
     let address_mismatch = !dynamic && (!same_ip || !guest_ip_matches);
-    let exit_ok = successful.len() >= 2 && guest.public_ip.is_some() && same_country && same_zone
-        && guest_country_matches && (dynamic || (same_ip && guest_ip_matches));
+    let exit_ok = successful.len() >= 2
+        && guest.public_ip.is_some()
+        && same_country
+        && same_zone
+        && guest_country_matches
+        && (dynamic || (same_ip && guest_ip_matches));
     let mut exit_evidence: Vec<NetworkEvidence> = successful
         .iter()
         .map(|(_, geo)| {
@@ -569,7 +575,11 @@ mod tests {
         ];
         let report = exit_report(&guest, &samples);
         assert!(!report.can_open);
-        let timezone = report.checks.iter().find(|check| check.id == "timezone").unwrap();
+        let timezone = report
+            .checks
+            .iter()
+            .find(|check| check.id == "timezone")
+            .unwrap();
         assert_eq!(timezone.status, NetworkCheckStatus::Fail);
         assert!(timezone.required);
     }

@@ -85,7 +85,14 @@ pub fn watch(root: &Path, rules: &SyncRules) -> notify::Result<Batches> {
         if let Ok(event) = result {
             if event.need_rescan() {
                 let _ = events_tx.send(watch_root.clone());
-            } else if !matches!(event.kind, EventKind::Access(AccessKind::Read | AccessKind::Open(AccessMode::Read) | AccessKind::Close(AccessMode::Read))) {
+            } else if !matches!(
+                event.kind,
+                EventKind::Access(
+                    AccessKind::Read
+                        | AccessKind::Open(AccessMode::Read)
+                        | AccessKind::Close(AccessMode::Read)
+                )
+            ) {
                 for path in event.paths {
                     let _ = events_tx.send(path);
                 }
@@ -105,7 +112,11 @@ pub fn watch(root: &Path, rules: &SyncRules) -> notify::Result<Batches> {
                 }
                 let ignored = path
                     .strip_prefix(&root)
-                    .map(|rel| filter.matched_path_or_any_parents(rel, path.is_dir()).is_ignore())
+                    .map(|rel| {
+                        filter
+                            .matched_path_or_any_parents(rel, path.is_dir())
+                            .is_ignore()
+                    })
                     .unwrap_or(true);
                 if !ignored && let Some(dir) = scope_of(&root, &path) {
                     dirs.insert(dir);
@@ -135,7 +146,8 @@ pub fn watch(root: &Path, rules: &SyncRules) -> notify::Result<Batches> {
 /// The guest's `sync watch`: one JSON array of folders per line, until the
 /// Mac closes the connection.
 pub fn print_changes(root: &Path, rules: &SyncRules) -> Result<(), String> {
-    let batches = watch(root, rules).map_err(|e| format!("could not watch {}: {e}", root.display()))?;
+    let batches =
+        watch(root, rules).map_err(|e| format!("could not watch {}: {e}", root.display()))?;
     let stdout = std::io::stdout();
     // A ready line lets the Mac know the watch is live before it scans.
     writeln!(stdout.lock(), "[]").map_err(|e| e.to_string())?;
@@ -155,7 +167,10 @@ mod tests {
 
     #[test]
     fn nested_folders_collapse_and_big_bursts_become_a_full_scan() {
-        let dirs: BTreeSet<String> = ["src", "src/a", "docs", "srcx"].into_iter().map(String::from).collect();
+        let dirs: BTreeSet<String> = ["src", "src/a", "docs", "srcx"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         assert_eq!(collapse(dirs), ["docs", "src", "srcx"]);
         let many: BTreeSet<String> = (0..300).map(|i| format!("d{i}")).collect();
         assert_eq!(collapse(many), [""]);
@@ -166,12 +181,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
         let filter = noise_filter(dir.path(), &SyncRules::default());
-        assert!(filter.matched_path_or_any_parents("node_modules/a/b.js", false).is_ignore());
-        assert!(filter.matched_path_or_any_parents(".git/index", false).is_ignore());
-        assert!(!filter.matched_path_or_any_parents("src/main.rs", false).is_ignore());
-        assert_eq!(scope_of(dir.path(), &dir.path().join("a.txt")).as_deref(), Some(""));
-        assert_eq!(scope_of(dir.path(), &dir.path().join("src/a.rs")).as_deref(), Some("src"));
-        assert_eq!(scope_of(dir.path(), &dir.path().join("src").join("deep").join("a.rs")).as_deref(), Some("src/deep"));
+        assert!(
+            filter
+                .matched_path_or_any_parents("node_modules/a/b.js", false)
+                .is_ignore()
+        );
+        assert!(
+            filter
+                .matched_path_or_any_parents(".git/index", false)
+                .is_ignore()
+        );
+        assert!(
+            !filter
+                .matched_path_or_any_parents("src/main.rs", false)
+                .is_ignore()
+        );
+        assert_eq!(
+            scope_of(dir.path(), &dir.path().join("a.txt")).as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            scope_of(dir.path(), &dir.path().join("src/a.rs")).as_deref(),
+            Some("src")
+        );
+        assert_eq!(
+            scope_of(
+                dir.path(),
+                &dir.path().join("src").join("deep").join("a.rs")
+            )
+            .as_deref(),
+            Some("src/deep")
+        );
     }
 
     #[test]
@@ -186,10 +226,26 @@ mod tests {
         }
         let rules = SyncRules::default();
         let filter = noise_filter(root, &rules);
-        assert!(filter.matched_path_or_any_parents(&probe, false).is_ignore());
-        assert!(filter.matched_path_or_any_parents(&stage, false).is_ignore());
-        assert!(!filter.matched_path_or_any_parents("src/draft.tmp", false).is_ignore());
-        let paths: Vec<_> = super::super::scan(root, &rules, None).unwrap().into_iter().map(|entry| entry.path).collect();
+        assert!(
+            filter
+                .matched_path_or_any_parents(&probe, false)
+                .is_ignore()
+        );
+        assert!(
+            filter
+                .matched_path_or_any_parents(&stage, false)
+                .is_ignore()
+        );
+        assert!(
+            !filter
+                .matched_path_or_any_parents("src/draft.tmp", false)
+                .is_ignore()
+        );
+        let paths: Vec<_> = super::super::scan(root, &rules, None)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
         assert_eq!(paths, ["src", "src/draft.tmp"]);
     }
 
@@ -200,7 +256,10 @@ mod tests {
         let batches = watch(dir.path(), &SyncRules::default()).unwrap();
         std::thread::sleep(Duration::from_millis(100));
         std::fs::write(dir.path().join("src/new.rs"), "x").unwrap();
-        let batch = batches.batches.recv_timeout(Duration::from_secs(5)).expect("a batch");
+        let batch = batches
+            .batches
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a batch");
         assert!(batch == ["src"] || batch == [""], "{batch:?}");
     }
 }

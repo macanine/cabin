@@ -50,9 +50,7 @@ pub fn check_hello(hello: &Value, expected_build: &str) -> Handshake {
     let version = hello["version"].as_str().unwrap_or("unknown");
     let build = hello["build"].as_str().unwrap_or("");
     if build.is_empty() {
-        return Handshake::Outdated(format!(
-            "cabind {version} predates build fingerprints"
-        ));
+        return Handshake::Outdated(format!("cabind {version} predates build fingerprints"));
     }
     if build != expected_build {
         return Handshake::Outdated(format!(

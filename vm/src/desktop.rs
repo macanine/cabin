@@ -249,7 +249,11 @@ pub(crate) fn ensure_wayvnc(cfg: &Config, runtime: &crate::vm::Runtime) -> Resul
 [ -x /usr/local/libexec/cabin-wayvnc ] && [ -f "$lock" ] || exit 1
 flock -n -E 3 "$lock" true
 [ "$?" -eq 3 ] && ss -Hln 'sport = :5900' | grep -q '127\.0\.0\.1:5900'"#;
-    if runtime.ssh_capture(healthy, std::time::Duration::from_secs(5)).0 == 0 {
+    if runtime
+        .ssh_capture(healthy, std::time::Duration::from_secs(5))
+        .0
+        == 0
+    {
         return Ok(());
     }
     let _lock = crate::lock::FileLock::acquire(
@@ -320,18 +324,24 @@ test -S "$socket"
 swaymsg -r -s "$socket" -t get_outputs"#;
     let (code, output) = runtime.ssh_capture(script, std::time::Duration::from_secs(8));
     if code != 0 {
-        return message(format!("Could not read the Sway DRM output: {}", output.trim()));
+        return message(format!(
+            "Could not read the Sway DRM output: {}",
+            output.trim()
+        ));
     }
     let outputs: Vec<Value> = serde_json::from_str(&output)?;
-    outputs.into_iter().find_map(|output| {
-        if output["active"] != true || output["name"] != "Virtual-1" {
-            return None;
-        }
-        let mode = &output["current_mode"];
-        let width = u32::try_from(mode["width"].as_u64()?).ok()?;
-        let height = u32::try_from(mode["height"].as_u64()?).ok()?;
-        Some((width, height))
-    }).ok_or_else(|| crate::Error::Message("Sway has no active virtio DRM output".into()))
+    outputs
+        .into_iter()
+        .find_map(|output| {
+            if output["active"] != true || output["name"] != "Virtual-1" {
+                return None;
+            }
+            let mode = &output["current_mode"];
+            let width = u32::try_from(mode["width"].as_u64()?).ok()?;
+            let height = u32::try_from(mode["height"].as_u64()?).ok()?;
+            Some((width, height))
+        })
+        .ok_or_else(|| crate::Error::Message("Sway has no active virtio DRM output".into()))
 }
 
 pub fn verify_script(cfg: &Config) -> String {

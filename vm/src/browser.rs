@@ -193,7 +193,10 @@ pub fn resolve(cfg: &Config) -> Result<Value> {
                 "device_memory".to_string(),
                 json!(memory_bucket(cfg.memory_mb)),
             );
-            navigator.insert("platform".to_string(), json!(GuestArch::current().ua_platform()));
+            navigator.insert(
+                "platform".to_string(),
+                json!(GuestArch::current().ua_platform()),
+            );
         }
         {
             let screen = object_mut(&mut data, "screen")?;
@@ -343,7 +346,9 @@ fn fingerprint_with_code(cfg: &Config, code_hash: &str) -> Result<String> {
         map.remove("resolved");
         map.insert("_code".to_string(), json!(code_hash));
     }
-    Ok(crate::util::sha256_text(&crate::py_json::dumps_compact(&data)))
+    Ok(crate::util::sha256_text(&crate::py_json::dumps_compact(
+        &data,
+    )))
 }
 
 fn native_code_hash(inject: &[u8]) -> String {
@@ -384,15 +389,29 @@ pub struct Settings {
 /// The effective settings (after following the machine, when it does).
 pub fn settings(cfg: &Config) -> Result<Settings> {
     let data = resolve(cfg)?;
-    let text = |pointer: &str| data.pointer(pointer).and_then(Value::as_str).unwrap_or("").to_string();
+    let text = |pointer: &str| {
+        data.pointer(pointer)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     Ok(Settings {
-        follow_machine: data.get("sync_with_system").and_then(Value::as_bool).unwrap_or(true),
+        follow_machine: data
+            .get("sync_with_system")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
         timezone: text("/timezone"),
         locale: text("/locale"),
         user_agent: text("/navigator/user_agent"),
         platform: text("/navigator/platform"),
-        hardware_concurrency: data.pointer("/navigator/hardware_concurrency").and_then(Value::as_u64).unwrap_or(0) as u32,
-        device_memory: data.pointer("/navigator/device_memory").and_then(Value::as_f64).unwrap_or(0.0),
+        hardware_concurrency: data
+            .pointer("/navigator/hardware_concurrency")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        device_memory: data
+            .pointer("/navigator/device_memory")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
     })
 }
 
@@ -418,10 +437,18 @@ pub fn with_settings(cfg: &Config, settings: &Settings) -> Result<Config> {
         let timezone = settings.timezone.trim();
         let locale = settings.locale.trim();
         let platform = settings.platform.trim();
-        if timezone.is_empty() || !timezone.chars().all(|c| c.is_ascii_alphanumeric() || "/_+-".contains(c)) {
+        if timezone.is_empty()
+            || !timezone
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/_+-".contains(c))
+        {
             return message("Choose a time zone such as Europe/Berlin");
         }
-        if locale.is_empty() || !locale.chars().all(|c| c.is_ascii_alphanumeric() || "_-.@".contains(c)) {
+        if locale.is_empty()
+            || !locale
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_-.@".contains(c))
+        {
             return message("Choose a language such as en-US");
         }
         if platform.is_empty() || platform.len() > 64 || platform.chars().any(char::is_control) {
@@ -436,11 +463,19 @@ pub fn with_settings(cfg: &Config, settings: &Settings) -> Result<Config> {
         set_path(browser, "timezone", json!(timezone))?;
         set_path(browser, "locale", json!(locale))?;
         set_path(browser, "navigator.platform", json!(platform))?;
-        set_path(browser, "navigator.hardware_concurrency", json!(settings.hardware_concurrency))?;
+        set_path(
+            browser,
+            "navigator.hardware_concurrency",
+            json!(settings.hardware_concurrency),
+        )?;
         // Whole buckets are stored as integers, like the defaults, so an
         // unchanged value hashes the same.
         let memory = settings.device_memory;
-        let memory = if memory.fract() == 0.0 { json!(memory as i64) } else { json!(memory) };
+        let memory = if memory.fract() == 0.0 {
+            json!(memory as i64)
+        } else {
+            json!(memory)
+        };
         set_path(browser, "navigator.device_memory", memory)?;
     }
     Ok(updated)
@@ -464,7 +499,9 @@ pub fn identity_fingerprint(cfg: &Config) -> Result<String> {
     if let Some(chrome) = data.get_mut("chrome").and_then(Value::as_object_mut) {
         chrome.remove("lang");
     }
-    Ok(crate::util::sha256_text(&crate::py_json::dumps_compact(&data)))
+    Ok(crate::util::sha256_text(&crate::py_json::dumps_compact(
+        &data,
+    )))
 }
 
 pub fn validate(data: &Value, cfg: &Config) -> Result<()> {
@@ -698,7 +735,10 @@ pub fn install_script(cfg: &Config, data: &Value) -> Result<String> {
         crate::py_json::dumps_pretty_with(data.get("policy").unwrap_or(&Value::Null), true)
     );
     let screen_probe = format!("{} guest-desktop screen", helper);
-    let start = format!("#!/bin/sh\nexport DISPLAY=\"${{DISPLAY:-:0}}\"\nexec {} browser run\n", helper);
+    let start = format!(
+        "#!/bin/sh\nexport DISPLAY=\"${{DISPLAY:-:0}}\"\nexec {} browser run\n",
+        helper
+    );
     let expected_screen = format!("{width}x{height}@{}", crate::py_json::py_float_repr(scale));
     Ok(format!(
         "set -euo pipefail\nUSER_NAME={user_q}\nHOME_DIR={home_q}\nsay() {{ printf '\n[fp] %s\n' \"$*\"; }}\ninstall -d -m 0755 /opt/vmctl-fp\nprintf '%s' {config_b64} | base64 -d > /opt/vmctl-fp/config.json\nprintf '%s' {inject_b64} | base64 -d > /opt/vmctl-fp/inject.js\nchmod 0644 /opt/vmctl-fp/config.json /opt/vmctl-fp/inject.js\ninstall -d -m 0755 /etc/opt/chrome/policies/managed\nprintf '%s' {policy_b64} | base64 -d > /etc/opt/chrome/policies/managed/vmctl-fp.json\nchmod 0644 /etc/opt/chrome/policies/managed/vmctl-fp.json\nsay 'aligning guest timezone/locale to the browser profile'\ntimedatectl set-timezone {profile_tz_q}\nprintf '%s\n' {profile_tz_q} > /etc/timezone\n[ -f /etc/locale.gen ] || touch /etc/locale.gen\ngrep -q '^{profile_locale}[[:space:]]' /etc/locale.gen 2>/dev/null || printf '%s UTF-8\n' {profile_locale_q} >> /etc/locale.gen\nlocale-gen >/dev/null\nupdate-locale LANG={profile_locale_q} LC_ALL={profile_locale_q} LANGUAGE={profile_locale_q}\ntest \"$(timedatectl show -p Timezone --value)\" = {profile_tz_q}\nsay 'checking browser-visible resources against the guest'\ntest \"$(nproc)\" -eq {cpus}\nsway_msg() {{ runuser -u {user_q} -- env XDG_RUNTIME_DIR=/run/user/$(id -u {user_q}) SWAYSOCK=$(ls /run/user/$(id -u {user_q})/sway-ipc.* 2>/dev/null | head -1) swaymsg \"$@\"; }}\nprobe_screen() {{ sway_msg -t get_outputs -r 2>/dev/null | {screen_probe} 2>/dev/null || true; }}\nACTUAL_SCREEN=\"$(probe_screen)\"\nif [ -n \"$ACTUAL_SCREEN\" ] && [ \"$ACTUAL_SCREEN\" != \"{expected_screen}\" ]; then\n  say \"Sway output is $ACTUAL_SCREEN; applying the configured {expected_screen}\"\n  OUTPUT_NAME=\"$(sway_msg -t get_outputs -r 2>/dev/null | {helper} guest-desktop output-name 2>/dev/null || true)\"\n  if [ -n \"$OUTPUT_NAME\" ]; then\n    sway_msg output \"$OUTPUT_NAME\" mode {width}x{height} >/dev/null 2>&1 || true\n    sway_msg output \"$OUTPUT_NAME\" scale {scale_arg} >/dev/null 2>&1 || true\n    sleep 1\n  fi\n  ACTUAL_SCREEN=\"$(probe_screen)\"\n  if [ \"$ACTUAL_SCREEN\" != \"{expected_screen}\" ]; then\n    echo \"Sway output is $ACTUAL_SCREEN, expected {expected_screen}\" >&2\n    sway_msg -t get_outputs -r >&2 || true\n    exit 41\n  fi\nfi\ninstall -d -o {user_q} -g {user_q} {home_sway_q}\nprintf '%s' {start_b64} | base64 -d > {start_path_q}\nchmod 0755 {start_path_q}\nchown {user_q}:{user_q} {start_path_q}\nsay 'verifying fingerprint injection with headless Chrome'\nrunuser -u {user_q} -- env HOME={home_q} {helper} browser verify\nsay 'browser fingerprint profile installed'\n",
@@ -888,7 +928,9 @@ pub fn audit_environment(cfg: &Config) -> Result<Value> {
     let expected = expected_environment(&profile);
     // Keeps Chrome's page script current. A failure here affects the live
     // browser only, so it is reported as a live note, never as a blocker.
-    let runtime_note = sync_runtime_controller(cfg).err().map(|error| error.to_string());
+    let runtime_note = sync_runtime_controller(cfg)
+        .err()
+        .map(|error| error.to_string());
     let runtime = Runtime::new(cfg);
     let (code, output) = runtime.ssh_capture(
         &format!("{} browser audit", crate::agentd::HELPER_BIN),
@@ -928,7 +970,10 @@ fn audit_result(expected: Value, report: &Value, runtime_note: Option<String>) -
     } else {
         None
     };
-    let mut live = report.get("live").cloned().unwrap_or_else(|| json!("unavailable"));
+    let mut live = report
+        .get("live")
+        .cloned()
+        .unwrap_or_else(|| json!("unavailable"));
     let mut observed = report.get("observed").cloned().unwrap_or(Value::Null);
     let mut live_detail = report.get("liveDetail").cloned().unwrap_or(Value::Null);
     if let Some(note) = runtime_note {
@@ -961,14 +1006,27 @@ mod tests {
             serde_json::from_str(include_str!("../config/browser.json")).unwrap();
         let amd = super::localize_defaults(raw.clone(), GuestArch::Amd64);
         assert_eq!(amd["navigator"]["platform"], "Linux x86_64");
-        assert!(amd["navigator"]["user_agent"].as_str().unwrap().contains("Linux x86_64"));
-        assert!(amd["navigator"]["app_version"].as_str().unwrap().contains("Linux x86_64"));
+        assert!(
+            amd["navigator"]["user_agent"]
+                .as_str()
+                .unwrap()
+                .contains("Linux x86_64")
+        );
+        assert!(
+            amd["navigator"]["app_version"]
+                .as_str()
+                .unwrap()
+                .contains("Linux x86_64")
+        );
         assert_eq!(amd["ua_data"]["architecture"], "x86");
         let arm = super::localize_defaults(raw.clone(), GuestArch::Arm64);
         assert_eq!(arm, raw);
     }
 
-    use super::{Settings, audit_result, identity_fingerprint, install_profile, object_mut, settings, with_settings};
+    use super::{
+        Settings, audit_result, identity_fingerprint, install_profile, object_mut, settings,
+        with_settings,
+    };
     use serde_json::json;
 
     fn env(timezone: &str) -> serde_json::Value {
@@ -996,22 +1054,79 @@ mod tests {
         assert!(!current.follow_machine);
         assert_eq!(current.timezone, "Asia/Tokyo");
 
-        let region = with_settings(&cfg, &Settings { timezone: "Europe/Berlin".into(), locale: "de-DE".into(), ..current.clone() }).unwrap();
+        let region = with_settings(
+            &cfg,
+            &Settings {
+                timezone: "Europe/Berlin".into(),
+                locale: "de-DE".into(),
+                ..current.clone()
+            },
+        )
+        .unwrap();
         assert_eq!(settings(&region).unwrap().timezone, "Europe/Berlin");
-        assert_eq!(identity_fingerprint(&cfg).unwrap(), identity_fingerprint(&region).unwrap());
+        assert_eq!(
+            identity_fingerprint(&cfg).unwrap(),
+            identity_fingerprint(&region).unwrap()
+        );
 
-        let agent = with_settings(&cfg, &Settings { user_agent: "Mozilla/5.0 Test".into(), ..current }).unwrap();
-        assert_ne!(identity_fingerprint(&cfg).unwrap(), identity_fingerprint(&agent).unwrap());
+        let agent = with_settings(
+            &cfg,
+            &Settings {
+                user_agent: "Mozilla/5.0 Test".into(),
+                ..current
+            },
+        )
+        .unwrap();
+        assert_ne!(
+            identity_fingerprint(&cfg).unwrap(),
+            identity_fingerprint(&agent).unwrap()
+        );
     }
 
     #[test]
     fn settings_are_validated() {
         let cfg = browser_config();
         let current = settings(&cfg).unwrap();
-        assert!(with_settings(&cfg, &Settings { user_agent: "two\nlines".into(), ..current.clone() }).is_err());
-        assert!(with_settings(&cfg, &Settings { timezone: "Europe/Berlin; rm -rf".into(), ..current.clone() }).is_err());
-        assert!(with_settings(&cfg, &Settings { device_memory: 3.0, ..current.clone() }).is_err());
-        assert!(with_settings(&cfg, &Settings { hardware_concurrency: 0, ..current }).is_err());
+        assert!(
+            with_settings(
+                &cfg,
+                &Settings {
+                    user_agent: "two\nlines".into(),
+                    ..current.clone()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            with_settings(
+                &cfg,
+                &Settings {
+                    timezone: "Europe/Berlin; rm -rf".into(),
+                    ..current.clone()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            with_settings(
+                &cfg,
+                &Settings {
+                    device_memory: 3.0,
+                    ..current.clone()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            with_settings(
+                &cfg,
+                &Settings {
+                    hardware_concurrency: 0,
+                    ..current
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1034,7 +1149,8 @@ mod tests {
 
     #[test]
     fn a_runtime_refresh_failure_only_affects_the_live_part() {
-        let report = json!({"installed": env("Asia/Tokyo"), "live": "notRunning", "observed": null});
+        let report =
+            json!({"installed": env("Asia/Tokyo"), "live": "notRunning", "observed": null});
         let result = audit_result(env("Asia/Tokyo"), &report, Some("sudo failed".into()));
         assert_eq!(result["error"], serde_json::Value::Null);
         assert_eq!(result["live"], "unavailable");
@@ -1134,7 +1250,10 @@ mod tests {
             std::time::Duration::from_secs(20),
             Some(&script),
         );
-        assert_eq!(checked.code, 0, "the generated install script is not valid shell: {}", checked.output);
+        assert_eq!(
+            checked.code, 0,
+            "the generated install script is not valid shell: {}",
+            checked.output
+        );
     }
-
 }

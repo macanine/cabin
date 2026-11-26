@@ -4,7 +4,9 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::PathBuf;
 
-use agent_core::model::{NetworkCheckCategory, NetworkCheckItem, NetworkCheckReport, NetworkCheckStatus, NetworkRoute};
+use agent_core::model::{
+    NetworkCheckCategory, NetworkCheckItem, NetworkCheckReport, NetworkCheckStatus, NetworkRoute,
+};
 use agent_core::util::now_millis;
 use vm_core::network_interfaces::InterfacePath;
 
@@ -71,7 +73,13 @@ pub(super) fn serve_once(body: &str) -> (String, std::thread::JoinHandle<()>) {
 pub(super) fn test_path(last: u8) -> BTreeMap<String, InterfacePath> {
     BTreeMap::from([(
         "en-test".to_string(),
-        InterfacePath { index: 4, ipv4: vec![(Ipv4Addr::new(10, 196, 103, last), Some(Ipv4Addr::new(255, 255, 0, 0)))] },
+        InterfacePath {
+            index: 4,
+            ipv4: vec![(
+                Ipv4Addr::new(10, 196, 103, last),
+                Some(Ipv4Addr::new(255, 255, 0, 0)),
+            )],
+        },
     )])
 }
 
@@ -79,7 +87,10 @@ pub(super) fn bound_network(name: &str) -> (std::path::PathBuf, GlobalNetwork, N
     let dir = temp(name);
     let network = GlobalNetwork::open(&dir).unwrap();
     network.start(&dir.join("gateway.sock"), 0).unwrap();
-    let route = NetworkRoute { bind_interface: Some("en-test".into()), ..NetworkRoute::default() };
+    let route = NetworkRoute {
+        bind_interface: Some("en-test".into()),
+        ..NetworkRoute::default()
+    };
     network.save(&route).unwrap();
     network.runtime().active_route = Some(route.clone());
     open_gate(&network, &route);

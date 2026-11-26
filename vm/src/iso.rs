@@ -85,7 +85,7 @@ impl Record {
 
     fn record_size(&self) -> usize {
         let mut length = 33 + self.name.len();
-        if self.name.len() % 2 == 0 {
+        if self.name.len().is_multiple_of(2) {
             length += 1; // pad byte keeps records even-length
         }
         length
@@ -111,7 +111,7 @@ impl Record {
         } else {
             out.extend_from_slice(&self.name);
         }
-        if self.name.len() % 2 == 0 {
+        if self.name.len().is_multiple_of(2) {
             out.push(0); // pad byte
         }
     }
@@ -215,9 +215,10 @@ pub fn build_iso(output: &Path, files: &[(&str, &[u8])]) -> Result<()> {
         identifier.extend_from_slice(b";1");
         identifier
     });
-    let (joliet_directory, joliet_root) = plan_root(&staged, &extents, JOLIET_ROOT_EXTENT, |name| {
-        name.bytes().flat_map(|byte| [0u8, byte]).collect()
-    });
+    let (joliet_directory, joliet_root) =
+        plan_root(&staged, &extents, JOLIET_ROOT_EXTENT, |name| {
+            name.bytes().flat_map(|byte| [0u8, byte]).collect()
+        });
 
     let path_table = path_table_bytes(0, false);
     let path_table_size = path_table.len() as u32;
@@ -366,14 +367,18 @@ fn read_volume(image: &[u8], descriptor: u32, joliet: bool) -> Option<Volume> {
     }
     let text = |raw: &[u8]| -> String {
         if joliet {
-            let units: Vec<u16> =
-                raw.chunks(2).map(|pair| u16::from_be_bytes([pair[0], pair[1]])).collect();
+            let units: Vec<u16> = raw
+                .chunks(2)
+                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                .collect();
             String::from_utf16_lossy(&units)
         } else {
             String::from_utf8_lossy(raw).into_owned()
         }
     };
-    let label = text(&volume[40..72]).trim_end_matches(['\0', ' ']).to_string();
+    let label = text(&volume[40..72])
+        .trim_end_matches(['\0', ' '])
+        .to_string();
     let directory = blocks(le32(volume, 158)?, le32(volume, 166)? as usize)?;
     let mut files = Vec::new();
     let mut at = 0;
@@ -393,7 +398,10 @@ fn read_volume(image: &[u8], descriptor: u32, joliet: bool) -> Option<Volume> {
 /// primary and Joliet trees must agree.
 pub fn read_iso(path: &Path) -> Result<Volume> {
     let image = std::fs::read(path)?;
-    match (read_volume(&image, PVD_EXTENT, false), read_volume(&image, SVD_EXTENT, true)) {
+    match (
+        read_volume(&image, PVD_EXTENT, false),
+        read_volume(&image, SVD_EXTENT, true),
+    ) {
         (Some(primary), Some(joliet)) if primary == joliet => Ok(primary),
         _ => message("the seed ISO is unreadable or its volumes disagree"),
     }
@@ -421,8 +429,10 @@ mod tests {
 
     fn build(path: &Path) {
         let files = sample();
-        let staged: Vec<(&str, &[u8])> =
-            files.iter().map(|(name, data)| (*name, data.as_slice())).collect();
+        let staged: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(name, data)| (*name, data.as_slice()))
+            .collect();
         build_iso(path, &staged).unwrap();
     }
 
@@ -435,8 +445,10 @@ mod tests {
         let (label, mut files) = read_iso(&output).unwrap();
         assert_eq!(label, "CIDATA");
         files.sort();
-        let mut expected: Vec<_> =
-            sample().into_iter().map(|(name, data)| (name.to_string(), data)).collect();
+        let mut expected: Vec<_> = sample()
+            .into_iter()
+            .map(|(name, data)| (name.to_string(), data))
+            .collect();
         expected.sort();
         assert_eq!(files, expected);
         let _ = std::fs::remove_dir_all(dir);
@@ -462,8 +474,17 @@ mod tests {
         build(&output);
         if let Some(xorriso) = crate::util::which("xorriso") {
             let extracted = dir.join("out");
-            let info = Command::new(&xorriso).arg("-indev").arg(&output).arg("-pvd_info").output().unwrap();
-            assert!(String::from_utf8_lossy(&info.stdout).to_lowercase().contains("volume id    : cidata"));
+            let info = Command::new(&xorriso)
+                .arg("-indev")
+                .arg(&output)
+                .arg("-pvd_info")
+                .output()
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&info.stdout)
+                    .to_lowercase()
+                    .contains("volume id    : cidata")
+            );
             let status = Command::new(&xorriso)
                 .args(["-osirrox", "on", "-indev"])
                 .arg(&output)
@@ -472,7 +493,10 @@ mod tests {
                 .status()
                 .unwrap();
             assert!(status.success());
-            assert_eq!(std::fs::read(extracted.join("network-config")).unwrap(), vec![0x61; 5000]);
+            assert_eq!(
+                std::fs::read(extracted.join("network-config")).unwrap(),
+                vec![0x61; 5000]
+            );
         } else if cfg!(target_os = "macos") {
             let mount = dir.join("mnt");
             std::fs::create_dir_all(&mount).unwrap();
@@ -482,9 +506,17 @@ mod tests {
                 .arg(&output)
                 .output()
                 .unwrap();
-            assert!(attach.status.success(), "{}", String::from_utf8_lossy(&attach.stderr));
+            assert!(
+                attach.status.success(),
+                "{}",
+                String::from_utf8_lossy(&attach.stderr)
+            );
             let read = std::fs::read(mount.join("network-config"));
-            let _ = Command::new("hdiutil").arg("detach").arg(&mount).arg("-force").status();
+            let _ = Command::new("hdiutil")
+                .arg("detach")
+                .arg(&mount)
+                .arg("-force")
+                .status();
             assert_eq!(read.unwrap(), vec![0x61; 5000]);
         }
         let _ = std::fs::remove_dir_all(dir);

@@ -40,10 +40,7 @@ impl Step for QemuStep {
                     if cfg!(target_os = "macos") && !cfg!(debug_assertions) {
                         crate::qemu_engine::BUNDLED_MISSING.to_string()
                     } else {
-                        format!(
-                            "QEMU is not available ({})",
-                            crate::qemu_engine::RELEASE
-                        )
+                        format!("QEMU is not available ({})", crate::qemu_engine::RELEASE)
                     }
                 }),
             ));

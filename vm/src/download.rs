@@ -255,6 +255,9 @@ pub(crate) struct HttpOptions {
     pub timeout: Option<Duration>,
 }
 
+/// ureq's error type is large, and every caller matches on it directly;
+/// boxing it would only move the copy into each call site.
+#[allow(clippy::result_large_err)]
 pub(crate) fn request(
     method: &str,
     target: &str,
@@ -877,7 +880,15 @@ mod tests {
         let body: Vec<u8> = (0..600_000u32).map(|i| (i % 241) as u8).collect();
         let url = serve(body.clone(), Some(200_000));
         let destination = dir.join("image.img");
-        download_sources(&[url], &destination, &sha(&body), &log_file(&dir), READ_TIMEOUT, Duration::ZERO).unwrap();
+        download_sources(
+            &[url],
+            &destination,
+            &sha(&body),
+            &log_file(&dir),
+            READ_TIMEOUT,
+            Duration::ZERO,
+        )
+        .unwrap();
         assert_eq!(fs::read(&destination).unwrap(), body);
         let log = fs::read_to_string(dir.join("log")).unwrap();
         assert!(log.contains("attempt 1/5 failed"), "{log}");
@@ -1185,8 +1196,14 @@ mod tests {
         assert!(!bypasses_proxy(&https, "ample.test"));
         assert!(bypasses_proxy(&https, "*"));
         let servers = "http=proxy:8080;https=secure:8081";
-        assert_eq!(manual_proxy(&https, servers, "<local>;*.internal").as_deref(), Some("secure:8081"));
-        assert_eq!(manual_proxy(&https, servers, "<local>;*.example.test"), None);
+        assert_eq!(
+            manual_proxy(&https, servers, "<local>;*.internal").as_deref(),
+            Some("secure:8081")
+        );
+        assert_eq!(
+            manual_proxy(&https, servers, "<local>;*.example.test"),
+            None
+        );
     }
 
     #[test]
@@ -1223,5 +1240,4 @@ mod tests {
             "{detail}"
         );
     }
-
 }

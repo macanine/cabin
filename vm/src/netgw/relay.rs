@@ -1,11 +1,11 @@
 //! The packet relay at runtime: the shoes stacks on the packet socket pairs,
 //! held traffic, and the state shared by the gateway's threads.
 
+use super::EgressMode;
 use super::chain::{Upstream, shoes_config};
 use super::dns::{Resolver, bound_dns, dns_ipv6_nodata, sanitize_dns_query};
 use super::frame::{ipv4_udp, to_guest_frame, write_frame};
 use super::policy::{Lane, hold_packet, outbound_probe_tcp};
-use super::EgressMode;
 use crate::util::LockExt;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{Ipv4Addr, UdpSocket};
@@ -27,8 +27,17 @@ pub(super) struct Stack {
 }
 
 impl Stack {
-    fn start(device: UdpSocket, upstream: &Upstream, error: Arc<Mutex<Option<String>>>) -> Result<Self> {
-        let stack = Self::with_config_dns(shoes_config(upstream)?, error.clone(), bound_dns(upstream)?, device)?;
+    fn start(
+        device: UdpSocket,
+        upstream: &Upstream,
+        error: Arc<Mutex<Option<String>>>,
+    ) -> Result<Self> {
+        let stack = Self::with_config_dns(
+            shoes_config(upstream)?,
+            error.clone(),
+            bound_dns(upstream)?,
+            device,
+        )?;
         // Configuration and socket errors are reported by the stack thread.
         // Surface immediate failures before considering a switch successful.
         std::thread::sleep(Duration::from_millis(200));
@@ -41,7 +50,11 @@ impl Stack {
     }
 
     #[cfg(test)]
-    fn with_config(config: String, error: Arc<Mutex<Option<String>>>, device: UdpSocket) -> Result<Self> {
+    fn with_config(
+        config: String,
+        error: Arc<Mutex<Option<String>>>,
+        device: UdpSocket,
+    ) -> Result<Self> {
         Self::with_config_dns(config, error, None, device)
     }
 
@@ -63,13 +76,28 @@ impl Stack {
                     .build()
                     .map_err(|e| e.to_string())
                     .and_then(|runtime| {
-                        runtime.block_on(async {
-                            if let Some(dns) = dns {
-                                shoes::embed::run_tun_controlled_with_bound_dns(&config, shutdown_rx, stack_gate, dns, device).await
-                            } else {
-                                shoes::embed::run_tun_controlled(&config, shutdown_rx, stack_gate, device).await
-                            }
-                        }).map_err(|e| e.to_string())
+                        runtime
+                            .block_on(async {
+                                if let Some(dns) = dns {
+                                    shoes::embed::run_tun_controlled_with_bound_dns(
+                                        &config,
+                                        shutdown_rx,
+                                        stack_gate,
+                                        dns,
+                                        device,
+                                    )
+                                    .await
+                                } else {
+                                    shoes::embed::run_tun_controlled(
+                                        &config,
+                                        shutdown_rx,
+                                        stack_gate,
+                                        device,
+                                    )
+                                    .await
+                                }
+                            })
+                            .map_err(|e| e.to_string())
                     });
                 if let Err(message) = outcome {
                     *error.locked() = Some(message);
@@ -129,7 +157,9 @@ pub(super) struct DnsRequest {
 
 impl DnsRequest {
     fn same_query(&self, other: &Self) -> bool {
-        self.src == other.src && self.dst == other.dst && self.port == other.port
+        self.src == other.src
+            && self.dst == other.dst
+            && self.port == other.port
             && self.query == other.query
     }
 }
@@ -159,7 +189,8 @@ impl GuestEgress {
         if let Some((flow, tcp)) = outbound_probe_tcp(packet)
             && tcp[13] & 0x12 == 0x02
         {
-            self.ordinary_probe_syns.insert(flow, tcp[4..8].try_into().unwrap());
+            self.ordinary_probe_syns
+                .insert(flow, tcp[4..8].try_into().unwrap());
         }
     }
 }
@@ -220,12 +251,20 @@ impl Shared {
             // known ordinary SYN must stay with its ordinary connection.
             let allowed = if tcp[13] & 0x12 == 0x02 {
                 !mode.holds_ordinary()
-                    || egress.ordinary_probe_syns.get(&flow).map(|seq| seq.as_slice()) != Some(&tcp[4..8])
+                    || egress
+                        .ordinary_probe_syns
+                        .get(&flow)
+                        .map(|seq| seq.as_slice())
+                        != Some(&tcp[4..8])
             } else {
                 egress.probe_flows.contains(&flow)
             };
             if allowed {
-                if self.paths[Lane::Verification as usize].host.send(&packet).is_ok() {
+                if self.paths[Lane::Verification as usize]
+                    .host
+                    .send(&packet)
+                    .is_ok()
+                {
                     egress.probe_flows.insert(flow);
                 }
                 return;
@@ -246,7 +285,8 @@ impl Shared {
 
     fn send_ordinary_ip(&self, packet: &[u8]) -> std::io::Result<()> {
         self.paths[Lane::Ordinary as usize].host.send(packet)?;
-        self.tx_bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
+        self.tx_bytes
+            .fetch_add(packet.len() as u64, Ordering::Relaxed);
         Ok(())
     }
 
@@ -285,7 +325,10 @@ impl Shared {
                     break;
                 }
                 for lane in lanes {
-                    if events.iter().any(|event| event.key == lane as usize && event.readable) {
+                    if events
+                        .iter()
+                        .any(|event| event.key == lane as usize && event.readable)
+                    {
                         self.receive_ip(lane, &mut packet);
                     }
                 }
@@ -301,8 +344,10 @@ impl Shared {
                 let mut progressed = false;
                 if let Some(packet) = egress.held_packets.front() {
                     let retry = self.send_ordinary_ip(packet).is_err_and(|error| {
-                        matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted)
-                            || error.raw_os_error() == Some(libc::ENOBUFS)
+                        matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) || error.raw_os_error() == Some(libc::ENOBUFS)
                     });
                     if !retry {
                         egress.held_packets.pop_front();
@@ -324,12 +369,17 @@ impl Shared {
                 if !egress.held_packets.is_empty() {
                     // A full Unix datagram socket need not report its peer's
                     // backpressure through POLLOUT on both supported platforms.
-                    (egress, _) = self.held_ready.wait_timeout(egress, Duration::from_millis(5))
+                    (egress, _) = self
+                        .held_ready
+                        .wait_timeout(egress, Duration::from_millis(5))
                         .unwrap_or_else(|p| p.into_inner());
                     continue;
                 }
             }
-            egress = self.held_ready.wait(egress).unwrap_or_else(|p| p.into_inner());
+            egress = self
+                .held_ready
+                .wait(egress)
+                .unwrap_or_else(|p| p.into_inner());
         }
     }
 
@@ -357,14 +407,23 @@ impl Shared {
     }
 
     fn start_dns(self: &Arc<Self>, egress: &mut GuestEgress, request: DnsRequest) {
-        let DnsRequest { src, dst, port, ip_len, query } = request;
-        let Some(ticket) = egress.dns_gate.ticket() else { return };
+        let DnsRequest {
+            src,
+            dst,
+            port,
+            ip_len,
+            query,
+        } = request;
+        let Some(ticket) = egress.dns_gate.ticket() else {
+            return;
+        };
         let counted = egress.mode.lane() == Some(Lane::Ordinary);
         if let Some(answer) = dns_ipv6_nodata(&query) {
             let packet = ipv4_udp(dst, src, 53, port, &answer);
             if self.write_guest(&to_guest_frame(&packet)) && counted {
                 self.tx_bytes.fetch_add(ip_len as u64, Ordering::Relaxed);
-                self.rx_bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
+                self.rx_bytes
+                    .fetch_add(packet.len() as u64, Ordering::Relaxed);
             }
             return;
         }
@@ -380,10 +439,14 @@ impl Shared {
             .spawn(move || {
                 let answer = resolver.lookup(&ticket, &query);
                 let mut egress = shared.egress.locked();
-                if let Some(answer) = answer && ticket.is_current() {
+                if let Some(answer) = answer
+                    && ticket.is_current()
+                {
                     let packet = ipv4_udp(dst, src, 53, port, &answer);
                     if shared.write_guest(&to_guest_frame(&packet)) && counted {
-                        shared.rx_bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
+                        shared
+                            .rx_bytes
+                            .fetch_add(packet.len() as u64, Ordering::Relaxed);
                     }
                 }
                 egress.dns_inflight -= 1;
@@ -415,7 +478,11 @@ impl GatewayStacks {
     }
 
     pub(super) fn activate(&mut self, shared: &Shared, mode: EgressMode) -> Result<()> {
-        let mode = if self.upstream.is_some() { mode } else { EgressMode::Closed };
+        let mode = if self.upstream.is_some() {
+            mode
+        } else {
+            EgressMode::Closed
+        };
         if mode == EgressMode::Closed {
             self.close();
         }
@@ -437,17 +504,22 @@ impl GatewayStacks {
                 *slot = Some(started?);
             }
         }
-        let stack = mode.lane().map(|lane| {
-            self.active[lane as usize].as_ref()
-                .ok_or_else(|| Error::Message("No network stack for the selected egress mode".into()))
-        }).transpose()?;
+        let stack = mode
+            .lane()
+            .map(|lane| {
+                self.active[lane as usize].as_ref().ok_or_else(|| {
+                    Error::Message("No network stack for the selected egress mode".into())
+                })
+            })
+            .transpose()?;
         self.ordinary_opened |= mode == EgressMode::Open;
         let mut egress = shared.egress.locked();
         egress.mode = mode;
         if let Some(stack) = stack {
             stack.gate.resume();
             egress.dns_gate.resume();
-            if let (Some(ticket), Some(resolver)) = (egress.dns_gate.ticket(), shared.resolver.locked().clone())
+            if let (Some(ticket), Some(resolver)) =
+                (egress.dns_gate.ticket(), shared.resolver.locked().clone())
                 && resolver.warm_on_resume
             {
                 let _ = resolver.warm(ticket);
@@ -463,9 +535,9 @@ impl GatewayStacks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::netgw::testutil::*;
     use crate::netgw::GUEST_IP;
     use crate::netgw::chain::shoes_config_blocking;
+    use crate::netgw::testutil::*;
 
     /// shoes' TUN stack over a datagram socket pair: a SYN from the "VM"
     /// becomes a real TCP connection from the host, and the SYN-ACK comes

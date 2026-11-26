@@ -1,8 +1,8 @@
 //! Shared builders for the network gate tests.
 
 use agent_core::model::{
-    GeoInfo, GuestNetworkProbe, NetworkCheckCategory, NetworkCheckItem, NetworkCheckReport, NetworkCheckStatus,
-    NetworkRoute,
+    GeoInfo, GuestNetworkProbe, NetworkCheckCategory, NetworkCheckItem, NetworkCheckReport,
+    NetworkCheckStatus, NetworkRoute,
 };
 use agent_core::util::now_millis;
 
@@ -75,7 +75,10 @@ pub(super) fn geo(source: &str, ip: &str, zone: &str) -> GeoInfo {
     }
 }
 
-pub(super) fn exit_report(guest: &GuestNetworkProbe, samples: &[Result<GeoInfo, String>]) -> NetworkCheckReport {
+pub(super) fn exit_report(
+    guest: &GuestNetworkProbe,
+    samples: &[Result<GeoInfo, String>],
+) -> NetworkCheckReport {
     evaluate_report(
         CheckInputs {
             route: &NetworkRoute::default(),

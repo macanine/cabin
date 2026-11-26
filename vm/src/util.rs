@@ -52,7 +52,9 @@ pub fn utcnow() -> String {
 
 /// `utcnow()` format for an arbitrary instant (for comparing journal times).
 pub fn utcstamp_of(at: std::time::SystemTime) -> String {
-    chrono::DateTime::<chrono::Utc>::from(at).format(UTC_STAMP).to_string()
+    chrono::DateTime::<chrono::Utc>::from(at)
+        .format(UTC_STAMP)
+        .to_string()
 }
 
 /// `utcnow()` display text for a stored millisecond timestamp.
@@ -71,7 +73,8 @@ pub fn parse_utc_stamp(text: &str) -> Option<std::time::SystemTime> {
     let stamp = chrono::DateTime::parse_from_rfc3339(text)
         .map(|time| time.to_utc())
         .or_else(|_| {
-            chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S").map(|time| time.and_utc())
+            chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S")
+                .map(|time| time.and_utc())
         })
         .ok()?;
     u64::try_from(stamp.timestamp())
@@ -331,10 +334,15 @@ pub fn pid_alive(pid: u32) -> bool {
 /// The executable and arguments a live process was started with.
 pub fn process_command(pid: u32) -> Option<Vec<String>> {
     use sysinfo::UpdateKind::Always;
-    let kind = sysinfo::ProcessRefreshKind::nothing().with_cmd(Always).with_exe(Always);
+    let kind = sysinfo::ProcessRefreshKind::nothing()
+        .with_cmd(Always)
+        .with_exe(Always);
     process_info(pid, kind, |process| {
-        let mut argv: Vec<String> =
-            process.cmd().iter().map(|part| part.to_string_lossy().into_owned()).collect();
+        let mut argv: Vec<String> = process
+            .cmd()
+            .iter()
+            .map(|part| part.to_string_lossy().into_owned())
+            .collect();
         if let Some(exe) = process.exe() {
             match argv.first_mut() {
                 Some(first) => *first = exe.display().to_string(),
@@ -367,7 +375,11 @@ pub fn no_window(command: &mut Command) {
 
 /// The pinned system `curl`, or the one Windows ships on `PATH`.
 pub fn curl_binary() -> &'static str {
-    if cfg!(windows) { "curl" } else { "/usr/bin/curl" }
+    if cfg!(windows) {
+        "curl"
+    } else {
+        "/usr/bin/curl"
+    }
 }
 
 pub fn random_password(length: usize) -> String {
@@ -558,7 +570,10 @@ pub fn run(argv: &[String], log: &Arc<Mutex<File>>, options: RunOptions<'_>) -> 
         return message("command not found: <empty>");
     }
     // Command arguments can carry scripts, environment values, and secrets.
-    let program = Path::new(&argv[0]).file_name().unwrap_or_default().to_string_lossy();
+    let program = Path::new(&argv[0])
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
     log_line(log, &format!("$ {program}"));
     let started = Instant::now();
     let mut command = Command::new(&argv[0]);
@@ -680,7 +695,8 @@ pub trait LockExt<T> {
 
 impl<T> LockExt<T> for std::sync::Mutex<T> {
     fn locked(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -692,11 +708,13 @@ pub trait RwLockExt<T> {
 
 impl<T> RwLockExt<T> for std::sync::RwLock<T> {
     fn read_lock(&self) -> std::sync::RwLockReadGuard<'_, T> {
-        self.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn write_lock(&self) -> std::sync::RwLockWriteGuard<'_, T> {
-        self.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -706,15 +724,32 @@ mod stamp_tests {
 
     #[test]
     fn utc_stamps_match_the_persisted_format() {
-        assert_eq!(utcstamp_from_millis(1_794_800_805_999), "2026-11-16T03:46:45+00:00");
+        assert_eq!(
+            utcstamp_from_millis(1_794_800_805_999),
+            "2026-11-16T03:46:45+00:00"
+        );
         assert_eq!(utcstamp_from_millis(0), "1970-01-01T00:00:00+00:00");
         // Leap day and month boundaries.
-        assert_eq!(utcstamp_from_millis(951_782_400_000), "2000-02-29T00:00:00+00:00");
-        assert_eq!(utcstamp_from_millis(951_868_800_000), "2000-03-01T00:00:00+00:00");
+        assert_eq!(
+            utcstamp_from_millis(951_782_400_000),
+            "2000-02-29T00:00:00+00:00"
+        );
+        assert_eq!(
+            utcstamp_from_millis(951_868_800_000),
+            "2000-03-01T00:00:00+00:00"
+        );
         // Python's isoformat output, with and without the offset.
-        let at = |text| parse_utc_stamp(text).and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
-        assert_eq!(at("2026-11-16T03:46:45+00:00"), Some(Duration::from_secs(1_794_800_805)));
-        assert_eq!(at("2026-11-16T03:46:45"), Some(Duration::from_secs(1_794_800_805)));
+        let at = |text| {
+            parse_utc_stamp(text).and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        };
+        assert_eq!(
+            at("2026-11-16T03:46:45+00:00"),
+            Some(Duration::from_secs(1_794_800_805))
+        );
+        assert_eq!(
+            at("2026-11-16T03:46:45"),
+            Some(Duration::from_secs(1_794_800_805))
+        );
         assert_eq!(at("garbage"), None);
         assert_eq!(localstamp().len(), "20261116-034645".len());
     }
@@ -724,9 +759,11 @@ mod stamp_tests {
         assert!(pid_alive(std::process::id()));
         assert!(!pid_alive(0) && !pid_alive(1));
         let own = process_command(std::process::id()).unwrap();
-        assert!(own[0].contains("vm_core") || Path::new(&own[0]).is_absolute(), "{own:?}");
+        assert!(
+            own[0].contains("vm_core") || Path::new(&own[0]).is_absolute(),
+            "{own:?}"
+        );
     }
-
 }
 
 #[cfg(test)]

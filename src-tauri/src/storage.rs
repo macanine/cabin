@@ -45,7 +45,11 @@ impl StorageReport {
             };
             scan.measure(&webkit_cache, StorageKind::WebkitCache, None);
             scan.measure(&webkit_data, StorageKind::WebkitData, None);
-            scan.measure(&caches.join("cabin"), StorageKind::DeveloperCache, app.as_deref());
+            scan.measure(
+                &caches.join("cabin"),
+                StorageKind::DeveloperCache,
+                app.as_deref(),
+            );
         }
         let entries = scan.finish(home);
         let total_bytes = entries

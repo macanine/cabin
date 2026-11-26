@@ -134,7 +134,9 @@ pub fn cli_dir(cfg: &Config) -> PathBuf {
 
 fn cli_sockets(cfg: &Config) -> impl Iterator<Item = PathBuf> {
     let dir = cli_dir(cfg);
-    CLI_LANES.into_iter().map(move |lane| dir.join(format!("{lane}.sock")))
+    CLI_LANES
+        .into_iter()
+        .map(move |lane| dir.join(format!("{lane}.sock")))
 }
 
 #[cfg(unix)]
@@ -142,13 +144,16 @@ fn prepare_cli_sockets(cfg: &Config) -> Result<()> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let dir = cli_dir(cfg);
     match fs::DirBuilder::new().mode(0o700).create(&dir) {
-        Ok(()) => {},
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error.into()),
     }
     let meta = fs::symlink_metadata(&dir)?;
     if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
-        return message(format!("Native CLI socket directory is not private: {}", dir.display()));
+        return message(format!(
+            "Native CLI socket directory is not private: {}",
+            dir.display()
+        ));
     }
     for path in cli_sockets(cfg) {
         crate::sockets::prepare_listener(&path)?;
@@ -164,7 +169,10 @@ fn append_cli_args(cfg: &Config, args: &mut Vec<String>) {
     for (lane, socket) in CLI_LANES.into_iter().zip(cli_sockets(cfg)) {
         args.extend([
             "-chardev".into(),
-            format!("socket,id=cabin-{lane},path={},server=on,wait=off", qemu_path(&socket)),
+            format!(
+                "socket,id=cabin-{lane},path={},server=on,wait=off",
+                qemu_path(&socket)
+            ),
             "-device".into(),
             format!("virtserialport,bus=cabincli.0,chardev=cabin-{lane},name=org.cabin.{lane}"),
         ]);
@@ -292,10 +300,7 @@ pub fn build_qemu_args(
         let _ = crate::accel::status_for_engine(Path::new(&resolved.qemu_bin));
     }
     let accelerator = crate::platform::accel().qemu_args(crate::arch::GuestArch::current());
-    args.extend([
-        "-name".to_string(),
-        format!("vmctl-{}", cfg.name),
-    ]);
+    args.extend(["-name".to_string(), format!("vmctl-{}", cfg.name)]);
     args.extend(accelerator);
     args.extend([
         "-smp".to_string(),
@@ -768,7 +773,8 @@ impl Runtime {
         // permissions before passing the path to the chardev.
         cabin_diagnostics::open_capture(serial_log, cabin_diagnostics::Capture::Replace)?;
         let stderr_path = self.cfg.instance_logs_dir().join("qemu-stderr.log");
-        let stderr = cabin_diagnostics::open_capture(&stderr_path, cabin_diagnostics::Capture::Replace)?;
+        let stderr =
+            cabin_diagnostics::open_capture(&stderr_path, cabin_diagnostics::Capture::Replace)?;
         log_line(
             log,
             &format!("launching QEMU (stderr: {})", stderr_path.display()),
@@ -956,7 +962,10 @@ impl Runtime {
             return false;
         }
         let Some(pid) = pid else {
-            log_line(log, "Could not verify the recorded PID as this QEMU instance");
+            log_line(
+                log,
+                "Could not verify the recorded PID as this QEMU instance",
+            );
             return false;
         };
         log_line(log, &format!("stopping VM (pid {pid})"));
@@ -1348,7 +1357,8 @@ pub fn preflight(cfg: &Config) -> Vec<String> {
     } else {
         parse_size_bytes(&cfg.disk_size).unwrap_or(0)
     };
-    let needed = install_capacity.saturating_add(crate::readiness::IMAGE_HEADROOM_GB * 1024u64.pow(3));
+    let needed =
+        install_capacity.saturating_add(crate::readiness::IMAGE_HEADROOM_GB * 1024u64.pow(3));
     if free < needed {
         issues.push(format!(
             "not enough free disk: {} available, {} recommended",

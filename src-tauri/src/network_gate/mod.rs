@@ -11,7 +11,8 @@ mod report;
 mod test_support;
 
 use agent_core::model::{
-    BrowserEnvironmentProbe, GuestNetworkProbe, NetworkCheckReport, NetworkCheckStatus, NetworkGateMode, NetworkRoute,
+    BrowserEnvironmentProbe, GuestNetworkProbe, NetworkCheckReport, NetworkCheckStatus,
+    NetworkGateMode, NetworkRoute,
 };
 use agent_core::util::{now_millis, sha256_text};
 use browser::browser_revision_material;
@@ -174,7 +175,9 @@ impl GateState {
     }
 
     pub fn restore_if_current(&mut self, mut previous: Self) {
-        if self.environment_revision != previous.environment_revision || self.paused != previous.paused {
+        if self.environment_revision != previous.environment_revision
+            || self.paused != previous.paused
+        {
             return;
         }
         previous.generation = self.generation.saturating_add(1);
@@ -310,12 +313,16 @@ impl GateState {
             return false;
         }
         match self.mode {
-            NetworkGateMode::Closed => self.auto_recover && self.next_retry_at.is_some_and(|next| now >= next),
+            NetworkGateMode::Closed => {
+                self.auto_recover && self.next_retry_at.is_some_and(|next| now >= next)
+            }
             NetworkGateMode::Checking => false,
             NetworkGateMode::Open => {
                 self.check_deadline.is_none()
                     && self.next_retry_at.is_none_or(|next| now >= next)
-                    && self.expires_at.is_some_and(|expires| now >= expires - RENEW_BEFORE_MS)
+                    && self
+                        .expires_at
+                        .is_some_and(|expires| now >= expires - RENEW_BEFORE_MS)
             }
         }
     }

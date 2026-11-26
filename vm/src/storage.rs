@@ -297,14 +297,19 @@ pub struct CleanupResult {
 pub use cabin_diagnostics::RETENTION_DAYS as LOG_RETENTION_DAYS;
 
 fn image_partial(path: &Path) -> bool {
-    let suffix = format!("-minimal-cloudimg-{}.img.part", crate::arch::GuestArch::current().cloud_image_suffix());
-    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
-        name.strip_suffix(&suffix).is_some_and(|release| {
-            release
-                .strip_prefix("ubuntu-")
-                .is_some_and(|version| !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    let suffix = format!(
+        "-minimal-cloudimg-{}.img.part",
+        crate::arch::GuestArch::current().cloud_image_suffix()
+    );
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.strip_suffix(&suffix).is_some_and(|release| {
+                release.strip_prefix("ubuntu-").is_some_and(|version| {
+                    !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.')
+                })
+            })
         })
-    })
 }
 
 fn real_directory(path: &Path) -> io::Result<Option<Metadata>> {
@@ -320,11 +325,22 @@ fn real_directory(path: &Path) -> io::Result<Option<Metadata>> {
 }
 
 fn legacy_capture(path: &Path) -> bool {
-    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| matches!(name,
-        "serial.log" | "serial-provision.log" | "display.log" | "qemu-stderr.log"
-            | "start-rollback.log" | "serial-browser-install.log" | "serial-desktop-install.log"
-            | "serial-seal-install.log" | "serial-seal-runtime.log"
-    ))
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            matches!(
+                name,
+                "serial.log"
+                    | "serial-provision.log"
+                    | "display.log"
+                    | "qemu-stderr.log"
+                    | "start-rollback.log"
+                    | "serial-browser-install.log"
+                    | "serial-desktop-install.log"
+                    | "serial-seal-install.log"
+                    | "serial-seal-runtime.log"
+            )
+        })
 }
 
 fn candidates(home: &Path, target: CleanupTarget, now: SystemTime) -> io::Result<Vec<PathBuf>> {
@@ -369,9 +385,12 @@ fn candidates(home: &Path, target: CleanupTarget, now: SystemTime) -> io::Result
         CleanupTarget::Logs => {
             let retention = Duration::from_secs(LOG_RETENTION_DAYS * 86_400);
             let is_old = |meta: &Metadata| {
-                meta.is_file() && meta.modified().ok()
-                    .and_then(|at| now.duration_since(at).ok())
-                    .is_some_and(|age| age >= retention)
+                meta.is_file()
+                    && meta
+                        .modified()
+                        .ok()
+                        .and_then(|at| now.duration_since(at).ok())
+                        .is_some_and(|age| age >= retention)
             };
             if same_volume(&paths.logs())? {
                 for dir in [paths.instance_logs(NAME), paths.instance_logs("global")] {

@@ -1,13 +1,13 @@
 //! Window subscription, guest forwarding and VM lifecycle commands.
 
 use agent_core::model::{
-    AppEvent, BrowserEnvironmentView, BrowserSettings, HostSnapshot, InstallPlan, InstallStep, MachineInstallOptions,
-    MachineStatus, MirrorResult, SyncPreview, SyncProjectInput, SyncView,
+    AppEvent, BrowserEnvironmentView, BrowserSettings, HostSnapshot, InstallPlan, InstallStep,
+    MachineInstallOptions, MachineStatus, MirrorResult, SyncPreview, SyncProjectInput, SyncView,
 };
 use agent_core::sync::{SyncMode, SyncRules};
 use serde_json::Value;
-use tauri::{AppHandle, State};
 use tauri::ipc::Channel;
+use tauri::{AppHandle, State};
 
 use crate::app_error::AppError;
 use crate::host_permissions::check_folder;
@@ -50,7 +50,10 @@ pub(crate) async fn machine_diagnostics(
     install_error: Option<String>,
     install_user: Option<String>,
 ) -> Result<String, AppError> {
-    blocking(&host, move |host| host.diagnostics(disk_gb, memory_mb, steps, install_error, install_user)).await
+    blocking(&host, move |host| {
+        host.diagnostics(disk_gb, memory_mb, steps, install_error, install_user)
+    })
+    .await
 }
 
 /// Run a readiness fix (enable WHPX, restart, open a help page).
@@ -268,8 +271,7 @@ pub(crate) async fn write_codex_export(
         let path = std::path::Path::new(&directory).join(name);
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
-        match options.open(&path)
-        {
+        match options.open(&path) {
             Ok(mut file) => {
                 if let Err(error) = vm_core::util::chmod(&path, 0o600)
                     .and_then(|()| file.write_all(contents.as_bytes()))
@@ -428,9 +430,12 @@ pub(crate) async fn sync_update(
         if mode.is_some() || paused == Some(false) {
             let project = host.sync.project(&id).map_err(sync_error)?;
             let folder = std::path::Path::new(&project.host_path);
-            check_folder(folder, mode.unwrap_or(project.mode) == SyncMode::TwoWay).require(folder)?;
+            check_folder(folder, mode.unwrap_or(project.mode) == SyncMode::TwoWay)
+                .require(folder)?;
         }
-        host.sync.update(&id, mode, rules, paused).map_err(sync_error)
+        host.sync
+            .update(&id, mode, rules, paused)
+            .map_err(sync_error)
     })
     .await
 }

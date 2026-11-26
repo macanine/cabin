@@ -70,7 +70,12 @@ fn websocket_bridges_to_guest_loopback_over_ssh() {
             .unwrap(),
     )
     .unwrap();
-    vm_core::platform::build_seed_iso(&seed, &cfg.seed_path(), &["user-data", "meta-data", "network-config"]).unwrap();
+    vm_core::platform::build_seed_iso(
+        &seed,
+        &cfg.seed_path(),
+        &["user-data", "meta-data", "network-config"],
+    )
+    .unwrap();
     let engine_path = vm_core::qemu_engine::root(&dir);
     std::fs::create_dir_all(engine_path.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(vm_core::qemu_engine::root(&engine_home), engine_path).unwrap();

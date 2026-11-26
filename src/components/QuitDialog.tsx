@@ -39,7 +39,7 @@ export function QuitDialog() {
     if (!running) { void lifecycleIpc.quit(false); return; }
     const pref = readQuitPref();
     if (pref === "ask") { setRemember(false); setOpened(true); } else void choose(pref, false);
-  }), [running]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [running]);
 
   const option = "press grid w-full cursor-pointer grid-cols-[32px_minmax(0,1fr)] items-center gap-3 rounded-xl border border-line bg-surface/70 p-3 text-left hover:border-accent/50 disabled:cursor-default disabled:opacity-60";
   return (

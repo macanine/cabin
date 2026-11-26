@@ -150,7 +150,8 @@ pub trait LockExt<T> {
 
 impl<T> LockExt<T> for std::sync::Mutex<T> {
     fn locked(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -162,11 +163,13 @@ pub trait RwLockExt<T> {
 
 impl<T> RwLockExt<T> for std::sync::RwLock<T> {
     fn read_lock(&self) -> std::sync::RwLockReadGuard<'_, T> {
-        self.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn write_lock(&self) -> std::sync::RwLockWriteGuard<'_, T> {
-        self.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -177,7 +180,10 @@ mod terminal_text_tests {
     #[test]
     fn terminal_text_drops_escapes_and_keeps_each_lines_last_state() {
         assert_eq!(clean_terminal_text("\u{1b}[32mok\u{1b}[0m done"), "ok done");
-        assert_eq!(clean_terminal_text("10%\r50%\r100%\nnext\r\n"), "100%\nnext\n");
+        assert_eq!(
+            clean_terminal_text("10%\r50%\r100%\nnext\r\n"),
+            "100%\nnext\n"
+        );
         assert_eq!(clean_terminal_text("\u{1b}]0;title\u{7}abc\u{8}d"), "abd");
         assert_eq!(clean_terminal_text("plain\ttext"), "plain\ttext");
     }

@@ -82,7 +82,13 @@ pub fn to_guest_frame(packet: &[u8]) -> Vec<u8> {
     ethernet(GUEST_MAC, ETH_IPV4, packet)
 }
 
-pub(super) fn ipv4_udp(src: Ipv4Addr, dst: Ipv4Addr, sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
+pub(super) fn ipv4_udp(
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    sport: u16,
+    dport: u16,
+    payload: &[u8],
+) -> Vec<u8> {
     let udp_len = 8 + payload.len();
     let total = 20 + udp_len;
     let mut packet = vec![0u8; total];
@@ -302,7 +308,11 @@ pub(super) fn read_frame(stream: &mut impl Read, buffer: &mut Vec<u8>) -> std::i
 /// a stop request is seen without relying on another thread's shutdown()
 /// waking a blocked read (not dependable for AF_UNIX on Windows); bytes
 /// already read are kept, so a pause mid-frame never loses framing.
-pub(super) fn read_frame_until(stream: &mut impl Read, buffer: &mut Vec<u8>, stop: &AtomicBool) -> std::io::Result<()> {
+pub(super) fn read_frame_until(
+    stream: &mut impl Read,
+    buffer: &mut Vec<u8>,
+    stop: &AtomicBool,
+) -> std::io::Result<()> {
     let mut length = [0u8; 4];
     fill(stream, &mut length, stop)?;
     let length = u32::from_be_bytes(length) as usize;
@@ -325,7 +335,9 @@ fn fill(stream: &mut impl Read, buffer: &mut [u8], stop: &AtomicBool) -> std::io
             Err(error)
                 if matches!(
                     error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
                 ) => {}
             Err(error) => return Err(error),
         }
@@ -343,8 +355,8 @@ pub(super) fn write_frame(stream: &mut impl Write, frame: &[u8]) -> std::io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::netgw::testutil::*;
     use crate::netgw::DEFAULT_DNS;
+    use crate::netgw::testutil::*;
     use std::time::Duration;
 
     #[test]

@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 use crate::lock::FileLock;
 use crate::paths::StatePaths;
 use crate::util::{
-    atomic_write_json, capture, ensure_dir, now_millis, pid_alive, terminate_process, read_json, remove_path,
+    atomic_write_json, capture, ensure_dir, now_millis, pid_alive, read_json, remove_path,
+    terminate_process,
 };
 use crate::{Error, Result};
 
@@ -110,10 +111,9 @@ pub fn restricted_runtime(runtime: &crate::vm::Runtime) -> bool {
     let Some(pid) = runtime.pid() else {
         return false;
     };
-    process_command_line(pid)
-        .is_some_and(|command| {
-            command.contains("restrict=on") && command.contains("--vmctl-proxy-relay")
-        })
+    process_command_line(pid).is_some_and(|command| {
+        command.contains("restrict=on") && command.contains("--vmctl-proxy-relay")
+    })
 }
 
 fn state(home: &Path) -> Value {
@@ -430,7 +430,8 @@ fn start_unlocked(home: &Path) -> Result<ProxyStatus> {
         )));
     }
     ensure_dir(&proxy_dir(home))?;
-    let log = cabin_diagnostics::open_capture(&log_path(home), cabin_diagnostics::Capture::Replace)?;
+    let log =
+        cabin_diagnostics::open_capture(&log_path(home), cabin_diagnostics::Capture::Replace)?;
     let log_err = log.try_clone()?;
     let child = Command::new(&binary)
         .arg(&selected_config)
