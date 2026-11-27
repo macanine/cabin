@@ -27,8 +27,9 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 | MCP, skills, and mentions | [McpView.tsx](src/views/McpView.tsx), [SkillsView.tsx](src/views/SkillsView.tsx) | `core/src/agents/{mcp_library,skill_library,skill_sources}.rs`, `agent_catalog`, `workspace_files`, `src/components/chat/useComposerMenu.ts` |
 | Usage and performance | [UsageView.tsx](src/views/UsageView.tsx), [usage/](usage/), [MonitorPanel.tsx](src/components/MonitorPanel.tsx) | `src/components/usage/{UsageMonitor,usageParts}.tsx`, `src/lib/{usageView,perfGauges}.ts` |
 | Project sync and Mac permissions | [sync.rs](src-tauri/src/sync.rs), [core/src/sync/](core/src/sync/), [host_permissions.rs](src-tauri/src/host_permissions.rs) | `src/components/NewWorkspaceModal.tsx`, `src/components/sync/`, `src/lib/syncForm.ts`, `src/views/settings/PermissionsSettings.tsx` |
+| Host CLI and shell passthrough | [HostCliSettings.tsx](src/views/settings/HostCliSettings.tsx), [host_cli.rs](src-tauri/src/host_cli.rs), [native_cli.rs](src-tauri/src/native_cli.rs) | `src/services/ipc/hostCli.ts`, `core/src/{native_channel,native_serve}.rs`, `src-tauri/src/bin/cabin.rs` |
 | Workbench and worktrees | [WorkbenchPanel.tsx](src/components/workbench/WorkbenchPanel.tsx), [core/src/workbench/](core/src/workbench/), [worktree.rs](core/src/worktree.rs) | `src/lib/workbench.ts`, `vm/src/preview_forward.rs`, `tests/workbench.test.mjs` |
-| Terminals and diffs | [Terminal.tsx](src/components/Terminal.tsx), [Diff.tsx](src/components/diff/Diff.tsx) | `src/lib/{terminalFit,terminalTheme,terminalPaste,patch}.ts`, `vite.config.ts`, `src/styles/{session,diff}.css` |
+| Terminals and diffs | [Terminal.tsx](src/components/Terminal.tsx), [Diff.tsx](src/components/diff/Diff.tsx) | `src/lib/terminal/{engine,session,renderer,buffer,protocol,theme}.ts`, `src/lib/patch.ts`, `src/styles/{session,diff}.css` |
 
 ## Host, guest, and IPC contracts
 
@@ -176,19 +177,27 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 
 - Project sync runs `scan`, `pack`, `apply`, and `watch` through `cabind sync` on
   the guest. `SyncManager` drives both sides and stores projects and binary bases under
-  `<home>/sync`. Reuse the SSH transport for short commands. Two-way scans both sides in
+  `<home>/sync`. The host reconciles and records a cycle in `sync/cycle.rs`. Guest commands
+  and their subprocesses live in `sync/transport.rs`. Reuse the SSH transport for short
+  commands. Two-way scans both sides in
   parallel. Safe skips the guest scan when the Mac matches the base. Ignore rules include
   `.gitignore`, `.cabinignore`, configured patterns, and unticked paths. The scanner and
   watcher share rules for Cabin's temporary files. Watcher scopes use `/` on every host,
   and explicit watcher rescan signals request a full cycle. Every guest sync command has
   a deadline; a hung ssh or guest is killed and reported, and the SSH control socket lives
   in the per-user temp directory, not `/tmp`.
-- Keep both versions of a conflict until `sync_resolve` selects one. Publish regular
-  files atomically after checking the staged payload length and preserve ignored paths.
+- Keep both versions of a conflict until `sync_resolve` selects one. Compare regular
+  files by content digest. Upgrade metadata-only bases from matching live copies, and
+  keep divergent legacy copies as conflicts in Safe and Two-way. Verify the scanned source
+  and destination during apply, stage replacement entries before changing the destination,
+  and preserve ignored paths. Type changes use a same-volume backup when needed, and failed
+  Windows file operations restore the original read-only attribute.
+  Host CLI startup and final sync require a full cycle without conflicts or transfer errors.
   Reject writes through symlinked directories and
   abort unreadable scans before planning. Windows Two-way scans both complete trees before
-  planning, stops on path aliases, and checks on disk before treating a missing local entry
-  as a deletion or a new pull destination. Mirror syncs `.git` with the project. Other modes
+  planning and stops on path aliases. The shared checked transfer validates source deletions
+  and new pull destinations on disk and lets unrelated paths finish. Mirror syncs `.git`
+  with the project. Other modes
   default to `copyOnce` so each side can commit independently. Mac permissions inspect
   selected folder access at launch and on foreground return. Two-way needs write access. An
   explicit access request can trigger a protected read and the macOS prompt.
@@ -198,14 +207,14 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   listener through `ssh -N -L` and displays it in an iframe. The file tree uses
   `@headless-tree/react` and `@react-symbols/icons`. Code uses Shiki through `CodeView`.
 - Plain terminals use `agent: null` (`'terminal'` in storage). The ACP terminal gets raw
-  output, and its tool card uses `util::clean_terminal_text`. Reset pooled ghostty-web
-  emulators with RIS (`\x1bc`) after `open()` and suppress emulator-generated `onData`
-  during replay. `terminalTheme.ts` sets colors and recoloring rebuilds the emulator.
-  `terminalAppearance.ts` owns the bundled font, text-size preference, and scrollbar gutter.
-  `terminalFit.ts` fits per frame and resizes the PTY when settled. Keep the 1.2 line height
-  and check the canvas patch in `vite.config.ts` on ghostty-web upgrades.
-  `terminal_paste_image` saves attachments in the guest. Paste the returned path with
-  bracketed-paste markers when requested by the terminal program.
+  output, and its tool card uses `util::clean_terminal_text`. `src/lib/terminal/` drives
+  `ghostty-web`'s WASM VT engine (`Ghostty` + `GhosttyTerminal`) directly with a
+  demand-driven Canvas 2D renderer, geometric box-drawing/block glyphs, clean `<textarea>`
+  IME input, scrollback search, URL detection, and full SGR/X10 mouse reporting (no Vite
+  monkey-patching). New WASM instances always execute RIS (`\x1bc`), suppress DSR replies
+  during history replay, switch light/dark schemes in place, and retain scrollback across
+  guest disconnects until the session is deleted. `terminal_paste_image` saves attachments
+  in the guest and pastes the quoted path with bracketed-paste markers when requested.
 
 ## UI conventions
 
@@ -299,15 +308,20 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   compares builds with. Windows app data lives under `%APPDATA%\cabin`, WebView2 data
   under `%LOCALAPPDATA%`, and OpenSSH ControlMaster is off. Keep new host code
   platform-neutral or cfg-gated; never let guest-only modules grow host dependencies.
+  Timed VM and sync subprocesses share `platform::CommandTree`. Use isolated process
+  groups on Unix and assign suspended processes to a Job Object before resuming them on
+  Windows. Cancellable pipes let sync workers stop even when a pipe remains open.
 
 ## Verification
 
 - CI gates every push on `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   `npm run lint` (ESLint), `tsc --noEmit`, and the frontend and Rust test suites. Keep
-  them green locally with the [development commands](README.md#development); do not add
-  an `#[allow]` for a new lint without a reason comment.
-- Live VM suites are `#[ignore]`d and run nightly through
-  [.github/workflows/live.yml](.github/workflows/live.yml) on a self-hosted macOS runner.
+  them green locally with the [development commands](README.md#development). CI also
+  rejects `unwrap` and `expect` in the six crates' production library and binary targets.
+  Tests can use these calls for assertions. Document the reason for any lint allowance.
+- Live VM suites are `#[ignore]`d and run through
+  [.github/workflows/live.yml](.github/workflows/live.yml) on self-hosted macOS and Windows
+  WHPX runners. Windows build CI also runs the shared Ubuntu SSH and sync test under TCG.
   A behavior that only the live suites cover needs a note in the pull request.
 - Use the [development commands](README.md#development) for frontend and Rust
   tests. Use temp directories, in-memory SQLite, loopback listeners, and

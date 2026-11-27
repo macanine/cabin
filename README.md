@@ -60,28 +60,30 @@ shows progress and logs with cancel and retry controls.
   manages shared installs from GitHub, skills.sh, ZIPs, and existing agent folders. Find
   project skills under **Agents → Setup**.
 
-## Host CLI (macOS)
+## Host CLI (macOS / Linux)
 
 Start Cabin desktop and its VM, then run `cabin claude`, `cabin codex`, `cabin agy`,
-`cabin opencode`, or `cabin pi` from a local project. Existing Two-way mappings,
-including subdirectories, are reused. On the first interactive run, Cabin shows
-both paths and asks before creating a Two-way binding under `~/projects/` in
-Ubuntu. It uses the containing Git root, or the current directory if there is
-none. Use `cabin bind` to opt in explicitly before running a script, or supply
-an absolute guest destination with `cabin bind /home/<guest-user>/projects/<name>`.
-`cabin unbind` removes the mapping without deleting either copy of the files.
+`cabin opencode`, `cabin pi`, `cabin shell` (or `cabin sh`), or `cabin exec <cmd>` from a
+local project. Existing Two-way mappings, including subdirectories, are reused. On the first
+interactive run, Cabin shows both paths and asks before creating a Two-way binding under
+`~/projects/` in Ubuntu. It uses the containing Git root, or the current directory if there is
+none. Use `cabin bind` to opt in explicitly before running a script, or supply an absolute guest
+destination with `cabin bind /home/<guest-user>/projects/<name>`. `cabin unbind` removes the
+mapping without deleting either copy of the files. Run `cabin status` or `cabin list` to inspect
+channel readiness and bound folders.
 
-On macOS, desktop startup refreshes the managed `~/.local/bin/cabin` launcher
-without replacing another command of that name or changing shell settings. If
-your shell does not search `~/.local/bin`, run `~/.local/bin/cabin` directly or
-add that directory to your `PATH`. The CLI and desktop must use the same
-`CABIN_HOME` if you override the default. A VM upgrading from before the native
-channel was added needs one cold restart.
+Manage the `cabin` launcher, install directory, shell `PATH` setup, passthrough options, VM
+channel recovery, and folder bindings in **Settings → Host CLI**. On Unix hosts, first-run
+desktop startup refreshes the managed `~/.local/bin/cabin` launcher without replacing another
+command of that name or modifying shell rc files. The CLI and desktop must use the same
+`CABIN_HOME` if you override the default. A VM upgrading from before the native channel was
+added needs one cold restart.
 
-The desktop manages the VM and the project sync lease. During the command,
-terminal and file payloads go directly through private QEMU virtio-serial lanes
-to `cabind`; neither uses SSH. The desktop still uses SSH for machine setup and
-its existing RPC. Agent credentials, sessions and CLI paths remain in the VM.
+The desktop manages the VM and the project sync lease. During the command, terminal and file
+payloads go directly through private QEMU virtio-serial lanes to `cabind` with event-driven
+`SIGWINCH` resizing, safe terminal environment forwarding, and adaptive guest idle backoff;
+neither uses SSH. The desktop still uses SSH for machine setup and its existing RPC. Agent
+credentials, sessions and CLI paths remain in the VM.
 [Transport design and benchmark](docs/native-cli-prototype.md)
 
 ## Agents and usage
@@ -228,6 +230,7 @@ VM configuration, assets, and vendored QEMU.
 On Windows x64, Cabin runs the amd64 Ubuntu guest. TCG software emulation uses longer
 startup and provisioning timeouts. Requirements:
 
+- Rust 1.100 or newer for the Windows host build.
 - Microsoft C++ Build Tools and WebView2.
 - Zig (`winget install zig.zig`), `cargo install cargo-zigbuild`, and
   `rustup target add x86_64-unknown-linux-musl` to build the guest daemon.
@@ -245,6 +248,10 @@ SPICE requires a supported Unix host. `tauri.windows.conf.json` builds
 the NSIS installer with the daemon and VM resources bundled. See
 [host platform contracts](AGENTS.md#host-platforms).
 
+The downloader uses Windows system proxy settings, including PAC and automatic proxy
+discovery. When Windows resumes from sleep, Cabin checks the guest SSH link and re-verifies
+the network route before restoring access.
+
 ### Opt-in verification
 
 Run the Mac interface test with an active IPv4 adapter. It compares real DNS and HTTPS
@@ -256,13 +263,22 @@ CABIN_TEST_INTERFACE=en0 cargo test --manifest-path vm/Cargo.toml \
   --test gateway_interface_live -- --ignored --nocapture
 ```
 
-Before uploading the Windows installer, CI installs it silently into a temporary directory,
-checks the installed executable and resource hashes, and runs the native QEMU tests against
-that installation's `vendor` directory. The tests cover QMP, gateway AF_UNIX, and shutdown
-on whichever accelerator the runner selects; they do not guarantee coverage of both WHPX
-and TCG. To run them locally on Windows, set `CABIN_VENDOR_DIR` to the installed `vendor`
-directory or the staged `build/vendor/windows-x64` directory and run
-`cargo test --manifest-path vm/Cargo.toml --test windows_qemu_live -- --ignored --nocapture`.
+Before uploading the Windows installer, CI installs it into a temporary directory, checks
+the resource hashes, and exercises QMP, gateway AF_UNIX, and shutdown with the installed
+engine. The build also boots a pinned Ubuntu image under TCG, authenticates over SSH,
+checks the installed `cabind` handshake, syncs in both directions, and repeats after a VM
+restart. The TCG fixture restores a saved fallback decision. The same test runs under
+WHPX in the [live workflow](.github/workflows/live.yml) when `CABIN_WINDOWS_LIVE_CI` is
+`true`, a `Windows`, `X64`, `cabin-live` runner is available, and
+`CABIN_WINDOWS_TEST_IMAGE` points to a local Ubuntu amd64 qcow2 image on that runner.
+
+To run the shared live sync test, set `CABIN_VENDOR_DIR`, `CABIN_TEST_IMAGE`,
+`CABIN_TEST_AGENTD`, and `CABIN_TEST_ACCEL` (`hvf` on macOS, `whpx` or `tcg` on Windows).
+The fixture writes to a disposable overlay over the supplied image.
+
+```text
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib sync::tests::vm_live::ubuntu_ssh_sync_and_restart -- --exact --ignored --nocapture
+```
 
 The [VM integration tests](vm/tests/) document their prerequisites. The account test uses a
 disposable Ubuntu VM, the installed QEMU engine, a freshly built daemon, and synthetic

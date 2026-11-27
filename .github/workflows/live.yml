@@ -5,12 +5,8 @@ on:
     - cron: "17 4 * * *"
   workflow_dispatch:
 
-# Boots real VMs. These suites are `#[ignore]`d in the push build because they
-# need QEMU/HVF, a prepared Ubuntu image, and the guest daemon; GitHub-hosted
-# runners cannot nest virtualization, so this workflow targets a self-hosted
-# macOS runner and stays off until the repository variable CABIN_LIVE_CI is
-# set to true. Secrets: CABIN_TEST_IMAGE, CABIN_TEST_ENGINE_HOME,
-# CABIN_TEST_AGENTD.
+# Real VM suites use self-hosted runners with hardware virtualization and a
+# prepared Ubuntu cloud image. The push workflow still checks packaged QEMU.
 jobs:
   suites:
     name: ${{ matrix.suite }}
@@ -52,3 +48,62 @@ jobs:
           cargo test --manifest-path vm/Cargo.toml
           --test ${{ matrix.suite }}
           -- --ignored --test-threads=1 --nocapture
+
+  windows-guest:
+    if: vars.CABIN_WINDOWS_LIVE_CI == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+          key: windows-live-guest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pip3 install ziglang cargo-zigbuild
+      - run: node scripts/build-agentd.mjs --target x86_64-unknown-linux-musl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-live-cabind
+          path: core/target/x86_64-unknown-linux-musl/release/cabind
+          if-no-files-found: error
+
+  windows:
+    name: Windows Ubuntu reachability and sync (WHPX)
+    needs: windows-guest
+    runs-on: [self-hosted, Windows, X64, cabin-live]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: windows-live-host
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/fetch-vendor.mjs --platform windows-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-live-cabind
+          path: core/target/x86_64-unknown-linux-musl/release
+      - name: Boot Ubuntu, sync and restart under WHPX
+        shell: pwsh
+        env:
+          CABIN_TEST_IMAGE: ${{ vars.CABIN_WINDOWS_TEST_IMAGE }}
+          CABIN_TEST_AGENTD: ${{ github.workspace }}/core/target/x86_64-unknown-linux-musl/release/cabind
+          CABIN_VENDOR_DIR: ${{ github.workspace }}/build/vendor/windows-x64
+          CABIN_TEST_ACCEL: whpx
+        run: |
+          if (!$env:CABIN_TEST_IMAGE -or !(Test-Path -LiteralPath $env:CABIN_TEST_IMAGE -PathType Leaf)) {
+            throw 'Set CABIN_WINDOWS_TEST_IMAGE to a local Ubuntu amd64 qcow2 image'
+          }
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib sync::tests::vm_live::ubuntu_ssh_sync_and_restart -- --exact --ignored --nocapture

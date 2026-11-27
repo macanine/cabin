@@ -22,12 +22,19 @@ contracts.
 ## Native host CLI
 
 The [native host CLI](docs/native-cli-prototype.md) forwards the five original
-agent executables and Two-way project sync over three private QEMU virtio-serial
-lanes. The desktop starts the guest workers during connection setup and leases
-its existing sync manager to the CLI for one project at a time. The lease ends
-on explicit close or local socket disconnect. Other desktop projects and desktop
-RPC keep their existing SSH transport. Windows CLI and multi-session native
-multiplexing are not implemented.
+agent executables, interactive shells (`cabin shell` / `cabin exec`), and Two-way
+project sync over three private QEMU virtio-serial lanes. **Settings → Host CLI**
+manages the `cabin` launcher symlink, shell `PATH` detection, passthrough toggles,
+VM channel restart, and folder bindings (`<data>/cli/config.json`). The host uses a
+self-pipe with `SIGWINCH` and signal handlers for zero-polling terminal I/O and
+resizing; guest channel workers apply adaptive idle backoff when disconnected and
+graceful process-group shutdown for interactive sessions. The desktop starts the
+guest workers during connection setup and leases its existing sync manager to the
+CLI for one project at a time. The lease ends on explicit close or local socket
+disconnect (including client cancel during initial sync). An interrupted CLI waits for
+the guest to close the process before requesting final sync. Other desktop projects
+and desktop RPC keep their existing SSH transport. Windows CLI and multi-session
+native multiplexing are open work.
 
 ## Diagnostics
 
@@ -99,15 +106,23 @@ The Mac and guest scan both sides as needed and reconcile against a per-project 
 applies Mac edits while keeping independent guest edits. Two-way reconciles both directions.
 Mirror makes the guest match the Mac. Both-side edits in Safe or Two-way become explicit
 conflicts. The excluded set is outside the sync plan. Regular files are staged and
-published atomically after the archive payload length is verified. The scanner rejects
-unreadable snapshots before reconciliation.
+published atomically after the payload length and SHA-256 match the planned source and
+the destination still matches its scan. The scanner rejects unreadable snapshots before
+reconciliation. SHA-256 identifies file contents even when editors preserve length or
+mtime. Safe and Two-way keep divergent copies from legacy metadata-only bases as conflicts
+until the user selects a version. Matching copies establish a digest-bearing base.
+Check source paths on disk before deleting their counterparts. A path filtered out on one
+side stays in place, and the rest of the transfer can finish.
 
 FSEvents and inotify trigger scoped batches. A full cycle runs every ten minutes. Short
 requests share one SSH transport, scan listings and bases use compact binary forms, and each
 direction transfers its batch as a tar stream. The host drains remote diagnostics alongside
 scan and transfer streams and retains up to 64 KiB per command for error reporting.
 Two-way scans concurrently. Safe skips the guest scan when the Mac matches the base.
-Safe and Two-way default to a one-time `.git` copy. Mirror includes `.git` in normal sync.
+Before transfer, the host saves the intended changes so it can recover the base if an
+apply reply is lost. An uncertain destination change becomes a conflict. Safe and Two-way
+default to a one-time `.git` copy, staged and published as a complete directory. Mirror
+includes `.git` in normal sync.
 
 ## Agent Client Protocol design
 
@@ -145,9 +160,8 @@ SQLite metadata when available.
 
 ## Current scope and open work
 
-- **Project sync.** Filesystem clocks are compared at whole-second precision across sides.
-  Conflicts are resolved per file. The UI offers a choice of source version for each
-  conflict.
+- **Project sync.** The archive preserves whole-second modification times. Conflicts are
+  resolved per file. The UI offers a choice of source version for each conflict.
 - **Proxy subscriptions.** Import accepts Clash-style YAML as plain text or base64. The node
   catalog also supports manual entries.
 - **Agent configuration.** The shared MCP and Skills pages manage user-level settings.

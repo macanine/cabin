@@ -46,7 +46,8 @@ jobs:
       - name: clippy
         run: |
           for crate in core diagnostics usage ip-detection; do
-            cargo clippy --manifest-path "$crate/Cargo.toml" --all-targets -- -D warnings
+            cargo clippy --locked --manifest-path "$crate/Cargo.toml" --all-targets -- -D warnings
+            cargo clippy --locked --manifest-path "$crate/Cargo.toml" --lib --bins -- -D clippy::unwrap_used -D clippy::expect_used
           done
 
   # The guest daemon is a static Linux binary. Linux builds both architectures
@@ -80,10 +81,10 @@ jobs:
       - name: Test the guest crates
         if: matrix.arch == 'x86_64'
         run: |
-          cargo test --manifest-path core/Cargo.toml
+          cargo test --locked --manifest-path core/Cargo.toml
           cargo test --locked --manifest-path diagnostics/Cargo.toml
-          cargo test --manifest-path usage/Cargo.toml
-          cargo test --manifest-path ip-detection/Cargo.toml
+          cargo test --locked --manifest-path usage/Cargo.toml
+          cargo test --locked --manifest-path ip-detection/Cargo.toml
       - name: Build cabind
         run: node scripts/build-agentd.mjs --target ${{ matrix.triple }}
       - uses: actions/upload-artifact@v4
@@ -123,6 +124,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
+            core
             src-tauri
             vm
           key: app-${{ matrix.name }}
@@ -154,6 +156,13 @@ jobs:
         shell: bash
         run: chmod +x core/target/${{ matrix.guest_triple }}/release/cabind
 
+      - name: Build native cabind for folder sync tests
+        if: matrix.name == 'macos-arm64'
+        shell: bash
+        run: |
+          cargo build --locked --manifest-path core/Cargo.toml --bin cabind
+          echo "CABIND_TEST_BIN=$GITHUB_WORKSPACE/core/target/debug/cabind" >> "$GITHUB_ENV"
+
       # Host-side crates, after the bundle resources exist (the src-tauri
       # build script checks them). core is covered by the guest job. Both
       # platforms run the same tests and both must pass.
@@ -161,16 +170,22 @@ jobs:
         shell: bash
         timeout-minutes: 25
         run: |
-          cargo test --manifest-path vm/Cargo.toml
-          cargo test --manifest-path src-tauri/Cargo.toml
+          cargo test --locked --manifest-path vm/Cargo.toml
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Test sync publication on NTFS
+        if: matrix.name == 'windows-x64'
+        shell: bash
+        run: cargo test --locked --manifest-path core/Cargo.toml --lib sync::archive
 
       - name: cargo clippy (vm, src-tauri)
-        if: matrix.name == 'macos-arm64'
         shell: bash
         timeout-minutes: 20
         run: |
-          cargo clippy --manifest-path vm/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+          for crate in vm src-tauri; do
+            cargo clippy --locked --manifest-path "$crate/Cargo.toml" --all-targets -- -D warnings
+            cargo clippy --locked --manifest-path "$crate/Cargo.toml" --lib --bins -- -D clippy::unwrap_used -D clippy::expect_used
+          done
 
       - name: Build the app
         shell: bash
@@ -217,6 +232,35 @@ jobs:
             }
           }
           cargo test --locked --manifest-path vm/Cargo.toml --test windows_qemu_live -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "CABIN_VENDOR_DIR=$env:CABIN_VENDOR_DIR" >> $env:GITHUB_ENV
+          "CABIN_TEST_AGENTD=$(Join-Path $installDir 'cabind')" >> $env:GITHUB_ENV
+
+      - name: Cache the Ubuntu image used by Windows sync tests
+        if: matrix.name == 'windows-x64'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cabin-ubuntu-amd64.img
+          key: ubuntu-24.04-minimal-amd64-20261124
+
+      - name: Boot Ubuntu and test Windows sync under TCG
+        if: matrix.name == 'windows-x64'
+        shell: pwsh
+        timeout-minutes: 28
+        env:
+          CABIN_TEST_ACCEL: tcg
+          CABIN_IMAGE_URL: https://cloud-images.ubuntu.com/minimal/releases/noble/release-20261124/ubuntu-24.04-minimal-cloudimg-amd64.img
+          CABIN_IMAGE_SHA256: d80fe50055e780901549d0dfab203551d79e31cb0fa9ac2b4d45efa1e8a51052
+        run: |
+          $env:CABIN_TEST_IMAGE = Join-Path $env:RUNNER_TEMP 'cabin-ubuntu-amd64.img'
+          if (!(Test-Path -LiteralPath $env:CABIN_TEST_IMAGE -PathType Leaf)) {
+            curl.exe --fail --location --retry 2 --max-time 180 --output $env:CABIN_TEST_IMAGE $env:CABIN_IMAGE_URL
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if ((Get-FileHash -LiteralPath $env:CABIN_TEST_IMAGE).Hash -ne $env:CABIN_IMAGE_SHA256) {
+            throw 'Ubuntu image SHA-256 mismatch'
+          }
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib sync::tests::vm_live::ubuntu_ssh_sync_and_restart -- --exact --ignored --nocapture
 
       - uses: actions/upload-artifact@v4
         with:
