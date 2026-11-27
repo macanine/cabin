@@ -1,28 +1,48 @@
-import { ActionIcon, Button, Loader, Menu, Tooltip } from "@mantine/core";
+import { ActionIcon, Alert, Button, Loader, Menu, Tooltip } from "@mantine/core";
 import {
-  IconChevronRight, IconDots, IconDownload, IconPlug, IconRefresh, IconSparkles, IconTerminal2,
+  IconAlertTriangle,
+  IconArrowUpRight,
+  IconChevronRight,
+  IconCreditCard,
+  IconDots,
+  IconDownload,
+  IconLayoutGrid,
+  IconPlug,
+  IconRefresh,
+  IconRotateClockwise,
+  IconSparkles,
+  IconTerminal2,
 } from "@tabler/icons-react";
 import { useCallback, useRef, useState } from "react";
 import { AcpRuntimePanel, runtimeSummary } from "../components/AcpRuntimePanel";
 import { AGENT_KINDS } from "../components/AgentPicker";
-import { useClaudeUsage } from "../components/ClaudeAccount";
 import { AgentLogo, AGENT_NAMES } from "../components/common";
 import { AgentExtensionsPanel } from "../components/extensions/AgentExtensionsPanel";
 import { MachineGate } from "../components/MachineGate";
 import { NewWorkspaceModal } from "../components/NewWorkspaceModal";
-import { ViewHeader } from "../components/TitleBar";
-import { forecastLimit, formatSpan, shortLimitLabel, type LimitForecast, type LimitWindow } from "../lib/agentLimits";
 import { PaceMeter } from "../components/PaceMeter";
-import { BurnChart, burnable } from "../components/BurnChart";
-import { useMinute } from "../lib/useNow";
-import { agentState, attentionCount, currentClaudeAccount, nodeProblem, type AgentSection, type AgentState } from "../lib/agentsHub";
+import { QuotaPacingCard } from "../components/QuotaPacingCard";
+import { QuotaTimeline } from "../components/QuotaTimeline";
+import { ViewHeader } from "../components/TitleBar";
+import { forecastLimit, formatSpan } from "../lib/agentLimits";
+import {
+  agentState,
+  attentionCount,
+  currentClaudeAccount,
+  nodeProblem,
+  type AgentSection,
+  type AgentState,
+} from "../lib/agentsHub";
 import { attempt, runOperation } from "../lib/operations";
+import { formatClockTime, formatDate, formatGuestDateTime } from "../lib/time";
 import { useAutoRefresh } from "../lib/useAutoRefresh";
+import { useMinute } from "../lib/useNow";
 import { agentsIpc } from "../services/ipc/agents";
 import { appIpc } from "../services/ipc/app";
 import type { AcpRuntime, AgentKind, AgentStatus, NodeState } from "../services/ipc/generated/core";
 import { libraryIpc } from "../services/ipc/library";
 import { nodeIpc } from "../services/ipc/node";
+import { useUnifiedQuotas, type AgentQuotaSummary, type UnifiedQuotaWindow } from "../state/quotaStore";
 import { useApp } from "../state/store";
 import { uiActions } from "../state/ui";
 import { AgentAccount, PROVIDER_NAMES } from "./agents/AgentAccount";
@@ -43,10 +63,12 @@ function useAgentSetup() {
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState(false);
   const pendingCheck = useRef<Promise<void> | null>(null);
+
   const loadRuntimes = useCallback(async () => {
     const next = await agentsIpc.runtimes().catch(() => null);
     if (next) setRuntimes(next);
   }, []);
+
   const check = useCallback(() => {
     if (pendingCheck.current) return pendingCheck.current;
     setChecking(true);
@@ -54,19 +76,24 @@ function useAgentSetup() {
       .then(([agentCheck, nodeCheck]) => {
         setCheckError(agentCheck.status === "rejected");
         if (nodeCheck.status === "fulfilled") setNode(nodeCheck.value);
-      }).finally(() => {
+      })
+      .finally(() => {
         pendingCheck.current = null;
         setChecking(false);
       });
     return pendingCheck.current;
   }, [loadRuntimes]);
+
   useAutoRefresh(check, { enabled: installing == null, minGap: 10_000, interval: 60_000 });
 
   async function install(agent: AgentStatus) {
     setInstalling(agent.kind);
     try {
       const action = !agent.installed ? "installed" : agent.version ? "updated" : "reinstalled";
-      await runOperation(appIpc.runSetup({ kind: "installAgent", agent: agent.kind }), `${AGENT_NAMES[agent.kind]} ${action}`);
+      await runOperation(
+        appIpc.runSetup({ kind: "installAgent", agent: agent.kind }),
+        `${AGENT_NAMES[agent.kind]} ${action}`,
+      );
     } finally {
       setInstalling(null);
     }
@@ -75,26 +102,6 @@ function useAgentSetup() {
   return { problem: nodeProblem(node), runtimes, loadRuntimes, installing, install, checking, checkError, check };
 }
 type Setup = ReturnType<typeof useAgentSetup>;
-
-type Window = LimitWindow & { windowMinutes?: number | null };
-type Limits = { windows: Window[]; plan: string | null; scope: string };
-
-function useAgentLimits(agents: AgentStatus[], enabled: boolean): Partial<Record<AgentKind, Limits | null>> {
-  const claude = currentClaudeAccount(agents.find((agent) => agent.kind === "claude" && agent.installed));
-  const codexReady = agents.some((agent) => agent.kind === "codex" && agent.installed && agent.authenticated);
-  const { usage } = useClaudeUsage(claude, enabled);
-  const [codex, setCodex] = useState<Limits | null>(null);
-
-  useAutoRefresh(async (isCurrent) => {
-    const { quota, activeAccountId } = await agentsIpc.codexAccounts();
-    if (isCurrent()) setCodex(quota && !quota.error ? { windows: quota.windows, plan: quota.planType, scope: `codex:${activeAccountId ?? "default"}` } : null);
-  }, { enabled: enabled && codexReady, minGap: 60_000, interval: 180_000 });
-
-  return {
-    claude: claude ? { windows: usage?.windows ?? [], plan: claude.plan, scope: `claude:${claude.id ?? "default"}` } : null,
-    codex: codexReady ? codex : null,
-  };
-}
 
 function useAgentTerminal() {
   const workspace = useApp((state) => state.workspaces.find((entry) => !entry.archived));
@@ -113,11 +120,17 @@ function useAgentTerminal() {
 
   return {
     starting,
-    open: (kind: AgentKind) => workspace ? void open(kind, workspace.id) : setCreating(kind),
-    picker: creating && <NewWorkspaceModal opened onClose={() => setCreating(null)} onCreated={(created) => {
-      setCreating(null);
-      void open(creating, created.id);
-    }} />,
+    open: (kind: AgentKind) => (workspace ? void open(kind, workspace.id) : setCreating(kind)),
+    picker: creating && (
+      <NewWorkspaceModal
+        opened
+        onClose={() => setCreating(null)}
+        onCreated={(created) => {
+          setCreating(null);
+          void open(creating, created.id);
+        }}
+      />
+    ),
   };
 }
 
@@ -125,36 +138,49 @@ export function AgentsView({ agent, section }: { agent?: AgentKind; section?: Ag
   return <MachineGate><AgentsContent selected={agent} section={section} /></MachineGate>;
 }
 
-function firstAgent(agents: AgentStatus[]): AgentKind {
-  const by = (test: (agent: AgentStatus) => boolean) => AGENT_KINDS.find((kind) => agents.some((agent) => agent.kind === kind && test(agent)));
-  return by((agent) => agent.installed && ["warn", "bad"].includes(agentState(agent).tone)) ?? by((agent) => agent.installed) ?? AGENT_KINDS[0];
-}
-
-const show = (agent: AgentKind, section?: AgentSection) => uiActions.navigate({ kind: "agents", agent, section });
-const LEFT = (forecast: LimitForecast) => Math.max(0, Math.round(100 - forecast.used));
+const showOverview = () => uiActions.navigate({ kind: "agents" });
+const showAgent = (agent: AgentKind, section?: AgentSection) => uiActions.navigate({ kind: "agents", agent, section });
 
 const DOT: Record<AgentState["tone"], string> = {
   ok: "bg-ok", info: "bg-info", warn: "bg-warn", bad: "bg-bad", off: "bg-faint/45",
 };
 
+function tightestWindow(windows: readonly UnifiedQuotaWindow[], now: number): { left: number; tone: "ok" | "warn" | "bad" } | null {
+  if (windows.length === 0) return null;
+  let worst: { left: number; tone: "ok" | "warn" | "bad" } | null = null;
+  for (const w of windows) {
+    const f = forecastLimit(w, now);
+    const left = Math.round(f.left);
+    if (!worst || left < worst.left || (f.tone === "bad" && worst.tone !== "bad")) {
+      worst = { left, tone: f.tone };
+    }
+  }
+  return worst;
+}
+
 /**
- * Calm, zero-duplication Agents workspace:
- * 1) One lightweight horizontal agent bar at the top (logo + name + status dot).
- * 2) One focused, spacious single-column canvas below where every fact appears
- *    exactly once (header with single primary action, live plan limits if any,
- *    account controls, and compact runtime/extensions disclosures).
+ * Unified Agents & Quotas Workspace:
+ * - Top pill rail: `Overview` (unified 5h/7d reset timeline, pacing curves & all-agent directory)
+ *   plus individual agent pills with inline live remaining % badges.
+ * - Level 1 (`Overview`): Magpie Next 5h / Next 7d reset timeline -> unified pacing cards -> 5-agent directory.
+ * - Level 2 (Single Agent): Hero header -> unified pacing & entitlements -> clean account panel -> runtime & extensions.
  */
 function AgentsContent({ selected, section }: { selected?: AgentKind; section?: AgentSection }) {
   const agents = useApp((state) => state.agents);
   const setup = useAgentSetup();
   const terminal = useAgentTerminal();
+  const quotas = useUnifiedQuotas(true);
+  const now = useMinute();
   const { t } = useI18n();
-  const [initial, setInitial] = useState<AgentKind | null>(null);
-  if (initial == null && agents.length > 0) setInitial(firstAgent(agents));
-  const kind = selected ?? initial ?? AGENT_KINDS[0];
-  const limits = useAgentLimits(agents, true);
+
   const installed = agents.filter((agent) => agent.installed).length;
   const attention = attentionCount(agents);
+  const activeTab: "overview" | AgentKind = selected ?? "overview";
+
+  const refreshEverything = () => {
+    void setup.check();
+    void quotas.refreshAll(true);
+  };
 
   return (
     <>
@@ -164,24 +190,43 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
           <>
             {t("home.agentsSummary", { ready: installed, total: AGENT_KINDS.length })}
             {attention > 0 && <span className="text-warn"> · {t("home.needAttention", { count: attention })}</span>}
+            {quotas.refreshedAt != null && <span className="text-faint"> · {t("quota.checkedAt", { time: formatGuestDateTime(quotas.refreshedAt) })}</span>}
           </>
         ) : t("agents.subtitle")}
       >
-        <Tooltip label={t("agents.refreshStatus")} openDelay={300}>
-          <ActionIcon size="md" variant="subtle" color="gray" aria-label={t("agents.refreshStatus")}
-            disabled={setup.installing != null} loading={setup.checking} onClick={() => void setup.check()}>
+        <Tooltip label={t("quota.refreshAll")} openDelay={300}>
+          <ActionIcon
+            size="md"
+            variant="subtle"
+            color="gray"
+            aria-label={t("quota.refreshAll")}
+            disabled={setup.installing != null}
+            loading={setup.checking || quotas.anyLoading}
+            onClick={refreshEverything}
+          >
             <IconRefresh size={16} />
           </ActionIcon>
         </Tooltip>
       </ViewHeader>
 
       <div className="ag-page">
-        <div className="ag-shell">
+        <div className={`ag-shell${activeTab === "overview" ? " wide" : ""}`}>
           <nav className="ag-bar" aria-label={t("agents.title")}>
+            <button
+              type="button"
+              className="ag-pill press"
+              aria-current={activeTab === "overview" ? "page" : undefined}
+              onClick={showOverview}
+            >
+              <IconLayoutGrid size={15} className="shrink-0" />
+              <span>{t("quota.overview")}</span>
+            </button>
+            <span className="ag-bar-sep" aria-hidden />
             {AGENT_KINDS.map((entry) => {
               const status = agents.find((agent) => agent.kind === entry);
               const state = agentState(status);
-              const active = entry === kind;
+              const active = entry === activeTab;
+              const badge = tightestWindow(quotas.byAgent[entry].windows, now);
               return (
                 <button
                   key={entry}
@@ -189,11 +234,19 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
                   className="ag-pill press"
                   aria-current={active ? "page" : undefined}
                   data-installed={status?.installed ? "true" : "false"}
-                  onClick={() => show(entry)}
+                  onClick={() => showAgent(entry)}
                 >
-                  <AgentLogo agent={entry} size={17} />
+                  <AgentLogo agent={entry} size={16} />
                   <span>{AGENT_NAMES[entry]}</span>
-                  <span className={`ag-pill-dot ${status ? DOT[state.tone] : "bg-faint/40"}`} title={status ? state.label : t("common.loading")} aria-hidden />
+                  {badge ? (
+                    <span className="ag-pill-quota" data-tone={badge.tone}>{badge.left}%</span>
+                  ) : (
+                    <span
+                      className={`ag-pill-dot ${status ? DOT[state.tone] : "bg-faint/40"}`}
+                      title={status ? state.label : t("common.loading")}
+                      aria-hidden
+                    />
+                  )}
                 </button>
               );
             })}
@@ -203,20 +256,34 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
           {setup.problem && (
             <div className="callout warn flex flex-wrap items-center justify-between gap-2">
               <span>{setup.problem}</span>
-              <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "settings", tab: "tools" })}>{t("agents.setupNode")}</Button>
+              <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "settings", tab: "tools" })}>
+                {t("agents.setupNode")}
+              </Button>
             </div>
           )}
 
-          <AgentCanvas
-            key={kind}
-            kind={kind}
-            openSetup={section === "setup"}
-            status={agents.find((entry) => entry.kind === kind)}
-            limits={limits[kind]}
-            setup={setup}
-            onOpenTerminal={terminal.open}
-            starting={terminal.starting}
-          />
+          {activeTab === "overview" ? (
+            <AgentsOverview
+              agents={agents}
+              quotas={quotas}
+              now={now}
+              setup={setup}
+              onOpenTerminal={terminal.open}
+              starting={terminal.starting}
+            />
+          ) : (
+            <AgentCanvas
+              key={activeTab}
+              kind={activeTab}
+              openSetup={section === "setup"}
+              status={agents.find((entry) => entry.kind === activeTab)}
+              quota={quotas.byAgent[activeTab]}
+              onRefreshQuota={() => void quotas.refreshAgent(activeTab, true)}
+              setup={setup}
+              onOpenTerminal={terminal.open}
+              starting={terminal.starting}
+            />
+          )}
         </div>
       </div>
       {terminal.picker}
@@ -224,46 +291,341 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
   );
 }
 
-function PlanLimits({ kind, limits }: { kind: AgentKind; limits: Limits }) {
+// ------------------------------------------------------------------ Overview
+
+function AgentsOverview({
+  agents,
+  quotas,
+  now,
+  setup,
+  onOpenTerminal,
+  starting,
+}: {
+  agents: readonly AgentStatus[];
+  quotas: ReturnType<typeof useUnifiedQuotas>;
+  now: number;
+  setup: Setup;
+  onOpenTerminal: (kind: AgentKind) => void;
+  starting: AgentKind | null;
+}) {
+  const { t } = useI18n();
+  // Sort 5h windows before 7d windows, then by soonest reset.
+  const orderedWindows = quotas.allWindows.slice().sort((a, b) => {
+    const rank = (tier: UnifiedQuotaWindow["tier"]) => (tier === "5h" ? 0 : tier === "7d" ? 1 : 2);
+    if (rank(a.tier) !== rank(b.tier)) return rank(a.tier) - rank(b.tier);
+    return (a.resetsAt ?? Number.MAX_SAFE_INTEGER) - (b.resetsAt ?? Number.MAX_SAFE_INTEGER);
+  });
+
+  return (
+    <div className="ag-overview view-enter">
+      {/* 1. Magpie Next 5h / Next 7d Reset Timeline */}
+      <section className="ag-block" aria-label={t("quota.timelineHeading")}>
+        <div className="ag-block-head">
+          <div>
+            <h3>{t("quota.timelineHeading")}</h3>
+            <span>{t("quota.timelineSubtitle")}</span>
+          </div>
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            color="gray"
+            leftSection={<IconRefresh size={13} />}
+            loading={quotas.anyLoading}
+            onClick={() => void quotas.refreshAll(true)}
+          >
+            {t("common.refresh")}
+          </Button>
+        </div>
+        <QuotaTimeline
+          windows={orderedWindows}
+          byAgent={quotas.byAgent}
+          now={now}
+          onSelectAgent={(kind) => showAgent(kind)}
+        />
+      </section>
+
+      {/* 2. Unified Pacing Curves across all active 5h / 7d windows */}
+      {orderedWindows.length > 0 && (
+        <section className="ag-block" aria-label={t("quota.pacingHeading")}>
+          <div className="ag-block-head">
+            <div>
+              <h3>{t("quota.pacingHeading")}</h3>
+              <span>{t("quota.pacingSubtitle")}</span>
+            </div>
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              color="gray"
+              rightSection={<IconArrowUpRight size={13} />}
+              onClick={() => uiActions.navigate({ kind: "usage" })}
+            >
+              {t("quota.viewSpend")}
+            </Button>
+          </div>
+          <div className="qp-grid">
+            {orderedWindows.map((window) => (
+              <QuotaPacingCard
+                key={window.id}
+                window={window}
+                now={now}
+                showAgent
+                onSelect={() => showAgent(window.agent)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* 3. All 5 Agents Directory */}
+      <section className="ag-block" aria-label={t("quota.directoryHeading")}>
+        <div className="ag-block-head">
+          <h3>{t("quota.directoryHeading")}</h3>
+          <span>{t("quota.directoryHint")}</span>
+        </div>
+        <div className="ag-directory">
+          {AGENT_KINDS.map((kind) => {
+            const status = agents.find((entry) => entry.kind === kind);
+            const state = agentState(status);
+            const summary = quotas.byAgent[kind];
+            const installed = Boolean(status?.installed && (!status.cliChecked || status.version));
+            const needsInstall = Boolean(status && (!status.installed || (status.cliChecked && !status.version)));
+            const nodeBlocked = (status?.requiresNode ?? true) && setup.problem != null;
+
+            return (
+              <div key={kind} className="ag-dir-card" data-installed={installed ? "true" : "false"}>
+                <button type="button" className="ag-dir-top press" onClick={() => showAgent(kind)}>
+                  <span className="ag-dir-logo"><AgentLogo agent={kind} size={20} /></span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <strong>{AGENT_NAMES[kind]}</strong>
+                      {summary.plan && <span className="ag-dir-plan">{summary.plan}</span>}
+                    </div>
+                    <span className="ag-dir-sub">
+                      <span className={`ag-pill-dot ${status ? DOT[state.tone] : "bg-faint/40"}`} aria-hidden />
+                      <span>{status ? state.label : t("common.loading")}</span>
+                      {status?.version && <span>· v{status.version}</span>}
+                    </span>
+                  </div>
+                  <IconChevronRight size={15} className="shrink-0 text-faint" />
+                </button>
+
+                <div className="ag-dir-body">
+                  {summary.windows.length > 0 ? (
+                    <div className="ag-dir-windows">
+                      {summary.windows.slice(0, 3).map((window) => {
+                        const forecast = forecastLimit(window, now);
+                        const left = Math.round(forecast.left);
+                        return (
+                          <div key={window.id} className="ag-dir-win">
+                            <div className="ag-dir-win-head">
+                              <span className="ag-dir-win-label">{window.shortLabel}</span>
+                              <span className="ag-dir-win-meta">
+                                <strong>{left}%</strong>
+                                {forecast.resetsIn != null && (
+                                  <span> · {formatSpan(forecast.resetsIn)}</span>
+                                )}
+                              </span>
+                            </div>
+                            <PaceMeter forecast={forecast} size="sm" label={`${AGENT_NAMES[kind]} ${window.shortLabel}`} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : summary.loading ? (
+                    <span className="ag-dir-note"><Loader size={12} /> {t("quota.readingLimits")}</span>
+                  ) : summary.error ? (
+                    <span className="ag-dir-note warn">{summary.error}</span>
+                  ) : (
+                    <span className="ag-dir-note">
+                      {!installed
+                        ? AGENT_BLURBS[kind]
+                        : kind === "claude" || kind === "codex"
+                          ? t("quota.signInForLimits")
+                          : t("quota.noRollingWindow")}
+                    </span>
+                  )}
+                </div>
+
+                <div className="ag-dir-foot">
+                  {summary.subscriptionUntil != null && (
+                    <span className="ag-dir-expiry">
+                      {t("quota.extra.paidThrough", { date: formatDate(summary.subscriptionUntil) })}
+                    </span>
+                  )}
+                  <div className="ag-dir-actions">
+                    {needsInstall && status ? (
+                      <Button
+                        size="compact-xs"
+                        leftSection={<IconDownload size={12} />}
+                        loading={setup.installing === kind}
+                        disabled={setup.installing != null || nodeBlocked}
+                        onClick={() => void setup.install(status)}
+                      >
+                        {t("common.install")}
+                      </Button>
+                    ) : installed && status?.cliChecked ? (
+                      <Button
+                        size="compact-xs"
+                        variant={state.tone === "warn" ? "filled" : "default"}
+                        leftSection={<IconTerminal2 size={12} />}
+                        loading={starting === kind}
+                        disabled={starting != null}
+                        onClick={() => onOpenTerminal(kind)}
+                      >
+                        {state.tone === "warn" ? t("agents.signIn") : t("agents.openTerminal")}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------ Single Agent
+
+function AgentQuotaSection({
+  kind,
+  quota,
+  onRefresh,
+}: {
+  kind: AgentKind;
+  quota: AgentQuotaSummary;
+  onRefresh: () => void;
+}) {
   const { t } = useI18n();
   const now = useMinute();
+  const supportsQuota = kind === "claude" || kind === "codex";
+  const hasEntitlements =
+    quota.subscriptionUntil != null ||
+    Boolean(quota.credits && (quota.credits.unlimited || quota.credits.hasCredits)) ||
+    quota.resetCreditCount > 0;
+
   return (
     <section className="ag-block" aria-label={t("agents.planLimits")}>
       <div className="ag-block-head">
-        <h3>{t("agents.planLimits")}</h3>
-        <span>{t("agents.paceHint")}</span>
+        <div>
+          <h3>{t("agents.planLimits")}</h3>
+          <span>
+            {quota.refreshedAt != null
+              ? t("quota.checkedAt", { time: formatGuestDateTime(quota.refreshedAt) })
+              : t("agents.paceHint")}
+          </span>
+        </div>
+        {supportsQuota && (
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            color="gray"
+            leftSection={<IconRefresh size={13} />}
+            loading={quota.loading}
+            onClick={onRefresh}
+          >
+            {t("common.refresh")}
+          </Button>
+        )}
       </div>
-      <div className="ag-limit-tiles">
-        {limits.windows.map((window) => {
-          const forecast = forecastLimit(window, now);
-          const name = `${AGENT_NAMES[kind]} · ${shortLimitLabel(window.label)}`;
-          return (
-            <div key={window.label} className="ag-tile" data-tone={forecast.tone} role="group" aria-label={`${name}: ${LEFT(forecast)}% ${t("agents.left")}. ${forecast.text}`}>
-              <div className="ag-tile-top">
-                <span className="ag-tile-name">{shortLimitLabel(window.label)}</span>
-                {forecast.resetsIn != null && <span className="ag-tile-reset">{t("agents.resetsIn", { span: formatSpan(forecast.resetsIn) })}</span>}
-              </div>
-              <div className="ag-tile-figure">
-                <strong>{LEFT(forecast)}<small>%</small></strong>
-                <span>{t("agents.left")}</span>
-              </div>
-              {burnable(window, now)
-                ? <BurnChart window={window} forecast={forecast} scope={limits.scope} now={now} height={60} axis />
-                : <PaceMeter forecast={forecast} label={name} />}
-              <span className="ag-tile-forecast">{forecast.text}</span>
+
+      {quota.restriction && (
+        <Alert color="yellow" icon={<IconAlertTriangle size={15} />}>
+          {quota.restriction}
+        </Alert>
+      )}
+      {quota.error && (
+        <Alert color="yellow" icon={<IconAlertTriangle size={15} />}>
+          {quota.error}
+        </Alert>
+      )}
+
+      {quota.windows.length > 0 ? (
+        <div className="qp-grid">
+          {quota.windows.map((window) => (
+            <QuotaPacingCard key={window.id} window={window} now={now} />
+          ))}
+        </div>
+      ) : quota.loading ? (
+        <div className="ag-quota-empty">
+          <Loader size="xs" />
+          <span>{t("quota.readingLimits")}</span>
+        </div>
+      ) : (
+        <div className="ag-quota-empty">
+          <span>
+            {supportsQuota
+              ? quota.noLimits
+                ? t("quota.noPlanWindows")
+                : t("quota.signInForLimits")
+              : t("quota.noRollingWindow")}
+          </span>
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            rightSection={<IconArrowUpRight size={13} />}
+            onClick={() => uiActions.navigate({ kind: "usage" })}
+          >
+            {t("quota.viewSpend")}
+          </Button>
+        </div>
+      )}
+
+      {hasEntitlements && (
+        <div className="ag-entitlements">
+          {quota.subscriptionUntil != null && (
+            <div className="ag-entitlement">
+              <IconSparkles size={14} className="text-muted" />
+              <span>{t("quota.extra.subscriptionShort")}</span>
+              <strong>{t("quota.extra.paidThrough", { date: formatDate(quota.subscriptionUntil) })}</strong>
             </div>
-          );
-        })}
-      </div>
+          )}
+          {quota.credits && (quota.credits.unlimited || quota.credits.hasCredits) && (
+            <div className="ag-entitlement">
+              <IconCreditCard size={14} className="text-muted" />
+              <span>{t("quota.extra.creditsShort")}</span>
+              <strong>
+                {quota.credits.unlimited
+                  ? t("quota.extra.unlimited")
+                  : (quota.credits.balance ?? t("quota.extra.available"))}
+              </strong>
+            </div>
+          )}
+          {quota.resetCreditCount > 0 && (
+            <div className="ag-entitlement">
+              <IconRotateClockwise size={14} className="text-muted" />
+              <span>{t("quota.extra.resetCards", { count: quota.resetCreditCount })}</span>
+              {quota.resetCards[0]?.expiresAt != null && (
+                <strong>
+                  {t("quota.extra.expiresOn", {
+                    date: formatClockTime(quota.resetCards[0].expiresAt, now),
+                  })}
+                </strong>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }
 
-function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, starting }: {
+function AgentCanvas({
+  kind,
+  openSetup,
+  status,
+  quota,
+  onRefreshQuota,
+  setup,
+  onOpenTerminal,
+  starting,
+}: {
   kind: AgentKind;
   openSetup: boolean;
   status?: AgentStatus;
-  limits?: Limits | null;
+  quota: AgentQuotaSummary;
+  onRefreshQuota: () => void;
   setup: Setup;
   onOpenTerminal: (kind: AgentKind) => void;
   starting: AgentKind | null;
@@ -276,7 +638,6 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
   const account = currentClaudeAccount(status);
   const provider = account?.provider || PROVIDER_NAMES[kind];
   const runtime = setup.runtimes.find((entry) => entry.agent === kind);
-  const hasLimits = Boolean(limits && limits.windows.length > 0);
   const [runtimeOpen, setRuntimeOpen] = useState(openSetup);
 
   if (!status) {
@@ -288,7 +649,6 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
     );
   }
 
-  // Uninstalled or broken CLI: calm, single-focus install card (no empty tabs).
   if (needsInstall) {
     return (
       <section className="ag-install-card view-enter">
@@ -316,9 +676,9 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
   }
 
   const metaParts = [
-    [provider, limits?.plan].filter(Boolean).join(" "),
+    [provider, quota.plan].filter(Boolean).join(" "),
     status.version ? `v${status.version}` : null,
-    account?.email ?? null,
+    quota.accountLabel ?? account?.email ?? null,
     state.tone !== "ok" ? state.label : null,
   ].filter(Boolean);
 
@@ -335,11 +695,26 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {canOperate && state.tone === "warn" ? (
-            <Button size="xs" leftSection={<IconTerminal2 size={14} />} loading={starting === kind}
-              disabled={starting != null} onClick={() => onOpenTerminal(kind)}>{t("agents.signIn")}</Button>
+            <Button
+              size="xs"
+              leftSection={<IconTerminal2 size={14} />}
+              loading={starting === kind}
+              disabled={starting != null}
+              onClick={() => onOpenTerminal(kind)}
+            >
+              {t("agents.signIn")}
+            </Button>
           ) : canOperate ? (
-            <Button size="xs" variant="default" leftSection={<IconTerminal2 size={14} />} loading={starting === kind}
-              disabled={starting != null} onClick={() => onOpenTerminal(kind)}>{t("agents.openTerminal")}</Button>
+            <Button
+              size="xs"
+              variant="default"
+              leftSection={<IconTerminal2 size={14} />}
+              loading={starting === kind}
+              disabled={starting != null}
+              onClick={() => onOpenTerminal(kind)}
+            >
+              {t("agents.openTerminal")}
+            </Button>
           ) : null}
           <Menu position="bottom-end" withinPortal shadow="md" width={196}>
             <Menu.Target>
@@ -349,8 +724,13 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
             </Menu.Target>
             <Menu.Dropdown>
               {canOperate && (
-                <Menu.Item leftSection={<IconDownload size={14} />} disabled={setup.installing != null || nodeBlocked}
-                  onClick={() => void setup.install(status)}>{t("agents.updateCli")}</Menu.Item>
+                <Menu.Item
+                  leftSection={<IconDownload size={14} />}
+                  disabled={setup.installing != null || nodeBlocked}
+                  onClick={() => void setup.install(status)}
+                >
+                  {t("agents.updateCli")}
+                </Menu.Item>
               )}
               <Menu.Item leftSection={<IconPlug size={14} />} onClick={() => uiActions.navigate({ kind: "mcp", agent: kind })}>
                 {t("agents.mcpServers")}
@@ -365,14 +745,14 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
 
       {status.configError && <p className="callout bad m-0" role="alert">{status.configError}</p>}
 
-      {hasLimits && limits && <PlanLimits kind={kind} limits={limits} />}
+      <AgentQuotaSection kind={kind} quota={quota} onRefresh={onRefreshQuota} />
 
       <section className="ag-block" aria-label={t("agents.account")}>
         <div className="ag-block-head">
           <h3>{t("agents.account")}</h3>
         </div>
         <div className="ag-surface">
-          <AgentAccount kind={kind} status={status} onOpenTerminal={onOpenTerminal} starting={starting} hideLimits={hasLimits} />
+          <AgentAccount kind={kind} status={status} onOpenTerminal={onOpenTerminal} starting={starting} hideLimits />
         </div>
       </section>
 

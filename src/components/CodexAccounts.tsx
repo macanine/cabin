@@ -1,4 +1,3 @@
-import { useAutoRefresh } from "../lib/useAutoRefresh";
 import {
   Alert,
   Badge,
@@ -24,11 +23,10 @@ import {
   IconRotateClockwise,
   IconTrash,
 } from "@tabler/icons-react";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import type {
   AgentStatus,
   CodexAccount,
-  CodexAccounts,
   CodexQuota,
   CodexResetCard,
 } from "../services/ipc/generated/core";
@@ -40,6 +38,11 @@ import { AccountLimit } from "./AccountLimits";
 import { toIpcError } from "../services/ipc/common";
 import { uiActions } from "../state/ui";
 import { formatDate, formatDateTime, formatGuestDateTime } from "../lib/time";
+import {
+  setCodexAccountsSnapshot,
+  setCodexQuotaSnapshot,
+  useUnifiedQuotas,
+} from "../state/quotaStore";
 
 function accountName(account: CodexAccount): string {
   if (account.email) return account.email;
@@ -66,14 +69,14 @@ function subscriptionDate(value: string | null): string | null {
   return formatDate(timestamp);
 }
 
-function QuotaPanel({ quota, scope, hideWindows = false }: { quota: CodexQuota; scope: string; hideWindows?: boolean }) {
+function QuotaPanel({ quota, scope }: { quota: CodexQuota; scope: string }) {
   const credits = quota.credits;
   return (
     <div className="codex-quota">
       <Group justify="space-between" align="flex-start">
         <div>
           <Group gap="xs">
-            <Text fw={650}>{hideWindows ? "Credits & restrictions" : "Limits"}</Text>
+            <Text fw={650}>Limits</Text>
             <Badge variant="light" color="orange">
               {planLabel(quota.planType)}
             </Badge>
@@ -101,7 +104,7 @@ function QuotaPanel({ quota, scope, hideWindows = false }: { quota: CodexQuota; 
             : ""}.
         </Alert>
       )}
-      {!hideWindows && quota.windows.length > 0 && (
+      {quota.windows.length > 0 && (
         <Stack gap="sm" mt="md">
           {quota.windows.map((window) => (
             <AccountLimit key={`${window.kind}-${window.windowMinutes}`} scope={scope} label={window.label} used={window.usedPercent} resetsAt={window.resetsAt} windowMinutes={window.windowMinutes} />
@@ -115,9 +118,7 @@ function QuotaPanel({ quota, scope, hideWindows = false }: { quota: CodexQuota; 
       )}
       <Group gap="lg" mt="md">
         <div>
-          <Text size="xs" c="dimmed">
-            Credits
-          </Text>
+          <Text size="xs" c="dimmed">Credits</Text>
           <Text size="sm">
             {credits?.unlimited
               ? "Unlimited"
@@ -127,9 +128,7 @@ function QuotaPanel({ quota, scope, hideWindows = false }: { quota: CodexQuota; 
           </Text>
         </div>
         <div>
-          <Text size="xs" c="dimmed">
-            Reset cards
-          </Text>
+          <Text size="xs" c="dimmed">Reset cards</Text>
           <Text size="sm">{quota.resetCreditCount}</Text>
         </div>
       </Group>
@@ -142,7 +141,7 @@ function resetCardLabel(card: CodexResetCard, index: number): string {
 }
 
 export function CodexAccountsPanel({ status, hideLimits = false }: { status: AgentStatus; hideLimits?: boolean }) {
-  const [data, setData] = useState<CodexAccounts | null>(null);
+  const { codexData: data, codexError: readError } = useUnifiedQuotas(status.installed);
   const [busy, setBusy] = useState<string | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [paste, setPaste] = useState("");
@@ -152,21 +151,6 @@ export function CodexAccountsPanel({ status, hideLimits = false }: { status: Age
   const [removeTarget, setRemoveTarget] = useState<CodexAccount | null>(null);
   const [resetTarget, setResetTarget] = useState<CodexResetCard | null>(null);
   const [resetConfirmed, setResetConfirmed] = useState(false);
-
-  const [readError, setReadError] = useState<string | null>(null);
-  const load = useCallback(async (isCurrent: () => boolean) => {
-    try {
-      const next = await agentsIpc.codexAccounts();
-      if (!isCurrent()) return;
-      setData(next);
-      setReadError(null);
-      if (next.activeAccountId) {
-        const quota = await agentsIpc.refreshCodexQuota();
-        if (isCurrent()) setData(quota);
-      }
-    } catch (error) { if (isCurrent()) setReadError(toIpcError(error).message); }
-  }, []);
-  useAutoRefresh(load, { enabled: busy == null, interval: 180_000, minGap: 60_000 });
 
   async function importFile() {
     const path = await chooseFile();
@@ -179,10 +163,10 @@ export function CodexAccountsPanel({ status, hideLimits = false }: { status: Age
         activateImport ? "Codex credentials imported and activated" : "Codex credentials imported",
       );
       if (next) {
-        setData(next);
+        setCodexAccountsSnapshot(next);
         if (activateImport) {
           const refreshed = await attempt(agentsIpc.refreshCodexQuota());
-          if (refreshed) setData(refreshed);
+          if (refreshed) setCodexAccountsSnapshot(refreshed);
         }
       }
       await agentsIpc.refresh().catch(() => undefined);
@@ -196,7 +180,7 @@ export function CodexAccountsPanel({ status, hideLimits = false }: { status: Age
       agentsIpc.importCodexAccount(null, true),
       "Current Codex login saved",
     );
-    if (next) setData(next);
+    if (next) setCodexAccountsSnapshot(next);
     setBusy(null);
   }
 
@@ -208,12 +192,12 @@ export function CodexAccountsPanel({ status, hideLimits = false }: { status: Age
       activateImport ? "Codex credentials imported and activated" : "Codex credentials imported",
     );
     if (next) {
-      setData(next);
+      setCodexAccountsSnapshot(next);
       setPaste("");
       setPasteOpen(false);
       if (activateImport) {
-          const refreshed = await attempt(agentsIpc.refreshCodexQuota());
-        if (refreshed) setData(refreshed);
+        const refreshed = await attempt(agentsIpc.refreshCodexQuota());
+        if (refreshed) setCodexAccountsSnapshot(refreshed);
       }
       await agentsIpc.refresh().catch(() => undefined);
     }
@@ -227,9 +211,9 @@ export function CodexAccountsPanel({ status, hideLimits = false }: { status: Age
       `Switched to ${accountName(account)}`,
     );
     if (next) {
-      setData(next);
+      setCodexAccountsSnapshot(next);
       const refreshed = await attempt(agentsIpc.refreshCodexQuota());
-      if (refreshed) setData(refreshed);
+      if (refreshed) setCodexAccountsSnapshot(refreshed);
     }
     await agentsIpc.refresh().catch(() => undefined);
     setBusy(null);
@@ -257,7 +241,7 @@ export function CodexAccountsPanel({ status, hideLimits = false }: { status: Age
       agentsIpc.removeCodexAccount(removeTarget.id),
       "Saved Codex account removed",
     );
-    if (next) setData(next);
+    if (next) setCodexAccountsSnapshot(next);
     setBusy(null);
     setRemoveTarget(null);
   }
@@ -269,10 +253,8 @@ export function CodexAccountsPanel({ status, hideLimits = false }: { status: Age
       agentsIpc.useCodexResetCard(resetTarget.id),
       "Codex reset request completed",
     );
-    if (result) {
-      setData((current) =>
-        current && result.quota ? { ...current, quota: result.quota } : current,
-      );
+    if (result?.quota) {
+      setCodexQuotaSnapshot(result.quota);
     }
     setBusy(null);
     setResetTarget(null);
@@ -396,45 +378,49 @@ export function CodexAccountsPanel({ status, hideLimits = false }: { status: Age
         </div>
       )}
 
-      {data?.quota ? (
+      {!hideLimits && data?.quota && (
         <>
           <Divider my="lg" />
-          <QuotaPanel quota={data.quota} scope={`codex:${data.activeAccountId ?? "default"}`} hideWindows={hideLimits} />
-          {availableCards.length > 0 && (
-            <div className="codex-reset">
-              <Text size="sm" fw={600} mb={6}>
-                Reset cards
-              </Text>
-              <Stack gap="xs">
-                {availableCards.map((card, index) => (
-                  <Group key={card.id} justify="space-between" gap="sm">
-                    <div>
-                      <Text size="sm">{card.title || `Reset card ${index + 1}`}</Text>
-                      <Text size="xs" c="dimmed">
-                        Expires {dateTime(card.expiresAt)}
-                      </Text>
-                    </div>
-                    <Button
-                      size="compact-sm"
-                      variant="light"
-                      color="orange"
-                      leftSection={<IconRotateClockwise size={13} />}
-                      disabled={busy != null}
-                      onClick={() => {
-                        setResetTarget(card);
-                        setResetConfirmed(false);
-                      }}
-                    >
-                      Use card
-                    </Button>
-                  </Group>
-                ))}
-              </Stack>
-            </div>
-          )}
+          <QuotaPanel quota={data.quota} scope={`codex:${data.activeAccountId ?? "default"}`} />
         </>
-      ) : null}
-      {readError && <Text size="xs" c="dimmed" role="status">{readError}</Text>}
+      )}
+
+      {availableCards.length > 0 && (
+        <>
+          <Divider my="md" />
+          <div className="codex-reset">
+            <Text size="sm" fw={600} mb={6}>
+              Reset cards
+            </Text>
+            <Stack gap="xs">
+              {availableCards.map((card, index) => (
+                <Group key={card.id} justify="space-between" gap="sm">
+                  <div>
+                    <Text size="sm">{card.title || `Reset card ${index + 1}`}</Text>
+                    <Text size="xs" c="dimmed">
+                      Expires {dateTime(card.expiresAt)}
+                    </Text>
+                  </div>
+                  <Button
+                    size="compact-sm"
+                    variant="light"
+                    color="orange"
+                    leftSection={<IconRotateClockwise size={13} />}
+                    disabled={busy != null}
+                    onClick={() => {
+                      setResetTarget(card);
+                      setResetConfirmed(false);
+                    }}
+                  >
+                    Use card
+                  </Button>
+                </Group>
+              ))}
+            </Stack>
+          </div>
+        </>
+      )}
+      {readError && !hideLimits && <Text size="xs" c="dimmed" role="status">{readError}</Text>}
 
       <Modal opened={exportTarget != null} onClose={() => setExportTarget(null)} title="Export Codex account" centered>
         <Stack gap="md">

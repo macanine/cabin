@@ -1,17 +1,20 @@
 import { Button, Loader, SegmentedControl, Select, Tooltip } from "@mantine/core";
-import { IconActivity, IconBolt, IconCoin, IconStack2, IconX } from "@tabler/icons-react";
+import { IconActivity, IconArrowUpRight, IconBolt, IconCoin, IconStack2, IconX } from "@tabler/icons-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { AgentChips, isAgentKind } from "../components/AgentPicker";
-import { AGENT_NAMES } from "../components/common";
+import { AgentLogo, AGENT_NAMES } from "../components/common";
 import { MachineGate } from "../components/MachineGate";
+import { PaceMeter } from "../components/PaceMeter";
 import { useUsage } from "../components/usage/UsageMonitor";
 import { ViewHeader } from "../components/TitleBar";
 import {
   DailyBars, PriceEditor, RequestDetail, UsageAlerts,
 } from "../components/usage/usageParts";
+import { forecastLimit, formatSpan } from "../lib/agentLimits";
 import { hostZone, useClock } from "../lib/clock";
 import { formatCount, formatInteger, formatPrice, formatUsd } from "../lib/format";
-import { formatGuestDateTime, formatTime } from "../lib/time";
+import { formatClockTime, formatGuestDateTime, formatTime } from "../lib/time";
+import { useMinute } from "../lib/useNow";
 import {
   cacheHitRate, formatMetric, modelShares, rangeStart, totalTokens, USAGE_RANGES,
   type UsageMetric, type UsageRange,
@@ -19,6 +22,8 @@ import {
 import { toIpcError } from "../services/ipc/common";
 import type { AgentKind, UsageLog } from "../services/ipc/generated/core";
 import { usageIpc, type UsageDashboard, type UsageFilter } from "../services/ipc/usage";
+import { useUnifiedQuotas } from "../state/quotaStore";
+import { uiActions } from "../state/ui";
 import { t as translateGlobal, type StaticMessageKey, useI18n } from "../i18n";
 
 const PAGE_SIZE = 20;
@@ -95,6 +100,8 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
   const { t } = useI18n();
   const { offset: clockOffset } = useClock();
   const zone = hostZone();
+  const now = useMinute();
+  const quotas = useUnifiedQuotas(true);
   const [range, setRangeState] = useState<UsageRange>(readRange);
   const [agent, setAgent] = useState<AgentKind | null>(null);
   const [model, setModel] = useState<string | null>(null);
@@ -214,6 +221,62 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
 
         <UsageAlerts error={usage.error ?? error} importErrors={usage.importErrors}
           onCloseError={() => { usage.clearError(); setError(null); }} onCloseImport={usage.clearImportErrors} />
+
+        {(() => {
+          const liveWindows = quotas.allWindows.filter((w) => !agent || w.agent === agent);
+          if (liveWindows.length === 0) return null;
+          return (
+            <section className="usg-card usg-quotas" aria-label={t("quota.liveStripTitle")}>
+              <div className="usg-quotas-head">
+                <div className="flex items-center gap-2">
+                  <h2>{t("quota.liveStripTitle")}</h2>
+                  <span className="usg-tab-count">{liveWindows.length}</span>
+                </div>
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  color="gray"
+                  rightSection={<IconArrowUpRight size={13} />}
+                  onClick={() => uiActions.navigate(agent ? { kind: "agents", agent } : { kind: "agents" })}
+                >
+                  {t("quota.openPacing")}
+                </Button>
+              </div>
+              <div className="usg-quotas-grid">
+                {liveWindows.map((w) => {
+                  const f = forecastLimit(w, now);
+                  const left = Math.round(f.left);
+                  const clock = w.resetsAt != null ? formatClockTime(w.resetsAt, now) : w.resetText;
+                  return (
+                    <button
+                      key={w.id}
+                      type="button"
+                      className="usg-quota-pill press"
+                      data-tone={f.tone}
+                      onClick={() => uiActions.navigate({ kind: "agents", agent: w.agent })}
+                    >
+                      <div className="usg-quota-top">
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <AgentLogo agent={w.agent} size={13} />
+                          <strong className="truncate">{AGENT_NAMES[w.agent]}</strong>
+                          <span className="qp-tier-badge" data-tier={w.tier}>{w.shortLabel}</span>
+                        </span>
+                        <strong className="usg-quota-pct">{left}%</strong>
+                      </div>
+                      <PaceMeter forecast={f} size="sm" label={`${AGENT_NAMES[w.agent]} ${w.shortLabel}`} />
+                      <div className="usg-quota-foot">
+                        <span>{f.text}</span>
+                        {f.resetsIn != null && (
+                          <span className="tabular-nums">{formatSpan(f.resetsIn)}{clock ? ` · ${clock}` : ""}</span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })()}
 
         {!dashboard || !summary ? (
           <div className="usg-loading">{loading ? <><Loader size="sm" /> {t("usage.loading")}</> : t("usage.noData")}</div>

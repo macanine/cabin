@@ -656,3 +656,75 @@
 
 .agent-chips { flex-shrink: 0; max-width: 100%; justify-self: start; align-self: start; }
 .agent-option { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+
+/* ---- Live 5h / 7d quotas strip inside UsageView */
+.usg-quotas {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.usg-quotas-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.usg-quotas-head h2 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.usg-quotas-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 10px;
+}
+
+.usg-quota-pill {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.usg-quota-pill:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--surface);
+}
+
+.usg-quota-pill[data-tone="bad"] {
+  border-color: color-mix(in srgb, var(--bad) 36%, var(--border));
+}
+
+.usg-quota-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.usg-quota-pct {
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.usg-quota-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--faint);
+  font-size: 11px;
+}

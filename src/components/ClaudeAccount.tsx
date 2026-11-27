@@ -1,37 +1,15 @@
 import { Alert, Badge, Loader } from "@mantine/core";
-import { useState } from "react";
 import { currentClaudeAccount } from "../lib/agentsHub";
 import { formatGuestDateTime } from "../lib/time";
-import { useAutoRefresh } from "../lib/useAutoRefresh";
-import { agentsIpc } from "../services/ipc/agents";
-import { toIpcError } from "../services/ipc/common";
-import type { AgentStatus, ClaudeAccount as Account, ClaudeUsage } from "../services/ipc/generated/core";
+import { useUnifiedQuotas } from "../state/quotaStore";
+import type { AgentStatus } from "../services/ipc/generated/core";
 import { AccountLimit } from "./AccountLimits";
-
-export function useClaudeUsage(account: Account | null | undefined, enabled: boolean) {
-  const id = account?.method === "subscription" && !account.usageBased ? account.id ?? undefined : undefined;
-  const [result, setResult] = useState<{ id: string; usage: ClaudeUsage | null; error: string | null } | null>(null);
-  useAutoRefresh(async (isCurrent) => {
-    if (!id) return;
-    try {
-      const usage = await agentsIpc.claudeUsage(id);
-      if (isCurrent()) setResult({ id, usage, error: null });
-    } catch (cause) {
-      if (!isCurrent()) return;
-      const problem = toIpcError(cause);
-      const changed = problem.code === "conflict";
-      setResult((last) => ({ id, usage: !changed && last?.id === id ? last.usage : null, error: problem.message }));
-      if (changed) await agentsIpc.refresh().catch(() => undefined);
-    }
-  }, { enabled: enabled && !!id, refreshKey: id, minGap: 60_000, interval: 180_000 });
-  const current = result?.id === id ? result : null;
-  return { loading: enabled && !!id && !current, usage: current?.usage ?? null, error: current?.error ?? null };
-}
 
 export function ClaudeAccount({ status, hideLimits = false }: { status: AgentStatus; hideLimits?: boolean }) {
   const account = currentClaudeAccount(status);
   const unavailable = status.claudeLogin?.state === "unavailable";
-  const { loading, usage, error } = useClaudeUsage(account, status.installed);
+  const quotas = useUnifiedQuotas(status.installed);
+  const summary = quotas.byAgent.claude;
   const identity = [account?.email, account?.organization].filter(Boolean).join(" · ");
 
   return (
@@ -55,19 +33,28 @@ export function ClaudeAccount({ status, hideLimits = false }: { status: AgentSta
       {account && account.method !== "subscription" && (
         <p className="m-0 text-xs text-muted">Subscription windows are available for Claude.ai sign-ins.</p>
       )}
-      {error && <Alert color="yellow">{error}</Alert>}
-      {loading && <p className="row m-0 text-xs text-muted" role="status"><Loader size={12} /> Reading account limits…</p>}
-      {usage && <>
-        {!hideLimits && usage.windows.length > 0 && (
-          <div className="account-limits-grid">
-            {usage.windows.map((window) => (
-              <AccountLimit key={window.label} scope={`claude:${account?.id ?? "default"}`} label={window.label} used={window.usedPercent} resetsAt={window.resetsAt} resetText={window.resetText} />
-            ))}
-          </div>
-        )}
-        {usage.noLimits && usage.windows.length === 0 && <p className="m-0 text-xs text-muted">No usage windows reported for this plan.</p>}
-        <p className="m-0 text-xs text-faint">Last checked {formatGuestDateTime(usage.refreshedAt)}</p>
-      </>}
+      {!hideLimits && summary.error && <Alert color="yellow">{summary.error}</Alert>}
+      {!hideLimits && summary.loading && <p className="row m-0 text-xs text-muted" role="status"><Loader size={12} /> Reading account limits…</p>}
+      {!hideLimits && summary.windows.length > 0 && (
+        <div className="account-limits-grid">
+          {summary.windows.map((window) => (
+            <AccountLimit
+              key={window.id}
+              scope={window.scope}
+              label={window.label}
+              used={window.usedPercent}
+              resetsAt={window.resetsAt}
+              resetText={window.resetText}
+            />
+          ))}
+        </div>
+      )}
+      {!hideLimits && summary.noLimits && summary.windows.length === 0 && (
+        <p className="m-0 text-xs text-muted">No usage windows reported for this plan.</p>
+      )}
+      {summary.refreshedAt != null && (
+        <p className="m-0 text-xs text-faint">Last checked {formatGuestDateTime(summary.refreshedAt)}</p>
+      )}
     </section>
   );
 }
