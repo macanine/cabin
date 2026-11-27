@@ -9,8 +9,11 @@
 //! (`--omit=optional`). OpenCode speaks ACP itself (`opencode2 acp`).
 //! Antigravity runs `agy acp` from Setup without a separate runtime.
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -19,10 +22,12 @@ use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::model::{AcpRuntime, AgentKind};
 use crate::ops::{Operation, Step, StepCtx};
-use crate::system::CommandSpec;
+use crate::system::{CommandSpec, HostSystem, System};
+use crate::util::LockExt;
 
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const VIEW_TIMEOUT: Duration = Duration::from_secs(60);
+static SELECTION_WRITE: Mutex<()> = Mutex::new(());
 
 pub struct Package {
     pub agent: AgentKind,
@@ -84,16 +89,15 @@ pub const PACKAGES: [Package; 4] = [
 ];
 
 fn managed_package(agent: AgentKind) -> Result<&'static Package> {
-    PACKAGES.iter().find(|package| package.agent == agent).ok_or_else(|| {
-        Error::invalid(format!(
-            "{} uses the CLI installed in Agents → Setup for ACP",
-            agents::adapter(agent).spec().name
-        ))
-    })
-}
-
-fn package(agent: AgentKind) -> &'static Package {
-    managed_package(agent).expect("checked managed ACP runtime")
+    PACKAGES
+        .iter()
+        .find(|package| package.agent == agent)
+        .ok_or_else(|| {
+            Error::invalid(format!(
+                "{} uses the CLI installed in Agents → Setup for ACP",
+                agents::adapter(agent).spec().name
+            ))
+        })
 }
 
 fn root(ctx: &Context) -> PathBuf {
@@ -108,10 +112,57 @@ fn version_dir(ctx: &Context, agent: AgentKind, version: &str) -> PathBuf {
     agent_dir(ctx, agent).join(version)
 }
 
-fn bin_path(ctx: &Context, agent: AgentKind, version: &str) -> PathBuf {
-    version_dir(ctx, agent, version)
+fn lock_version(dir: &Path, wait: bool, cancelled: &dyn Fn() -> bool) -> Result<File> {
+    let version = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| Error::invalid("The runtime install has no version directory"))?;
+    valid_version(version)?;
+    let path = dir.with_file_name(format!(".{version}.install.lock"));
+    if let Some(parent) = dir.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        crate::fsx::ensure_dir(parent)?;
+    }
+    // Keep the lock outside the install directory so rollback cannot unlink it.
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .map_err(|error| Error::path("open runtime version lock", &path, error))?;
+    if !file.metadata()?.is_file() {
+        return Err(Error::Conflict(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    let started = Instant::now();
+    loop {
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) if wait && started.elapsed() < INSTALL_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(TryLockError::WouldBlock) => {
+                return Err(Error::Conflict(format!(
+                    "Runtime {version} is being installed or changed"
+                )));
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(Error::path("lock runtime version", &path, error));
+            }
+        }
+    }
+}
+
+fn bin_path(ctx: &Context, package: &Package, version: &str) -> PathBuf {
+    version_dir(ctx, package.agent, version)
         .join("node_modules/.bin")
-        .join(package(agent).bin)
+        .join(package.bin)
 }
 
 fn selection_file(ctx: &Context) -> PathBuf {
@@ -139,47 +190,46 @@ pub fn valid_version(version: &str) -> Result<()> {
     }
 }
 
-fn selected(ctx: &Context, agent: AgentKind) -> String {
-    std::fs::read_to_string(selection_file(ctx))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| value[agent.as_str()].as_str().map(str::to_string))
+fn selected(ctx: &Context, package: &Package) -> String {
+    version_for(
+        &read_selections(&selection_file(ctx)).unwrap_or_default(),
+        package,
+    )
+    .into()
+}
+
+fn version_for<'a>(selections: &'a serde_json::Map<String, Value>, package: &Package) -> &'a str {
+    selections
+        .get(package.agent.as_str())
+        .and_then(Value::as_str)
         .filter(|version| valid_version(version).is_ok())
-        .unwrap_or_else(|| package(agent).default_version.to_string())
+        .unwrap_or(package.default_version)
 }
 
-fn write_selected(ctx: &Context, agent: AgentKind, version: &str) -> Result<()> {
-    let path = selection_file(ctx);
-    let mut value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(|| serde_json::json!({}));
-    value[agent.as_str()] = Value::String(version.to_string());
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| Error::io("create the runtime folder", error))?;
+fn read_selections(path: &std::path::Path) -> Result<serde_json::Map<String, Value>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(serde_json::from_str(&text)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::Map::new()),
+        Err(error) => Err(Error::path("read runtime choices", path, error)),
     }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&value)?)
-        .map_err(|error| Error::io("save the runtime choice", error))?;
-    std::fs::rename(&tmp, &path).map_err(|error| Error::io("save the runtime choice", error))
 }
 
-fn installed(ctx: &Context, agent: AgentKind) -> Vec<String> {
-    let mut versions: Vec<String> = std::fs::read_dir(agent_dir(ctx, agent))
+fn installed(ctx: &Context, package: &Package) -> Vec<String> {
+    let mut versions: Vec<String> = std::fs::read_dir(agent_dir(ctx, package.agent))
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|version| valid_version(version).is_ok() && bin_path(ctx, agent, version).is_file())
+        .filter(|version| {
+            valid_version(version).is_ok() && bin_path(ctx, package, version).is_file()
+        })
         .collect();
     versions.sort_by(|a, b| compare_versions(b, a));
     versions
 }
 
-fn override_path(agent: AgentKind) -> Option<PathBuf> {
-    std::env::var_os(package(agent).override_var)
+fn override_path(package: &Package) -> Option<PathBuf> {
+    std::env::var_os(package.override_var)
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
 }
@@ -192,9 +242,9 @@ pub fn state(ctx: &Context) -> Vec<AcpRuntime> {
             package: package.package.into(),
             license: package.license.into(),
             default_version: package.default_version.into(),
-            selected: selected(ctx, package.agent),
-            installed: installed(ctx, package.agent),
-            override_path: override_path(package.agent).map(|path| path.display().to_string()),
+            selected: selected(ctx, package),
+            installed: installed(ctx, package),
+            override_path: override_path(package).map(|path| path.display().to_string()),
             uses_agent_cli: package.uses_agent_cli,
         })
         .collect()
@@ -261,13 +311,14 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     })
 }
 
-fn npm_install(ctx: &Context, agent: AgentKind, version: &str) -> CommandSpec {
-    let package = package(agent);
+fn npm_install(ctx: &Context, package: &Package, version: &str) -> CommandSpec {
     let mut argv = vec![
         "npm".to_string(),
         "install".into(),
         "--prefix".into(),
-        version_dir(ctx, agent, version).display().to_string(),
+        version_dir(ctx, package.agent, version)
+            .display()
+            .to_string(),
         "--no-audit".into(),
         "--no-fund".into(),
         "--no-save".into(),
@@ -283,32 +334,30 @@ fn npm_install(ctx: &Context, agent: AgentKind, version: &str) -> CommandSpec {
 
 struct InstallStep {
     ctx: Context,
-    agent: AgentKind,
+    package: &'static Package,
     version: String,
     select: bool,
-    existed: bool,
-    previous: Option<String>,
+    _lock: Option<File>,
+    changed: bool,
 }
 
 impl Step for InstallStep {
     fn name(&self) -> String {
-        format!("Install {}@{}", package(self.agent).package, self.version)
-    }
-
-    fn prepare(&mut self, _ctx: &StepCtx<'_>) -> Result<()> {
-        valid_version(&self.version)?;
-        self.existed = bin_path(&self.ctx, self.agent, &self.version).is_file();
-        self.previous = Some(selected(&self.ctx, self.agent));
-        Ok(())
+        format!("Install {}@{}", self.package.package, self.version)
     }
 
     fn apply(&mut self, ctx: &StepCtx<'_>) -> Result<()> {
-        if !self.existed {
-            std::fs::create_dir_all(version_dir(&self.ctx, self.agent, &self.version))
-                .map_err(|error| Error::io("create the runtime folder", error))?;
-            let command = npm_install(&self.ctx, self.agent, &self.version);
+        let dir = version_dir(&self.ctx, self.package.agent, &self.version);
+        self._lock = Some(lock_version(&dir, true, &|| ctx.is_cancelled())?);
+        if !bin_path(&self.ctx, self.package, &self.version).is_file() {
+            crate::fsx::ensure_dir(&dir)?;
+            self.changed = true;
+            let command = npm_install(&self.ctx, self.package, &self.version);
             ctx.log(format!("Running {}", command.display()));
-            let out = self.ctx.system.check(&command)?;
+            let out = self
+                .ctx
+                .system
+                .check_cancellable(&command, &|| ctx.is_cancelled())?;
             for line in out
                 .lines()
                 .rev()
@@ -322,38 +371,99 @@ impl Step for InstallStep {
         } else {
             ctx.log("Already installed");
         }
-        if self.select {
-            write_selected(&self.ctx, self.agent, &self.version)?;
-            ctx.log(format!("New chats use {}", self.version));
-        }
         Ok(())
     }
 
     fn verify(&mut self, ctx: &StepCtx<'_>) -> Result<()> {
-        let bin = bin_path(&self.ctx, self.agent, &self.version);
+        if ctx.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let bin = bin_path(&self.ctx, self.package, &self.version);
         if bin.is_file() {
             ctx.log(format!("{} is ready", bin.display()));
+            if self.select {
+                select_installed(&self.ctx, self.package, &self.version)?;
+                ctx.log(format!("New chats use {}", self.version));
+            }
             Ok(())
         } else {
             Err(Error::Internal(format!(
                 "{} was not found after installing",
-                package(self.agent).bin
+                self.package.bin
             )))
         }
     }
 
     fn rollback(&mut self, ctx: &StepCtx<'_>) -> Result<()> {
-        if self.select
-            && let Some(previous) = &self.previous
-        {
-            write_selected(&self.ctx, self.agent, previous)?;
-        }
-        if !self.existed {
-            let _ = std::fs::remove_dir_all(version_dir(&self.ctx, self.agent, &self.version));
+        if self.changed {
+            let dir = version_dir(&self.ctx, self.package.agent, &self.version);
+            remove_partial(&dir)?;
             ctx.log("Removed the partial install");
         }
         Ok(())
     }
+}
+
+fn remove_partial(dir: &Path) -> Result<()> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::path("remove the partial install", dir, error)),
+    }
+}
+
+pub(super) fn ensure_installed_until(
+    binary: &Path,
+    argv: &[String],
+    env: &[(String, String)],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<()> {
+    let dir = argv
+        .windows(2)
+        .find(|args| args[0] == "--prefix")
+        .map(|args| Path::new(&args[1]))
+        .filter(|dir| binary.starts_with(dir))
+        .ok_or_else(|| Error::Internal("The runtime installer has no version directory".into()))?;
+    let _lock = lock_version(dir, true, cancelled)?;
+    if binary.is_file() {
+        return Ok(());
+    }
+    crate::fsx::ensure_dir(dir)?;
+    let system = HostSystem {
+        path: std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
+    };
+    let command = CommandSpec::new(argv.iter().cloned())
+        .env(env.iter().cloned())
+        .timeout(INSTALL_TIMEOUT);
+    let result = system.check_cancellable(&command, cancelled).and_then(|_| {
+        if binary.is_file() {
+            Ok(())
+        } else {
+            Err(Error::Unavailable(
+                "The agent runtime binary is missing after installation".into(),
+            ))
+        }
+    });
+    if let Err(error) = result {
+        remove_partial(dir).map_err(|cleanup| {
+            Error::Internal(format!("{error}. Runtime cleanup also failed: {cleanup}"))
+        })?;
+        return Err(match error {
+            Error::Command { message, output } => {
+                let mut start = output.len().saturating_sub(600);
+                while !output.is_char_boundary(start) {
+                    start += 1;
+                }
+                let tail = output[start..].trim();
+                Error::Unavailable(format!(
+                    "Could not install the agent runtime: {}",
+                    if tail.is_empty() { &message } else { tail }
+                ))
+            }
+            error => error,
+        });
+    }
+    Ok(())
 }
 
 pub fn install_operation(
@@ -372,34 +482,48 @@ pub fn install_operation(
     .request(serde_json::json!({"agent": agent, "version": version, "select": select}))
     .step(InstallStep {
         ctx: ctx.clone(),
-        agent,
+        package,
         version: version.to_string(),
         select,
-        existed: false,
-        previous: None,
+        _lock: None,
+        changed: false,
     }))
 }
 
 pub fn select(ctx: &Context, agent: AgentKind, version: &str) -> Result<()> {
-    managed_package(agent)?;
+    let package = managed_package(agent)?;
     valid_version(version)?;
-    if !bin_path(ctx, agent, version).is_file() {
+    let _lock = lock_version(&version_dir(ctx, agent, version), false, &|| false)?;
+    select_installed(ctx, package, version)
+}
+
+fn select_installed(ctx: &Context, package: &Package, version: &str) -> Result<()> {
+    let _guard = SELECTION_WRITE.locked();
+    if !bin_path(ctx, package, version).is_file() {
         return Err(Error::Conflict(format!(
             "Install {version} before using it"
         )));
     }
-    write_selected(ctx, agent, version)
+    let path = selection_file(ctx);
+    let mut selections = read_selections(&path)?;
+    selections.insert(
+        package.agent.as_str().into(),
+        Value::String(version.to_string()),
+    );
+    crate::fsx::atomic_write_json(&path, &Value::Object(selections), None)
 }
 
 pub fn remove(ctx: &Context, agent: AgentKind, version: &str) -> Result<()> {
-    managed_package(agent)?;
+    let package = managed_package(agent)?;
     valid_version(version)?;
-    if selected(ctx, agent) == version {
+    let dir = version_dir(ctx, agent, version);
+    let _lock = lock_version(&dir, false, &|| false)?;
+    let _guard = SELECTION_WRITE.locked();
+    if version_for(&read_selections(&selection_file(ctx))?, package) == version {
         return Err(Error::Conflict(
             "New chats use this version. Choose another one first.".into(),
         ));
     }
-    let dir = version_dir(ctx, agent, version);
     if !dir.starts_with(agent_dir(ctx, agent)) || !dir.is_dir() {
         return Err(Error::NotFound("runtime version".into()));
     }
@@ -423,15 +547,19 @@ pub fn binary(ctx: &Context, agent: AgentKind) -> Result<super::RuntimeBinary> {
             install: None,
         });
     }
-    if let Some(path) = override_path(agent) {
+    let package = managed_package(agent)?;
+    if let Some(path) = override_path(package) {
         return Ok(super::RuntimeBinary {
             path,
             install: None,
         });
     }
-    let version = selected(ctx, agent);
-    let path = bin_path(ctx, agent, &version);
-    let install = (!path.is_file()).then(|| npm_install(ctx, agent, &version).argv);
+    let selections = read_selections(&selection_file(ctx))?;
+    let version = version_for(&selections, package);
+    let path = bin_path(ctx, package, version);
+    // The caller rechecks the executable under the version lock. An npm
+    // process may already have created its shim while still installing.
+    let install = Some(npm_install(ctx, package, version).argv);
     Ok(super::RuntimeBinary { path, install })
 }
 
@@ -504,11 +632,13 @@ mod tests {
 #[cfg(test)]
 mod store_tests {
     use super::*;
+    use crate::model::OperationState;
+    use crate::ops::OperationManager;
     use crate::paths::AppPaths;
     use crate::store::Store;
     use crate::system::fake::FakeSystem;
     use std::path::Path;
-    use std::sync::Arc;
+    use std::sync::{Arc, mpsc};
 
     fn context(dir: &Path) -> Context {
         Context {
@@ -519,7 +649,7 @@ mod store_tests {
     }
 
     fn fake_install(ctx: &Context, agent: AgentKind, version: &str) {
-        let bin = bin_path(ctx, agent, version);
+        let bin = bin_path(ctx, managed_package(agent).unwrap(), version);
         std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
         std::fs::write(bin, "#!/bin/sh\n").unwrap();
     }
@@ -528,7 +658,8 @@ mod store_tests {
     fn selection_needs_an_install_and_the_selected_version_cannot_be_removed() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = context(dir.path());
-        assert_eq!(selected(&ctx, AgentKind::Codex), "2.7.0");
+        let codex = managed_package(AgentKind::Codex).unwrap();
+        assert_eq!(selected(&ctx, codex), "2.7.0");
         assert!(
             select(&ctx, AgentKind::Codex, "2.6.1").is_err(),
             "not installed"
@@ -536,16 +667,16 @@ mod store_tests {
         fake_install(&ctx, AgentKind::Codex, "2.6.1");
         fake_install(&ctx, AgentKind::Codex, "2.7.0");
         select(&ctx, AgentKind::Codex, "2.6.1").unwrap();
-        assert_eq!(selected(&ctx, AgentKind::Codex), "2.6.1");
+        assert_eq!(selected(&ctx, codex), "2.6.1");
         assert_eq!(
-            selected(&ctx, AgentKind::Claude),
+            selected(&ctx, managed_package(AgentKind::Claude).unwrap()),
             "0.108.1",
             "other agents keep their default"
         );
-        assert_eq!(installed(&ctx, AgentKind::Codex), ["2.7.0", "2.6.1"]);
+        assert_eq!(installed(&ctx, codex), ["2.7.0", "2.6.1"]);
         assert!(remove(&ctx, AgentKind::Codex, "2.6.1").is_err(), "in use");
         remove(&ctx, AgentKind::Codex, "2.7.0").unwrap();
-        assert_eq!(installed(&ctx, AgentKind::Codex), ["2.6.1"]);
+        assert_eq!(installed(&ctx, codex), ["2.6.1"]);
         assert!(remove(&ctx, AgentKind::Codex, "../..").is_err());
     }
 
@@ -566,7 +697,123 @@ mod store_tests {
             "OpenCode needs its platform binary"
         );
         fake_install(&ctx, AgentKind::Claude, "0.108.1");
-        assert!(binary(&ctx, AgentKind::Claude).unwrap().install.is_none());
+        let runtime = binary(&ctx, AgentKind::Claude).unwrap();
+        let mut argv = runtime.install.unwrap();
+        argv[0] = "/does-not-exist".into();
+        ensure_installed_until(&runtime.path, &argv, &[], &|| false).unwrap();
+    }
+
+    #[test]
+    fn automatic_install_waits_for_explicit_verification_and_reuses_the_runtime() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut ctx = context(dir.path());
+        let agent = AgentKind::Codex;
+        let version = managed_package(agent)?.default_version;
+        let (shim_tx, shim_rx) = mpsc::channel();
+        let (finish_tx, finish_rx) = mpsc::channel();
+        let finish_rx = Mutex::new(finish_rx);
+        let system = Arc::new(FakeSystem::default());
+        let install_ctx = ctx.clone();
+        system.on(move |_| {
+            fake_install(&install_ctx, agent, version);
+            let _ = shim_tx.send(());
+            Some(
+                match finish_rx.locked().recv_timeout(Duration::from_secs(5)) {
+                    Ok(()) => crate::system::fake::ok(""),
+                    Err(error) => Err(Error::Internal(error.to_string())),
+                },
+            )
+        });
+        ctx.system = system;
+        let ops = OperationManager::new(ctx.store.clone());
+        let operation = install_operation(&ctx, agent, version, true)?;
+        let explicit = std::thread::spawn(move || ops.run(operation));
+        shim_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+
+        // A shim exists even though npm has not completed yet.
+        let runtime = binary(&ctx, agent)?;
+        let mut argv = runtime.install.unwrap();
+        argv[0] = "/does-not-exist".into();
+        let (auto_tx, auto_rx) = mpsc::channel();
+        let (wait_tx, wait_rx) = mpsc::channel();
+        let automatic = std::thread::spawn(move || {
+            let result = ensure_installed_until(&runtime.path, &argv, &[], &|| {
+                let _ = wait_tx.send(());
+                false
+            });
+            let _ = auto_tx.send(result);
+        });
+        wait_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let premature = auto_rx.recv_timeout(Duration::from_millis(150));
+        let _ = finish_tx.send(());
+        assert!(matches!(premature, Err(mpsc::RecvTimeoutError::Timeout)));
+        assert_eq!(explicit.join().unwrap()?.state, OperationState::Succeeded);
+        auto_rx.recv_timeout(Duration::from_secs(3)).unwrap()?;
+        automatic.join().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn a_cancelled_waiter_leaves_the_active_install_alone() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let ctx = context(dir.path());
+        let agent = AgentKind::Codex;
+        let version = managed_package(agent)?.default_version;
+        let destination = version_dir(&ctx, agent, version);
+        let active = lock_version(&destination, false, &|| false)?;
+        let runtime = binary(&ctx, agent)?;
+        let argv = runtime.install.unwrap();
+        fake_install(&ctx, agent, version);
+        let started = Instant::now();
+        let result = ensure_installed_until(&runtime.path, &argv, &[], &|| {
+            started.elapsed() >= Duration::from_millis(100)
+        });
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert!(runtime.path.is_file());
+        drop(active);
+        Ok(())
+    }
+
+    #[test]
+    fn a_cancelled_automatic_install_reaps_the_command_and_removes_its_shim() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let ctx = context(dir.path());
+        let agent = AgentKind::Codex;
+        let package = managed_package(agent)?;
+        let version = package.default_version;
+        let destination = version_dir(&ctx, agent, version);
+        let binary = bin_path(&ctx, package, version);
+        let argv = [
+            "/bin/sh", "-c",
+            "mkdir -p \"$1/node_modules/.bin\"; touch \"$1/node_modules/.bin/codex-acp\"; exec sleep 30",
+            "--prefix", &destination.to_string_lossy(),
+        ].map(str::to_owned);
+        let started = Instant::now();
+        let saw_shim = std::cell::Cell::new(false);
+        let result = ensure_installed_until(&binary, &argv, &[], &|| {
+            saw_shim.set(binary.is_file());
+            saw_shim.get() || started.elapsed() >= Duration::from_secs(3)
+        });
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert!(saw_shim.get());
+        assert!(!destination.exists());
+        let _lock = lock_version(&destination, false, &|| false)?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_unreadable_selection_is_preserved() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let ctx = context(dir.path());
+        let path = selection_file(&ctx);
+        fake_install(&ctx, AgentKind::Codex, "2.6.1");
+        let partial = r#"{"claude":"0.108.1","#;
+        std::fs::write(&path, partial)?;
+
+        assert!(select(&ctx, AgentKind::Codex, "2.6.1").is_err());
+        assert!(remove(&ctx, AgentKind::Codex, "2.6.1").is_err());
+        assert_eq!(std::fs::read_to_string(path)?, partial);
+        Ok(())
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -93,7 +93,7 @@ type Reply = std::result::Result<Value, RpcError>;
 pub struct Peer {
     process: OnceLock<Arc<StdioProcess>>,
     next_id: AtomicI64,
-    pending: Mutex<HashMap<String, mpsc::Sender<Reply>>>,
+    pending: Mutex<HashMap<String, mpsc::Sender<Result<Reply>>>>,
     closed: AtomicBool,
 }
 
@@ -117,7 +117,7 @@ impl Peer {
             }),
             Arc::new(move |code, stderr: &str, expected| {
                 if let Some(peer) = exit.upgrade() {
-                    peer.close(stderr);
+                    peer.close(stderr, expected);
                 }
                 handler.exited(code, stderr, expected);
             }),
@@ -150,72 +150,90 @@ impl Peer {
         params: Value,
         timeout: Option<Duration>,
     ) -> Result<Reply> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(Error::Unavailable("The agent has stopped".into()));
-        }
+        let deadline = timeout
+            .map(|timeout| {
+                Instant::now()
+                    .checked_add(timeout)
+                    .ok_or_else(|| Error::invalid("Agent request timeout is too large"))
+            })
+            .transpose()?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
-        self.pending.locked()
-            .insert(id.to_string(), tx);
+        {
+            let mut pending = self.pending.locked();
+            if self.closed.load(Ordering::Acquire) {
+                return Err(Error::Unavailable("The agent has stopped".into()));
+            }
+            pending.insert(id.to_string(), tx);
+        }
         let sent = self.process().and_then(|process| {
-            process.write_value(&json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-                "params": params,
-            }))
+            process.write_value(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": method,
+                    "params": params,
+                }),
+                deadline,
+            )
         });
         if let Err(error) = sent {
             self.forget(id);
             return Err(error);
         }
-        let reply = match timeout {
-            Some(timeout) => rx.recv_timeout(timeout).map_err(|error| match error {
-                RecvTimeoutError::Timeout => {
-                    self.forget(id);
-                    Error::Unavailable(format!("The agent did not answer {method} in time"))
-                }
-                RecvTimeoutError::Disconnected => {
-                    Error::Unavailable("The agent stopped before it answered".into())
-                }
-            })?,
+        match deadline {
+            Some(deadline) => rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|error| match error {
+                    RecvTimeoutError::Timeout => {
+                        self.forget(id);
+                        Error::Unavailable(format!("The agent did not answer {method} in time"))
+                    }
+                    RecvTimeoutError::Disconnected => {
+                        Error::Unavailable("The agent stopped before it answered".into())
+                    }
+                })?,
             None => rx
                 .recv()
                 .map_err(|_| Error::Unavailable("The agent stopped before it answered".into()))?,
-        };
-        Ok(reply)
+        }
     }
 
     pub fn notify(&self, method: &str, params: Value) -> Result<()> {
-        self.process()?.write_value(&json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-        }))
+        self.process()?.write_value(
+            &json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+            }),
+            None,
+        )
     }
 
     pub fn stop(&self) {
+        self.close("", true);
         if let Some(process) = self.process.get() {
             process.stop();
         }
     }
 
     fn forget(&self, id: i64) {
-        self.pending.locked()
-            .remove(&id.to_string());
+        self.pending.locked().remove(&id.to_string());
     }
 
-    fn close(&self, stderr: &str) {
+    fn close(&self, stderr: &str, expected: bool) {
         self.closed.store(true, Ordering::Release);
-        let pending: Vec<_> = self
-            .pending.locked()
-            .drain()
-            .collect();
+        let pending: Vec<_> = self.pending.locked().drain().collect();
         let message = last_line(stderr)
             .map(|line| format!("The agent stopped: {line}"))
             .unwrap_or_else(|| "The agent stopped".into());
         for (_, tx) in pending {
-            let _ = tx.send(Err(RpcError::internal(message.clone())));
+            let error = if expected {
+                Error::Cancelled
+            } else {
+                Error::Unavailable(message.clone())
+            };
+            let _ = tx.send(Err(error));
         }
     }
 
@@ -232,17 +250,19 @@ impl Peer {
                 let handler = handler.clone();
                 let method = method.to_string();
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
-                std::thread::spawn(move || {
+                let reply_id = id.clone();
+                let started = std::thread::Builder::new().spawn(move || {
                     let reply = handler.request(&method, &params);
-                    let mut response = json!({"jsonrpc": "2.0", "id": id});
-                    match reply {
-                        Ok(result) => response["result"] = result,
-                        Err(error) => response["error"] = error.to_value(),
-                    }
-                    if let Ok(process) = peer.process() {
-                        let _ = process.write_value(&response);
-                    }
+                    peer.reply(reply_id, reply);
                 });
+                if let Err(error) = started {
+                    self.reply(
+                        id,
+                        Err(RpcError::internal(format!(
+                            "Could not handle agent request: {error}"
+                        ))),
+                    );
+                }
             }
             (Some(method), None) => {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
@@ -253,18 +273,37 @@ impl Peer {
                     Value::String(text) => text.clone(),
                     other => other.to_string(),
                 };
-                let tx = self
-                    .pending.locked()
-                    .remove(&key);
+                let tx = self.pending.locked().remove(&key);
                 if let Some(tx) = tx {
                     let reply = match message.get("error") {
                         Some(error) if !error.is_null() => Err(RpcError::from_value(error)),
                         _ => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
                     };
-                    let _ = tx.send(reply);
+                    let _ = tx.send(Ok(reply));
                 }
             }
             (None, None) => {}
+        }
+    }
+
+    fn reply(&self, id: Value, reply: Reply) {
+        self.send_reply(id, reply, None);
+    }
+
+    fn send_reply(&self, id: Value, reply: Reply, deadline: Option<Instant>) {
+        let mut response = json!({"jsonrpc": "2.0", "id": id});
+        match reply {
+            Ok(result) => response["result"] = result,
+            Err(error) => response["error"] = error.to_value(),
+        }
+        // Only a running stdout worker can receive a provider request. Wait
+        // for spawn to publish its process if that request came immediately.
+        let process = self.process.wait();
+        if let Err(error) = process.write_value(&response, deadline) {
+            // The provider is waiting for this reply. Even a deadline before
+            // the first byte leaves its request stranded, so fail the transport.
+            let detail = format!("Could not send agent response: {error}");
+            process.fail_transport(&detail);
         }
     }
 }
@@ -274,4 +313,84 @@ fn last_line(text: &str) -> Option<&str> {
         .rev()
         .map(str::trim)
         .find(|line| !line.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    struct TestHandler {
+        waiting: mpsc::Sender<()>,
+        exit: mpsc::Sender<(String, bool)>,
+    }
+
+    impl Handler for TestHandler {
+        fn notification(&self, method: &str, _: &Value) {
+            if method == "waiting" {
+                let _ = self.waiting.send(());
+            }
+        }
+
+        fn request(&self, method: &str, _: &Value) -> Reply {
+            Err(RpcError::method_not_found(method))
+        }
+
+        fn exited(&self, _: Option<i32>, detail: &str, expected: bool) {
+            let _ = self.exit.send((detail.to_owned(), expected));
+        }
+    }
+
+    #[test]
+    fn response_deadline_wakes_a_prompt_even_when_a_descendant_owns_stdout() -> Result<()> {
+        let (waiting, waiting_rx) = mpsc::channel();
+        let (exit, exit_rx) = mpsc::channel();
+        let peer = Peer::spawn(
+            StdioSpec {
+                argv: ["/bin/sh", "-c", concat!(
+                    "IFS= read -r line || exit 1; ",
+                    "(sleep 0.2; printf '%s\\n' '{\"method\":\"waiting\"}'; exec sleep 30) & exit 0",
+                )].map(str::to_owned).to_vec(),
+                cwd: Path::new("/"),
+                env: &[],
+            },
+            Arc::new(TestHandler { waiting, exit }),
+        )?;
+        let (prompt, prompt_rx) = mpsc::channel();
+        let waiting_peer = peer.clone();
+        let worker = std::thread::spawn(move || {
+            let _ = prompt.send(waiting_peer.request_raw("session/prompt", Value::Null, None));
+        });
+        let wait = Duration::from_secs(3);
+        waiting_rx.recv_timeout(wait).unwrap();
+        assert!(matches!(
+            peer.request_raw("discarded", Value::Null, Some(Duration::ZERO)),
+            Err(Error::Unavailable(_))
+        ));
+        assert!(matches!(
+            prompt_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(!peer.closed.load(Ordering::Acquire));
+
+        // The response acquired no bytes before its deadline. A normal request
+        // can be abandoned here, but the provider is awaiting this response.
+        peer.send_reply(
+            json!(1),
+            Ok(json!({"outcome": "selected"})),
+            Some(Instant::now()),
+        );
+        let outcome = prompt_rx.recv_timeout(wait);
+        peer.stop();
+        assert!(
+            matches!(outcome, Ok(Err(Error::Unavailable(detail))) if detail.contains("Could not send agent response"))
+        );
+        assert!(
+            matches!(exit_rx.recv_timeout(wait), Ok((detail, false)) if detail.contains("Could not send agent response"))
+        );
+        assert!(peer.pending.locked().is_empty());
+        assert!(peer.closed.load(Ordering::Acquire));
+        worker.join().unwrap();
+        Ok(())
+    }
 }

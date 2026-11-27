@@ -7,10 +7,12 @@
 
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -599,8 +601,10 @@ fn run_command(argv: &[&str], timeout: Duration, limit: usize) -> CommandResult 
     };
     let child = Command::new(program)
         .args(args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn();
     let mut child = match child {
         Ok(child) => child,
@@ -611,52 +615,80 @@ fn run_command(argv: &[&str], timeout: Duration, limit: usize) -> CommandResult 
     };
     // Drain both pipes concurrently, retaining a bounded prefix. This preserves
     // the script's post-decode character limit without blocking full pipes.
-    let capture = |mut pipe: Box<dyn Read + Send>| {
-        std::thread::spawn(move || {
-            let mut kept = Vec::new();
-            let max = limit.saturating_mul(4).saturating_add(4);
-            let mut buf = [0; 8192];
-            while let Ok(n) = pipe.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                let take = n.min(max.saturating_sub(kept.len()));
-                kept.extend_from_slice(&buf[..take]);
-            }
-            normalize_text(&kept, limit)
-        })
-    };
-    let out = capture(Box::new(child.stdout.take().expect("piped stdout")));
-    let err = capture(Box::new(child.stderr.take().expect("piped stderr")));
     let started = Instant::now();
-    let status: std::process::ExitStatus = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                // Like subprocess.run, drain pipes after killing the child.
-                let _ = out.join();
-                let _ = err.join();
-                return result(124, String::new(), "timeout".into());
+    let completed = (|| {
+        let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
+            return Err(io::Error::other("missing command output pipes"));
+        };
+        let out = capture(out, limit)?;
+        let err = capture(err, limit)?;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
             }
-            Ok(None) => std::thread::sleep(
-                Duration::from_millis(10).min(timeout.saturating_sub(started.elapsed())),
-            ),
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = out.join();
-                let _ = err.join();
-                return result(125, String::new(), error.to_string());
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(10).min(remaining));
+        };
+        let receive = |pipe: Receiver<io::Result<String>>| match pipe
+            .recv_timeout(timeout.saturating_sub(started.elapsed()))
+        {
+            Ok(output) => output.map(Some),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(io::Error::other("command output reader stopped"))
+            }
+        };
+        let (Some(out), Some(err)) = (receive(out)?, receive(err)?) else {
+            return Ok(None);
+        };
+        let rc = status
+            .code()
+            .or_else(|| status.signal().map(|signal| -signal))
+            .unwrap_or(125);
+        Ok(Some(result(rc, out, err)))
+    })();
+    match completed {
+        Ok(Some(output)) => output,
+        incomplete => {
+            // A descendant can retain a pipe after the direct child exits.
+            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+            let _ = child.kill();
+            let _ = child.wait();
+            match incomplete {
+                Err(error) => result(125, String::new(), error.to_string()),
+                _ => result(124, String::new(), "timeout".into()),
             }
         }
-    };
-    result(
-        status.code().unwrap_or(0),
-        out.join().unwrap_or_default(),
-        err.join().unwrap_or_default(),
-    )
+    }
+}
+
+fn capture(
+    mut pipe: impl Read + Send + 'static,
+    limit: usize,
+) -> io::Result<Receiver<io::Result<String>>> {
+    let (send, receive) = mpsc::sync_channel(1);
+    std::thread::Builder::new().spawn(move || {
+        let output = (|| {
+            let mut kept = Vec::new();
+            let max = limit.saturating_mul(4).saturating_add(4);
+            let mut buffer = [0; 8192];
+            loop {
+                let size = match pipe.read(&mut buffer) {
+                    Ok(0) => return Ok(normalize_text(&kept, limit)),
+                    Ok(size) => size,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(error),
+                };
+                let take = size.min(max.saturating_sub(kept.len()));
+                kept.extend_from_slice(&buffer[..take]);
+            }
+        })();
+        let _ = send.send(output);
+    })?;
+    Ok(receive)
 }
 
 // libc's passwd enumeration uses process-global state; serialize this module's
@@ -694,4 +726,31 @@ fn system_users() -> Result<Vec<User>, String> {
         libc::endpwent();
     }
     Ok(users)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_deadline_bounds_inherited_output_pipes() {
+        let started = Instant::now();
+        let output = run_command(
+            &["/bin/sh", "-c", "sleep 5 & exit 0"],
+            Duration::from_millis(100),
+            100,
+        );
+        assert_eq!(output.rc, 124);
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_signalled_command_is_not_reported_as_success() {
+        let output = run_command(
+            &["/bin/sh", "-c", "kill -TERM $$"],
+            Duration::from_secs(2),
+            100,
+        );
+        assert_eq!(output.rc, -libc::SIGTERM);
+    }
 }

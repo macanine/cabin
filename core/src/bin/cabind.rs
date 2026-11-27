@@ -24,8 +24,10 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use agent_core::app::App;
+#[cfg(unix)]
 use agent_core::paths::AppPaths;
 
+#[cfg(unix)]
 const UNIT: &str = "cabind.service";
 
 /// Unix socket paths are limited to ~108 bytes; fall back to the runtime

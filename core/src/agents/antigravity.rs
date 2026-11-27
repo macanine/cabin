@@ -20,7 +20,11 @@ pub struct Antigravity;
 /// The app's model picker leaves the native model selection in effect.
 pub const DEFAULT_MODEL: &str = "default";
 const VERSION: &str = "1.5.14";
-const ARCHIVE_ARCH: &str = if cfg!(target_arch = "x86_64") { "x64" } else { "arm64" };
+const ARCHIVE_ARCH: &str = if cfg!(target_arch = "x86_64") {
+    "x64"
+} else {
+    "arm64"
+};
 const ARCHIVE_SHA256: &str = if cfg!(target_arch = "x86_64") {
     "d58386322d2073e96b33f7cc32b4e9ae2db6228f58440369725967b2de48c7b5"
 } else {
@@ -278,7 +282,10 @@ impl Step for Install {
 
     fn prepare(&mut self, _: &StepCtx<'_>) -> Result<()> {
         // The daemon is built with musl and launches the CLI against Ubuntu's glibc.
-        if !cfg!(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86_64"))) {
+        if !cfg!(all(
+            target_os = "linux",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        )) {
             return Err(Error::Unavailable(
                 "The managed Antigravity build requires x64 or ARM64 Ubuntu.".into(),
             ));
@@ -287,13 +294,17 @@ impl Step for Install {
     }
 
     fn apply(&mut self, step: &StepCtx<'_>) -> Result<()> {
-        let bin = self.target.parent().expect("absolute path to agy");
+        let bin = self.target.parent().ok_or_else(|| {
+            Error::invalid(format!("{} has no parent directory", self.target.display()))
+        })?;
         crate::fsx::ensure_dir(bin)?;
         let staging = tempfile::Builder::new()
             .prefix(".agy-install-")
             .tempdir_in(bin)?;
         let name = format!("agy_cli_linux_{ARCHIVE_ARCH}.tar.gz");
-        let url = format!("https://github.com/google-antigravity/antigravity-cli/releases/download/{VERSION}/{name}");
+        let url = format!(
+            "https://github.com/google-antigravity/antigravity-cli/releases/download/{VERSION}/{name}"
+        );
         let archive = staging.path().join(name);
         let bytes = crate::fetch::download_to(&self.ctx, &url, &archive, step)?;
         step.log(format!("Downloaded {:.1} MB", bytes as f64 / 1e6));

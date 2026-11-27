@@ -12,14 +12,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use sysinfo::{DiskRefreshKind, Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use sysinfo::{
+    DiskRefreshKind, Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind,
+};
 
 use crate::model::{LoadAverage, MonitorSample, ProcessInfo, ProcessList};
 use crate::util::now_millis;
 
 pub fn machine_observation() -> crate::model::GuestMachineObservation {
     let disks = Disks::new_with_refreshed_list();
-    let root = disks.iter().find(|disk| disk.mount_point() == std::path::Path::new("/"));
+    let root = disks
+        .iter()
+        .find(|disk| disk.mount_point() == std::path::Path::new("/"));
     crate::model::GuestMachineObservation {
         at: crate::util::now_millis(),
         kernel: System::kernel_version(),
@@ -70,11 +74,20 @@ fn process_info(pid: u32, process: &sysinfo::Process, cpus: f32) -> ProcessInfo 
 /// The `limit` busiest processes by CPU and by memory (pure, tested).
 fn rank(mut all: Vec<ProcessInfo>, limit: usize, at: i64) -> ProcessList {
     let total = all.len() as u32;
-    all.sort_by(|a, b| b.cpu_percent.total_cmp(&a.cpu_percent).then(b.memory.cmp(&a.memory)));
+    all.sort_by(|a, b| {
+        b.cpu_percent
+            .total_cmp(&a.cpu_percent)
+            .then(b.memory.cmp(&a.memory))
+    });
     let by_cpu = all.iter().take(limit).cloned().collect();
     all.sort_by_key(|process| std::cmp::Reverse(process.memory));
     let by_memory = all.into_iter().take(limit).collect();
-    ProcessList { at, total, by_cpu, by_memory }
+    ProcessList {
+        at,
+        total,
+        by_cpu,
+        by_memory,
+    }
 }
 
 impl Monitor {
@@ -161,7 +174,11 @@ impl Monitor {
                             disk_write_bps: has_disks.then(|| (written as f64 / elapsed) as u64),
                             swap_used: (swap_total > 0).then(|| system.used_swap()),
                             swap_total: (swap_total > 0).then_some(swap_total),
-                            load: (cpus > 0).then_some(LoadAverage { one: load.one, five: load.five, fifteen: load.fifteen }),
+                            load: (cpus > 0).then_some(LoadAverage {
+                                one: load.one,
+                                five: load.five,
+                                fifteen: load.fifteen,
+                            }),
                             cpu_count: (cpus > 0).then_some(cpus as u32),
                         };
                         *latest.locked() = Some(sample.clone());
@@ -170,7 +187,12 @@ impl Monitor {
                 });
         }
 
-        Self { stop, latency_stop, latest, processes: Mutex::new(None) }
+        Self {
+            stop,
+            latency_stop,
+            latest,
+            processes: Mutex::new(None),
+        }
     }
 
     /// The busiest processes now. The first call takes two readings a short
@@ -182,15 +204,19 @@ impl Monitor {
             .with_memory()
             .with_cmd(UpdateKind::OnlyIfNotSet);
         let mut guard = self.processes.locked();
-        let fresh = guard.as_ref().is_none_or(|(_, at)| at.elapsed() > Duration::from_secs(30));
-        if fresh {
+        if guard
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(30))
+        {
+            *guard = None;
+        }
+        let (system, at) = guard.get_or_insert_with(|| {
             let mut system = System::new();
             system.refresh_cpu_usage();
             system.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
             std::thread::sleep(Duration::from_millis(300));
-            *guard = Some((system, Instant::now()));
-        }
-        let (system, at) = guard.as_mut().expect("process system is set");
+            (system, Instant::now())
+        });
         system.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
         *at = Instant::now();
         let cpus = system.cpus().len().max(1) as f32;
@@ -203,8 +229,7 @@ impl Monitor {
     }
 
     pub fn latest(&self) -> Option<MonitorSample> {
-        self.latest.locked()
-            .clone()
+        self.latest.locked().clone()
     }
 }
 
@@ -235,15 +260,36 @@ mod tests {
     }
 
     fn process(pid: u32, cpu: f32, memory: u64) -> ProcessInfo {
-        ProcessInfo { pid, name: format!("p{pid}"), command: String::new(), cpu_percent: cpu, memory, run_time: 1 }
+        ProcessInfo {
+            pid,
+            name: format!("p{pid}"),
+            command: String::new(),
+            cpu_percent: cpu,
+            memory,
+            run_time: 1,
+        }
     }
 
     #[test]
     fn processes_are_ranked_by_cpu_and_by_memory() {
-        let list = rank(vec![process(1, 5.0, 900), process(2, 40.0, 10), process(3, 0.0, 5000)], 2, 7);
+        let list = rank(
+            vec![
+                process(1, 5.0, 900),
+                process(2, 40.0, 10),
+                process(3, 0.0, 5000),
+            ],
+            2,
+            7,
+        );
         assert_eq!(list.total, 3);
-        assert_eq!(list.by_cpu.iter().map(|p| p.pid).collect::<Vec<_>>(), [2, 1]);
-        assert_eq!(list.by_memory.iter().map(|p| p.pid).collect::<Vec<_>>(), [3, 1]);
+        assert_eq!(
+            list.by_cpu.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            [2, 1]
+        );
+        assert_eq!(
+            list.by_memory.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            [3, 1]
+        );
     }
 
     #[test]

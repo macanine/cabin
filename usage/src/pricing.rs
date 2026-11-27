@@ -46,6 +46,16 @@ pub(crate) struct Rates {
     pub cache_write: f64,
 }
 
+impl Rates {
+    fn cost(&self, tokens: &Tokens, factor: &Factor) -> Option<f64> {
+        let cost = tokens.input as f64 / 1_000_000.0 * self.input * factor.input
+            + tokens.output as f64 / 1_000_000.0 * self.output * factor.output
+            + tokens.cache_read as f64 / 1_000_000.0 * self.cache_read * factor.cache_read
+            + tokens.cache_write as f64 / 1_000_000.0 * self.cache_write * factor.cache_write;
+        (cost.is_finite() && cost >= 0.0).then_some(cost)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 struct PartialRates {
     #[serde(default)]
@@ -92,7 +102,7 @@ enum Condition {
 
 #[derive(Debug, Clone, Copy)]
 struct Facts {
-    context: u64,
+    context: u128,
     utc_minute: u16,
     weekday: u8,
     date: (i32, u32, u32),
@@ -101,8 +111,8 @@ struct Facts {
 impl Condition {
     fn eval(&self, facts: &Facts) -> Option<bool> {
         match self {
-            Self::ContextGt(threshold) => Some(facts.context > *threshold),
-            Self::ContextGte(threshold) => Some(facts.context >= *threshold),
+            Self::ContextGt(threshold) => Some(facts.context > u128::from(*threshold)),
+            Self::ContextGte(threshold) => Some(facts.context >= u128::from(*threshold)),
             Self::UtcHours { gte, lt } => {
                 let minute = facts.utc_minute;
                 match (*gte, *lt) {
@@ -219,7 +229,9 @@ impl Rule {
     pub(crate) fn cost(&self, tokens: &Tokens, timestamp: i64) -> Option<f64> {
         let instant = chrono::DateTime::from_timestamp_millis(timestamp)?;
         let facts = Facts {
-            context: tokens.input + tokens.cache_read + tokens.cache_write,
+            context: u128::from(tokens.input)
+                + u128::from(tokens.cache_read)
+                + u128::from(tokens.cache_write),
             utc_minute: (instant.hour() * 60 + instant.minute()) as u16,
             weekday: instant.weekday().num_days_from_monday() as u8,
             date: (instant.year(), instant.month(), instant.day()),
@@ -248,11 +260,7 @@ impl Rule {
             factor.cache_read *= multiplier.factor.cache_read;
             factor.cache_write *= multiplier.factor.cache_write;
         }
-        let micros = tokens.input as f64 * rates.input * factor.input
-            + tokens.output as f64 * rates.output * factor.output
-            + tokens.cache_read as f64 * rates.cache_read * factor.cache_read
-            + tokens.cache_write as f64 * rates.cache_write * factor.cache_write;
-        Some(micros / 1_000_000.0)
+        rates.cost(tokens, &factor)
     }
 }
 
@@ -274,13 +282,11 @@ fn number(value: Option<&Value>) -> Option<f64> {
 /// used, so take the short (5m) price, then any listed price.
 fn cache_write(value: Option<&Value>) -> Option<f64> {
     match value {
-        Some(Value::Object(ttls)) => ttls
-            .get("5m")
-            .and_then(Value::as_f64)
-            .or_else(|| ttls.get("1h").and_then(Value::as_f64))
+        Some(Value::Object(ttls)) => number(ttls.get("5m"))
+            .or_else(|| number(ttls.get("1h")))
             .or_else(|| {
                 ttls.values()
-                    .filter_map(Value::as_f64)
+                    .filter_map(|value| number(Some(value)))
                     .min_by(f64::total_cmp)
             }),
         other => number(other),
@@ -289,7 +295,13 @@ fn cache_write(value: Option<&Value>) -> Option<f64> {
 
 fn parse_hhmm(value: Option<&Value>) -> Option<u16> {
     let (hour, minute) = value?.as_str()?.split_once(':')?;
-    Some(hour.parse::<u16>().ok()? * 60 + minute.parse::<u16>().ok()?)
+    let hour = hour.parse::<u16>().ok()?;
+    let minute = minute.parse::<u16>().ok()?;
+    if (hour < 24 && minute < 60) || (hour == 24 && minute == 0) {
+        Some(hour * 60 + minute)
+    } else {
+        None
+    }
 }
 
 fn parse_days(value: Option<&Value>) -> Option<u8> {
@@ -338,7 +350,13 @@ fn parse_condition(value: &Value) -> Condition {
             "utc_hours" => {
                 let gte = parse_hhmm(value.get("gte"));
                 let lt = parse_hhmm(value.get("lt"));
-                (gte.is_some() || lt.is_some()).then_some(Condition::UtcHours { gte, lt })
+                if (gte.is_none() && value.get("gte").is_some())
+                    || (lt.is_none() && value.get("lt").is_some())
+                {
+                    None
+                } else {
+                    (gte.is_some() || lt.is_some()).then_some(Condition::UtcHours { gte, lt })
+                }
             }
             "utc_days" => parse_days(Some(value)).map(Condition::UtcDays),
             "date" => {
@@ -376,8 +394,8 @@ fn parse_condition(value: &Value) -> Condition {
 fn parse_factor(value: &Value) -> Factor {
     let mut factor = Factor::default();
     match value {
-        Value::Number(number) => {
-            let value = number.as_f64().unwrap_or(1.0);
+        Value::Number(_) => {
+            let value = number(Some(value)).unwrap_or(1.0);
             factor = Factor {
                 input: value,
                 output: value,
@@ -390,8 +408,8 @@ fn parse_factor(value: &Value) -> Factor {
                 return factor;
             };
             match text {
-                Value::Number(number) => {
-                    let value = number.as_f64().unwrap_or(1.0);
+                Value::Number(_) => {
+                    let value = number(Some(text)).unwrap_or(1.0);
                     factor = Factor {
                         input: value,
                         output: value,
@@ -402,8 +420,8 @@ fn parse_factor(value: &Value) -> Factor {
                 Value::Object(text) => {
                     if let Some(input) = text.get("input") {
                         match input {
-                            Value::Number(number) => {
-                                factor.input = number.as_f64().unwrap_or(1.0);
+                            Value::Number(_) => {
+                                factor.input = number(Some(input)).unwrap_or(1.0);
                             }
                             Value::Object(input) => {
                                 if let Some(value) = number(input.get("price")) {
@@ -422,8 +440,8 @@ fn parse_factor(value: &Value) -> Factor {
                         }
                     }
                     match text.get("output") {
-                        Some(Value::Number(number)) => {
-                            factor.output = number.as_f64().unwrap_or(1.0);
+                        Some(output @ Value::Number(_)) => {
+                            factor.output = number(Some(output)).unwrap_or(1.0);
                         }
                         Some(Value::Object(output)) => {
                             if let Some(value) = number(output.get("price")) {
@@ -632,7 +650,7 @@ where
     if !force
         && prior
             .last_attempt
-            .is_some_and(|at| now >= at && now - at < delay)
+            .is_some_and(|at| now >= at && now.saturating_sub(at) < delay)
     {
         return Ok(vec![prior]);
     }
@@ -767,13 +785,7 @@ impl Catalog {
             if let Some(rates) = self.manual.get(name).or_else(|| {
                 provider.and_then(|provider| self.manual.get(&format!("{provider}/{name}")))
             }) {
-                return Some(
-                    (tokens.input as f64 * rates.input
-                        + tokens.output as f64 * rates.output
-                        + tokens.cache_read as f64 * rates.cache_read
-                        + tokens.cache_write as f64 * rates.cache_write)
-                        / 1_000_000.0,
-                );
+                return rates.cost(tokens, &Factor::default());
             }
         }
         let providers = [provider, prefix, default_provider(agent, short)];
@@ -970,6 +982,33 @@ mod tests {
             "multipliers": [{"when": {"service_tier": {"equals": "priority"}}, "factor": 2}]
         }));
         assert_eq!(rule.cost(&tokens(1_000_000), 0), Some(2.0));
+    }
+
+    #[test]
+    fn malformed_price_fields_do_not_apply_to_otherwise_valid_prices() {
+        let rule = rule(json!({
+            "text": {"input": {"price": 2, "cache": {"write": {"5m": -4, "1h": 3}}}},
+            "multipliers": [
+                {"when": {"utc_hours": {"gte": "65535:00", "lt": "24:00"}}, "factor": 2},
+                {"when": {"utc_hours": {"gte": "00:00"}}, "factor": -2}
+            ]
+        }));
+        assert_eq!(rule.cost(&tokens(1_000_000), 0), Some(2.0));
+        assert_eq!(rule.base.cache_write, 3.0);
+    }
+
+    #[test]
+    fn context_bands_use_the_full_sum_of_native_token_counters() {
+        let rule = rule(json!({"text": {"input": {"price": 1, "overrides": [
+            {"when": {"context": {"gt": u64::MAX}}, "price": 2}
+        ]}}}));
+        let tokens = Tokens {
+            input: i64::MAX as u64,
+            cache_read: i64::MAX as u64,
+            cache_write: i64::MAX as u64,
+            output: 0,
+        };
+        assert_eq!(rule.cost(&tokens, 0), Some(tokens.input as f64 / 1e6 * 2.0));
     }
 
     fn v2_catalog() -> String {

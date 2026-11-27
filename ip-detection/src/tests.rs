@@ -201,6 +201,29 @@ fn retries_a_transport_error_before_using_the_same_service() {
 }
 
 #[test]
+fn retries_stop_when_the_next_delay_exceeds_the_address_budget() {
+    let (url, server) = server(vec![Reply::Disconnect]);
+    let detector = Detector::builder()
+        .direct()
+        .retries(1)
+        .retry_delay(Duration::from_secs(4))
+        .build()
+        .unwrap();
+    let error = detector
+        .try_endpoint_for(
+            Endpoint {
+                service: Service::IpSb,
+                url: &url,
+            },
+            Some(Duration::from_secs(2)),
+        )
+        .unwrap_err();
+    assert_eq!(error.attempts, 1);
+    assert!(matches!(error.kind, FailureKind::Transport(_)));
+    assert_eq!(server.join().unwrap().len(), 1);
+}
+
+#[test]
 fn reports_each_failed_service() {
     let (url, server) = server(vec![
         Reply::Http(429, "rate limited"),
@@ -236,7 +259,11 @@ fn explicit_http_proxy_carries_the_request() {
         200,
         r#"{"ip":"198.51.100.9","organization":"Via proxy"}"#,
     )]);
-    let detector = Detector::builder().proxy_url(&proxy).build().unwrap();
+    let detector = Detector::builder()
+        .proxy_url(proxy.replace("127.0.0.1", "localhost"))
+        .ipv4_only()
+        .build()
+        .unwrap();
     let info = detector
         .detect_endpoints([Endpoint {
             service: Service::IpSb,
@@ -320,6 +347,10 @@ fn rejects_invalid_configuration() {
     assert!(matches!(
         Detector::builder().timeout(Duration::ZERO).build(),
         Err(ConfigurationError::ZeroTimeout)
+    ));
+    assert!(matches!(
+        Detector::builder().timeout(Duration::MAX).build(),
+        Err(ConfigurationError::TimeoutTooLarge)
     ));
     for proxy in [
         "not a url",
@@ -529,6 +560,15 @@ fn flclash_ip_type_source_precedence_and_fallback() {
     assert!(inferred.inferred);
     assert_eq!(inferred.ip_type, IpType::Residential);
     assert_eq!(inferred.asn, Some(15169));
+    assert!(quality::parse(IpApiCom, ip, &json!({"status":"success", "hosting":false})).is_none());
+    assert!(
+        quality::parse(
+            IpQuery,
+            ip,
+            &json!({"risk":{"is_datacenter":false,"is_mobile":null}})
+        )
+        .is_none()
+    );
     assert_eq!(
         classify(IpQuery, json!({"risk":{"is_mobile":true}})).ip_type,
         IpType::Mobile
@@ -544,6 +584,20 @@ fn flclash_ip_type_source_precedence_and_fallback() {
 }
 
 #[test]
+fn placeholder_country_and_invalid_coordinates_do_not_count_as_location() {
+    let info = mapping::parse(
+        Service::IpQuery,
+        &json!({"ip":"8.8.8.8", "location":{"country_code":"xx","latitude":95,"longitude":-181}}),
+    )
+    .unwrap();
+    assert_eq!(
+        (info.country_code.as_deref(), info.latitude, info.longitude),
+        (None, None, None)
+    );
+    assert!(!info.has_location());
+}
+
+#[test]
 fn a_slow_source_does_not_delay_a_hedged_valid_answer() {
     let started = Instant::now();
     let results = race::race(
@@ -556,6 +610,7 @@ fn a_slow_source_does_not_delay_a_hedged_valid_answer() {
             source
         },
         |answer| *answer == 1,
+        |_, error| panic!("could not start test worker: {error}"),
     );
     assert_eq!(results, vec![1]);
     assert!(started.elapsed() < Duration::from_secs(2));

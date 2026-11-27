@@ -5,6 +5,8 @@
 //! `opencode2`), answers a real approval, checks the real file edit, restarts the
 //! app and resumes. There is no Claude/Codex/Pi live test by design.
 
+#![cfg(unix)]
+
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};

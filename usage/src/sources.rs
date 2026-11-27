@@ -1,7 +1,7 @@
 use std::cell::LazyCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -40,10 +40,11 @@ pub fn sync(conn: &mut Connection, home: &Path) -> Result<SyncResult> {
         sources.push(("pi", pi));
     }
     for (agent, root) in sources {
-        let mut files = Vec::new();
-        if let Err(error) = collect_files(&root, &mut files) {
-            result.errors.push(format!("{agent}: {error}"));
-        }
+        let mut files = collect_files(root, |path, error| {
+            result
+                .errors
+                .push(format!("{agent} {}: {error}", path.display()));
+        });
         files.sort();
         for file in files {
             if let Err(error) = sync_file(conn, agent, &file, &mut result) {
@@ -53,10 +54,14 @@ pub fn sync(conn: &mut Connection, home: &Path) -> Result<SyncResult> {
     }
     let data = configured("XDG_DATA_HOME", home.join(".local/share"));
     let opencode = configured("OPENCODE_DB", data.join("opencode/opencode.db"));
-    if opencode.exists()
-        && let Err(error) = sync_opencode(conn, &opencode, &mut result)
-    {
-        result.errors.push(format!("OpenCode: {error}"));
+    match opencode.try_exists() {
+        Ok(true) => {
+            if let Err(error) = sync_opencode(conn, &opencode, &mut result) {
+                result.errors.push(format!("OpenCode: {error}"));
+            }
+        }
+        Ok(false) => {}
+        Err(error) => result.errors.push(format!("OpenCode: {error}")),
     }
     sync_antigravity(conn, home, &mut result);
     Ok(result)
@@ -89,20 +94,40 @@ fn pi_sessions(home: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
-            collect_files(&entry.path(), files)?;
-        } else if kind.is_file() && entry.path().extension().is_some_and(|x| x == "jsonl") {
-            files.push(entry.path());
+fn collect_files(root: PathBuf, mut report_error: impl FnMut(&Path, io::Error)) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut directories = vec![root];
+    while let Some(dir) = directories.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                report_error(&dir, error);
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    report_error(&dir, error);
+                    continue;
+                }
+            };
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => directories.push(path),
+                Ok(kind)
+                    if kind.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") =>
+                {
+                    files.push(path);
+                }
+                Ok(_) => {}
+                Err(error) => report_error(&path, error),
+            }
         }
     }
-    Ok(())
+    files
 }
 
 fn key(value: &str) -> String {
@@ -184,13 +209,13 @@ pub(crate) fn sync_file(
     let path_key = LazyCell::new(|| key(&path_text));
     let fallback = (modified / 1_000_000).min(i64::MAX as u128) as i64;
     let mut reader = BufReader::new(File::open(path)?);
-    let mut buf = String::new();
+    let mut buf = Vec::new();
     let mut offset = 0u64;
     let mut incomplete = false;
     let mut session: Option<String> = None;
     let mut model = "unknown".to_string();
     let mut total: Option<(u64, u64, u64, u64)> = None;
-    let mut previous = None::<String>;
+    let mut previous = None;
     let mut codex_fork = false;
     let mut codex_cutoff = None;
     let mut codex_continuation = false;
@@ -198,7 +223,7 @@ pub(crate) fn sync_file(
     let mut added = 0;
     loop {
         buf.clear();
-        let count = reader.read_line(&mut buf)?;
+        let count = reader.read_until(b'\n', &mut buf)?;
         if count == 0 {
             break;
         }
@@ -206,11 +231,11 @@ pub(crate) fn sync_file(
         offset += count as u64;
         // A final complete JSON object may omit its newline; retry the file on
         // the next sync because the writer may still append to that line.
-        let has_newline = buf.ends_with('\n');
+        let has_newline = buf.ends_with(b"\n");
         if !has_newline {
             incomplete = true;
         }
-        let Ok(v) = serde_json::from_str::<Value>(&buf) else {
+        let Ok(v) = serde_json::from_slice::<Value>(&buf) else {
             if !has_newline {
                 break;
             }
@@ -342,8 +367,8 @@ pub(crate) fn sync_file(
                     .get("last_token_usage")
                     .filter(|v| v.is_object())
                     .map(counters);
-                let signature = serde_json::to_string(&(current, last))?;
-                if current.is_some() && previous.as_deref() == Some(&signature) {
+                let signature = (current, last);
+                if current.is_some() && previous == Some(signature) {
                     continue;
                 }
                 previous = Some(signature);
@@ -435,12 +460,14 @@ fn counters(v: &Value) -> (u64, u64, u64, u64) {
 const ANTIGRAVITY: &str = "antigravity";
 const AGY_WORKER: &str = "gemini-flash-worker-agy";
 const HYDROGEN: &str = "gemini-4-hydrogen";
+const MAX_ANTIGRAVITY_METADATA_ERRORS: usize = 3;
 
 pub(crate) fn sync_antigravity(conn: &mut Connection, home: &Path, result: &mut SyncResult) {
     let Ok(home) = home.canonicalize() else {
         return;
     };
     let mut seen = HashSet::new();
+    let mut metadata_errors = MAX_ANTIGRAVITY_METADATA_ERRORS;
     // cc-switch checks CLI first, then IDE, and shares one identity across both.
     for profile in ["antigravity-cli", "antigravity"] {
         let root = home.join(".gemini").join(profile);
@@ -473,8 +500,17 @@ pub(crate) fn sync_antigravity(conn: &mut Connection, home: &Path, result: &mut 
                 continue;
             }
             let db = root.join("conversations").join(format!("{session}.db"));
-            match sync_antigravity_transcript(conn, &session, &path, &db) {
-                Ok(changed) => result.imported += changed,
+            let can_report = metadata_errors > 0;
+            match sync_antigravity_transcript(conn, &session, &path, &db, can_report) {
+                Ok((changed, warning)) => {
+                    result.imported += changed;
+                    if let Some(warning) = warning {
+                        result
+                            .errors
+                            .push(format!("Antigravity {session} metadata: {warning}"));
+                        metadata_errors -= 1;
+                    }
+                }
                 Err(error) => result
                     .errors
                     .push(format!("Antigravity {session}: {error}")),
@@ -488,21 +524,34 @@ fn file_revision(metadata: &fs::Metadata) -> Result<String> {
     Ok(format!("{}:{modified}", metadata.len()))
 }
 
-fn antigravity_database_revision(db: &Path) -> Option<String> {
-    if db.canonicalize().ok()?.as_path() != db {
-        return None;
+fn antigravity_database_revision(db: &Path) -> Result<Option<String>> {
+    match db.canonicalize() {
+        Ok(path) if path == db => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
     }
-    let signature = |path: &Path| match fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_file() => file_revision(&meta).ok(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some("-".into()),
-        _ => None,
+    let signature = |path: &Path| -> Result<Option<String>> {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_file() => Ok(Some(file_revision(&meta)?)),
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Some("-".into())),
+            Err(error) => Err(error.into()),
+        }
     };
-    let main = signature(db)?;
-    let wal = signature(&db.with_extension("db-wal"))?;
+    let Some(main) = signature(db)? else {
+        return Ok(None);
+    };
+    let Some(wal) = signature(&db.with_extension("db-wal"))? else {
+        return Ok(None);
+    };
     // SQLite can also open these sidecars. Reject symlinks and special files.
-    signature(&db.with_extension("db-shm"))?;
-    signature(&db.with_extension("db-journal"))?;
-    Some(format!("{main}:{wal}"))
+    if signature(&db.with_extension("db-shm"))?.is_none()
+        || signature(&db.with_extension("db-journal"))?.is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(format!("{main}:{wal}")))
 }
 
 fn sync_antigravity_transcript(
@@ -510,29 +559,34 @@ fn sync_antigravity_transcript(
     session: &str,
     path: &Path,
     db: &Path,
-) -> Result<u64> {
+    can_report: bool,
+) -> Result<(u64, Option<String>)> {
     let main = file_revision(&fs::metadata(path)?)?;
     let native_revision = antigravity_database_revision(db);
     let source = format!("{ANTIGRAVITY}:{session}");
     // Include the path so a conversation that moves between profiles is re-read.
-    let rev = format!(
-        "v1:{main}:{}:{path:?}",
-        native_revision.as_deref().unwrap_or("-")
-    );
+    let rev = native_revision
+        .as_ref()
+        .ok()
+        .map(|native| format!("v1:{main}:{}:{path:?}", native.as_deref().unwrap_or("-")));
     let tx = conn.transaction()?;
-    if revision(&tx, &source)?.as_deref() == Some(&rev) {
-        return Ok(0);
+    if let Some(rev) = &rev
+        && revision(&tx, &source)?.as_ref() == Some(rev)
+    {
+        return Ok((0, None));
     }
     let (steps, incomplete) = antigravity_steps(File::open(path)?, &source, session)?;
-    let generations = if native_revision.is_some() {
-        antigravity_generations(
-            db,
-            steps.iter().filter_map(|(&index, step)| {
-                matches!(step, AntigravityStep::Response(_)).then_some(index)
-            }),
-        )
-    } else {
+    let mut indices = steps
+        .iter()
+        .filter_map(|(&index, step)| matches!(step, AntigravityStep::Response(_)).then_some(index))
+        .peekable();
+    let generations = if indices.peek().is_none() {
         Ok(HashMap::new())
+    } else {
+        native_revision.and_then(|native| match native {
+            Some(_) => Ok(antigravity_generations(db, indices)?),
+            None => Ok(HashMap::new()),
+        })
     };
     let mut selected = None;
     let mut changed = 0;
@@ -547,7 +601,28 @@ fn sync_antigravity_transcript(
             }
         }
     }
-    if !incomplete && generations.is_ok() {
+    // Usage polls in the background. Persist one notification per unresolved
+    // session so reopening the usage database doesn't bring the warning back.
+    let warning_key = format!("{source}:metadata-error");
+    let warning = match &generations {
+        Ok(_) => {
+            tx.execute("DELETE FROM source_revisions WHERE path=?1", [&warning_key])?;
+            None
+        }
+        Err(error) if can_report && !sqlite_busy(error.as_ref()) => {
+            let changed = tx.execute(
+                "INSERT INTO source_revisions VALUES (?1,?2)
+                 ON CONFLICT(path) DO NOTHING",
+                params![warning_key, "reported"],
+            )?;
+            (changed != 0).then(|| error.to_string().chars().take(240).collect())
+        }
+        Err(_) => None,
+    };
+    if !incomplete
+        && generations.is_ok()
+        && let Some(rev) = rev
+    {
         tx.execute(
             "INSERT INTO source_revisions VALUES (?1,?2) ON CONFLICT(path) DO UPDATE SET revision=excluded.revision",
             params![source, rev],
@@ -556,7 +631,16 @@ fn sync_antigravity_transcript(
         tx.execute("DELETE FROM source_revisions WHERE path=?1", [&source])?;
     }
     tx.commit()?;
-    Ok(changed)
+    Ok((changed, warning))
+}
+
+fn sqlite_busy(error: &(dyn std::error::Error + 'static)) -> bool {
+    matches!(
+        error
+            .downcast_ref::<rusqlite::Error>()
+            .and_then(rusqlite::Error::sqlite_error_code),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
 }
 
 // Adapted from the cc-switch v4.0.38 Antigravity transcript format and tests.
@@ -775,6 +859,14 @@ fn antigravity_generations(
     )?;
     source.busy_timeout(std::time::Duration::ZERO)?;
     let tx = source.transaction()?;
+    let has_tables: bool = tx.query_row(
+        "SELECT count(*) = 2 FROM sqlite_schema WHERE type='table' AND name IN ('steps','gen_metadata')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_tables {
+        return Ok(generations);
+    }
     let mut step_query = tx.prepare("SELECT metadata FROM steps WHERE idx=?1 AND step_type=15")?;
     let mut generation_query = tx.prepare("SELECT data FROM gen_metadata WHERE idx=?1")?;
     for step in steps {

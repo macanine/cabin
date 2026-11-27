@@ -1,3 +1,4 @@
+use std::io;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -41,44 +42,51 @@ pub(super) fn race<S, T>(
     schedule: Schedule,
     query: impl Fn(S, Duration) -> T + Send + Sync + 'static,
     accept: impl Fn(&T) -> bool,
+    spawn_failed: impl Fn(S, io::Error) -> T,
 ) -> Vec<T>
 where
-    S: Send + 'static,
+    S: Clone + Send + 'static,
     T: Send + 'static,
 {
     let mut sources = sources.into_iter().peekable();
     let (send, receive) = mpsc::channel();
     let query = Arc::new(query);
-    let deadline = Instant::now() + schedule.deadline;
+    let started = Instant::now();
     let start = |source: S| {
-        let send = send.clone();
+        let worker_send = send.clone();
+        let worker_source = source.clone();
         let query = Arc::clone(&query);
-        let timeout = schedule
-            .request_timeout
-            .min(deadline.saturating_duration_since(Instant::now()));
-        std::thread::spawn(move || {
-            let _ = send.send(query(source, timeout.max(Duration::from_millis(1))));
-        });
+        let Schedule {
+            deadline,
+            request_timeout,
+            ..
+        } = schedule;
+        if let Err(error) = std::thread::Builder::new().spawn(move || {
+            let timeout = request_timeout.min(deadline.saturating_sub(started.elapsed()));
+            let _ = worker_send.send(query(worker_source, timeout));
+        }) {
+            let _ = send.send(spawn_failed(source, error));
+        }
     };
     let mut in_flight = 0;
     for source in sources.by_ref().take(schedule.initial) {
         start(source);
         in_flight += 1;
     }
-    let mut next_hedge = Instant::now() + schedule.hedge;
+    let mut next_hedge = started.elapsed().saturating_add(schedule.hedge);
     let mut outcomes = Vec::new();
     while in_flight > 0 {
         let may_start = in_flight < schedule.parallel && sources.peek().is_some();
-        let now = Instant::now();
-        if now >= deadline {
+        let elapsed = started.elapsed();
+        if elapsed >= schedule.deadline {
             break;
         }
         let next_event = if may_start {
-            deadline.min(next_hedge)
+            schedule.deadline.min(next_hedge)
         } else {
-            deadline
+            schedule.deadline
         };
-        match receive.recv_timeout(next_event.saturating_duration_since(now)) {
+        match receive.recv_timeout(next_event.saturating_sub(elapsed)) {
             Ok(answer) => {
                 in_flight -= 1;
                 let accepted = accept(&answer);
@@ -91,13 +99,17 @@ where
                 {
                     start(source);
                     in_flight += 1;
-                    next_hedge = Instant::now() + schedule.hedge;
+                    next_hedge = started.elapsed().saturating_add(schedule.hedge);
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline && may_start => {
-                start(sources.next().expect("pending source"));
+            Err(mpsc::RecvTimeoutError::Timeout)
+                if started.elapsed() < schedule.deadline
+                    && may_start
+                    && let Some(source) = sources.next() =>
+            {
+                start(source);
                 in_flight += 1;
-                next_hedge = Instant::now() + schedule.hedge;
+                next_hedge = started.elapsed().saturating_add(schedule.hedge);
             }
             Err(_) => break,
         }

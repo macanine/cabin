@@ -16,16 +16,6 @@
 //! Method names and camelCase params match the Tauri command names the UI
 //! uses, so the Mac side forwards them unchanged.
 
-use crate::util::LockExt;
-use std::io::{BufRead, BufReader, Write};
-use std::net::Shutdown;
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -34,11 +24,14 @@ use crate::agents::{mcp_library, skill_library};
 use crate::app::{App, NewChat, SessionPatch, WorkspacePatch};
 use crate::error::{Error, Result};
 use crate::model::{
-    AgentKind, AppEvent, AppSettings, ChatAttachmentInput, ChatPermissionMode, EnvironmentSpec,
-    PlanDecision, SetupAction,
+    AgentKind, AppSettings, ChatAttachmentInput, ChatPermissionMode, EnvironmentSpec, PlanDecision,
+    SetupAction,
 };
 
 pub use crate::hello::{Handshake, PROTOCOL, VERSION, build_id, check_hello, short_build};
+
+mod transport;
+pub use transport::{connect, serve};
 
 fn params<T: DeserializeOwned>(value: Value) -> Result<T> {
     serde_json::from_value(value).map_err(|error| Error::invalid(format!("bad params: {error}")))
@@ -65,14 +58,20 @@ struct Kind {
 pub fn dispatch(app: &App, method: &str, raw: Value) -> Result<Value> {
     match method {
         "diagnostic_events" => {
-            let path = app.context().paths.logs().join(cabin_diagnostics::EVENT_FILE);
+            let path = app
+                .context()
+                .paths
+                .logs()
+                .join(cabin_diagnostics::EVENT_FILE);
             Ok(json!(cabin_diagnostics::recent_records(&path, 32 * 1024)))
         }
         "app_snapshot" => ok(app.snapshot()?),
         "app_startup_snapshot" => ok(app.startup_snapshot()?),
         "monitor_processes" => {
             #[derive(Deserialize)]
-            struct P { limit: usize }
+            struct P {
+                limit: usize,
+            }
             ok(app.top_processes(params::<P>(raw)?.limit)?)
         }
         "network_ipv4_ensure" => ok(app.ensure_ipv4_network()?),
@@ -80,12 +79,16 @@ pub fn dispatch(app: &App, method: &str, raw: Value) -> Result<Value> {
         "usage_sync_prices" => ok(app.usage_sync_prices()?),
         "usage_dashboard" => {
             #[derive(Deserialize)]
-            struct P { filter: cabin_usage::Filter }
+            struct P {
+                filter: cabin_usage::Filter,
+            }
             ok(app.usage_dashboard(&params::<P>(raw)?.filter)?)
         }
         "usage_save_price" => {
             #[derive(Deserialize)]
-            struct P { price: cabin_usage::Price }
+            struct P {
+                price: cabin_usage::Price,
+            }
             ok(app.usage_save_price(&params::<P>(raw)?.price)?)
         }
         "machine_observation" => ok(crate::monitor::machine_observation()),
@@ -176,7 +179,9 @@ pub fn dispatch(app: &App, method: &str, raw: Value) -> Result<Value> {
         "worktree_refs" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase")]
-            struct P { workspace_id: String }
+            struct P {
+                workspace_id: String,
+            }
             ok(app.worktree_refs(&params::<P>(raw)?.workspace_id)?)
         }
         "worktree_remove" => ok(app.remove_session_worktree(&params::<Id>(raw)?.id)?),
@@ -466,8 +471,8 @@ pub fn dispatch(app: &App, method: &str, raw: Value) -> Result<Value> {
             let p: P = params(raw)?;
             ok(app.session_workspace_files(&p.workspace_id, p.session_id.as_deref())?)
         }
-        "fs_list" | "fs_read" | "git_status" | "git_diff" | "git_stage" | "git_unstage" | "git_discard"
-        | "git_commit" => {
+        "fs_list" | "fs_read" | "git_status" | "git_diff" | "git_stage" | "git_unstage"
+        | "git_discard" | "git_commit" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase")]
             struct P {
@@ -502,19 +507,25 @@ pub fn dispatch(app: &App, method: &str, raw: Value) -> Result<Value> {
         "mcp_library" => ok(mcp_library::list(app.context())?),
         "mcp_library_edit" => {
             #[derive(Deserialize)]
-            struct Params { name: String }
+            struct Params {
+                name: String,
+            }
             let Params { name } = params(raw)?;
             ok(mcp_library::edit(app.context(), &name)?)
         }
         "mcp_library_export" => {
             #[derive(Deserialize)]
-            struct Params { name: Option<String> }
+            struct Params {
+                name: Option<String>,
+            }
             let Params { name } = params(raw)?;
             ok(mcp_library::export(app.context(), name.as_deref())?)
         }
         "mcp_library_parse" => {
             #[derive(Deserialize)]
-            struct Params { text: String }
+            struct Params {
+                text: String,
+            }
             let Params { text } = params(raw)?;
             ok(mcp_library::parse_paste(&text)?)
         }
@@ -522,20 +533,30 @@ pub fn dispatch(app: &App, method: &str, raw: Value) -> Result<Value> {
         "skill_library" => ok(skill_library::list(app.context())?),
         "skill_library_read" => {
             #[derive(Deserialize)]
-            struct Params { folder: String }
+            struct Params {
+                folder: String,
+            }
             let Params { folder } = params(raw)?;
             ok(skill_library::read(app.context(), &folder)?)
         }
         "skill_library_repositories" => {
             #[derive(Deserialize)]
-            struct Params { repositories: Vec<skill_library::SkillRepository> }
+            struct Params {
+                repositories: Vec<skill_library::SkillRepository>,
+            }
             let Params { repositories } = params(raw)?;
-            ok(skill_library::save_repositories(app.context(), repositories)?)
+            ok(skill_library::save_repositories(
+                app.context(),
+                repositories,
+            )?)
         }
         "skill_library_discover" => ok(skill_library::discover(app.context(), params(raw)?)?),
         "skill_library_registry" => {
             #[derive(Deserialize)]
-            struct Params { query: String, offset: usize }
+            struct Params {
+                query: String,
+                offset: usize,
+            }
             let Params { query, offset } = params(raw)?;
             ok(skill_library::registry(app.context(), &query, offset)?)
         }
@@ -547,7 +568,11 @@ pub fn dispatch(app: &App, method: &str, raw: Value) -> Result<Value> {
                 #[serde(default)]
                 mode: skill_library::SkillMode,
             }
-            let Params { source, targets, mode } = params(raw)?;
+            let Params {
+                source,
+                targets,
+                mode,
+            } = params(raw)?;
             ok(app.install_library_skill(source, targets, mode)?)
         }
         "skill_library_change" => ok(app.change_skill_library(params(raw)?)?),
@@ -635,8 +660,15 @@ pub fn dispatch(app: &App, method: &str, raw: Value) -> Result<Value> {
             struct P {
                 account_id: Option<String>,
             }
-            let p = if raw.is_null() { P::default() } else { params(raw)? };
-            if p.account_id.as_deref().is_some_and(|id| id.trim().is_empty()) {
+            let p = if raw.is_null() {
+                P::default()
+            } else {
+                params(raw)?
+            };
+            if p.account_id
+                .as_deref()
+                .is_some_and(|id| id.trim().is_empty())
+            {
                 return Err(Error::invalid("Claude account ID is empty"));
             }
             ok(app.claude_usage(p.account_id.as_deref())?)
@@ -805,244 +837,6 @@ pub fn handle_line(app: &App, line: &str) -> Option<Value> {
     })
 }
 
-/// Bound on queued output lines per client, concurrent requests, and clients.
-/// The daemon serves one desktop plus agent CLIs; a peer past these bounds has
-/// stopped reading or is flooding, and is dropped instead of growing forever.
-const EVENT_QUEUE: usize = 256;
-const MAX_INFLIGHT: usize = 64;
-const MAX_CLIENTS: usize = 16;
-const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
-
-fn line_of(value: Value) -> String {
-    let mut line = value.to_string();
-    line.push('\n');
-    line
-}
-
-/// One connected client. Output goes through a bounded queue drained by its
-/// own writer thread, so a stalled pipe never blocks the event sink or another
-/// request.
-#[derive(Clone)]
-struct Out {
-    id: u64,
-    queue: mpsc::SyncSender<String>,
-    socket: Arc<UnixStream>,
-}
-
-impl Out {
-    /// Queue one line. A full queue means the peer stopped reading, so the
-    /// caller treats the client as dead.
-    fn send(&self, line: String) -> bool {
-        self.queue.try_send(line).is_ok()
-    }
-}
-
-/// The connected clients.
-#[derive(Default, Clone)]
-struct Clients(Arc<Mutex<Vec<Out>>>);
-
-impl Clients {
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.0.locked().len()
-    }
-
-    fn add(&self, out: Out) -> bool {
-        let mut clients = self.0.locked();
-        if clients.len() >= MAX_CLIENTS {
-            return false;
-        }
-        clients.push(out);
-        true
-    }
-
-    fn remove(&self, id: u64) {
-        self.0.locked().retain(|out| out.id != id);
-    }
-
-    /// Queue one line for every client. The lock is held only to snapshot and
-    /// prune the list, never while writing.
-    fn broadcast(&self, line: &str) {
-        let snapshot = self.0.locked().clone();
-        let dead: Vec<u64> = snapshot
-            .iter()
-            .filter(|out| !out.send(line.to_owned()))
-            .map(|out| out.id)
-            .collect();
-        if dead.is_empty() {
-            return;
-        }
-        self.0.locked().retain(|out| !dead.contains(&out.id));
-        for out in &snapshot {
-            if dead.contains(&out.id) {
-                let _ = out.socket.shutdown(Shutdown::Both);
-            }
-        }
-    }
-}
-
-/// Caps how many requests run at once, so a client that pipelines thousands of
-/// calls cannot spawn thousands of threads.
-struct Gate {
-    live: Mutex<usize>,
-}
-
-struct GateGuard<'a>(&'a Gate);
-
-impl Gate {
-    fn new() -> Self {
-        Self { live: Mutex::new(0) }
-    }
-
-    fn enter(&self) -> Option<GateGuard<'_>> {
-        let mut live = self.live.locked();
-        if *live >= MAX_INFLIGHT {
-            return None;
-        }
-        *live += 1;
-        Some(GateGuard(self))
-    }
-}
-
-impl Drop for GateGuard<'_> {
-    fn drop(&mut self) {
-        *self.0.live.locked() -= 1;
-    }
-}
-
-fn request_id(line: &str) -> Value {
-    serde_json::from_str::<Value>(line)
-        .ok()
-        .and_then(|value| value.get("id").cloned())
-        .unwrap_or(Value::Null)
-}
-
-/// Serve the app on a Unix socket until the process exits. Every client gets
-/// the hello line, its responses, and every `AppEvent`. Output per client is
-/// queued and bounded; concurrent requests are capped.
-pub fn serve(app: Arc<App>, socket: &Path) -> Result<()> {
-    if let Some(parent) = socket.parent() {
-        crate::fsx::ensure_dir(parent)?;
-    }
-    match std::fs::remove_file(socket) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(Error::path("remove stale socket", socket, error)),
-    }
-    let listener =
-        UnixListener::bind(socket).map_err(|error| Error::path("listen on", socket, error))?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| Error::path("secure", socket, error))?;
-    }
-
-    let build = build_id();
-    let clients = Clients::default();
-    {
-        let clients = clients.clone();
-        app.set_event_sink(move |event: AppEvent| {
-            clients.broadcast(&line_of(json!({ "event": event })));
-        });
-    }
-    let gate = Arc::new(Gate::new());
-    let next_id = AtomicU64::new(1);
-
-    for stream in listener.incoming() {
-        let Ok(stream) = stream else { continue };
-        let Ok(mut write_half) = stream.try_clone() else {
-            continue;
-        };
-        let Ok(control) = stream.try_clone() else {
-            continue;
-        };
-        let (queue, lines) = mpsc::sync_channel::<String>(EVENT_QUEUE);
-        let out = Out {
-            id: next_id.fetch_add(1, Ordering::Relaxed),
-            queue,
-            socket: Arc::new(control),
-        };
-        if !out.send(line_of(json!({
-            "hello": { "version": VERSION, "protocol": PROTOCOL, "build": build }
-        }))) {
-            continue;
-        }
-        let _ = write_half.set_write_timeout(Some(WRITE_TIMEOUT));
-        std::thread::spawn(move || {
-            for line in lines {
-                if write_half
-                    .write_all(line.as_bytes())
-                    .and_then(|()| write_half.flush())
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            let _ = write_half.shutdown(Shutdown::Both);
-        });
-        if !clients.add(out.clone()) {
-            continue;
-        }
-        let id = out.id;
-        let app = app.clone();
-        let gate = gate.clone();
-        let clients = clients.clone();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stream).lines() {
-                let Ok(line) = line else { break };
-                if line.trim().is_empty() {
-                    continue;
-                }
-                // Requests run concurrently: a long install must not block
-                // terminal input. The gate keeps that concurrency bounded.
-                let app = app.clone();
-                let out = out.clone();
-                let gate = gate.clone();
-                std::thread::spawn(move || {
-                    let Some(_permit) = gate.enter() else {
-                        out.send(line_of(json!({
-                            "id": request_id(&line),
-                            "error": {
-                                "code": "unavailable",
-                                "message": "too many requests are already running"
-                            }
-                        })));
-                        return;
-                    };
-                    if let Some(response) = handle_line(&app, &line) {
-                        out.send(line_of(response));
-                    }
-                });
-            }
-            clients.remove(id);
-        });
-    }
-    Ok(())
-}
-
-/// Bridge stdin/stdout to the daemon socket (`cabind connect`).
-pub fn connect(socket: &Path) -> Result<()> {
-    let stream = UnixStream::connect(socket).map_err(|error| {
-        Error::Unavailable(format!(
-            "cabind is not running ({}: {error})",
-            socket.display()
-        ))
-    })?;
-    let mut to_daemon = stream
-        .try_clone()
-        .map_err(|error| Error::io("clone socket", error))?;
-    let reader = std::thread::spawn(move || {
-        let mut from_daemon = stream;
-        let mut stdout = std::io::stdout();
-        let _ = std::io::copy(&mut from_daemon, &mut stdout);
-    });
-    let mut stdin = std::io::stdin();
-    let _ = std::io::copy(&mut stdin, &mut to_daemon);
-    let _ = to_daemon.shutdown(std::net::Shutdown::Write);
-    let _ = reader.join();
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1050,9 +844,13 @@ mod tests {
     use crate::paths::AppPaths;
     use crate::store::Store;
     use crate::system::fake::FakeSystem;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::path::Path;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    fn app(dir: &Path) -> Arc<App> {
+    pub(super) fn app(dir: &Path) -> Arc<App> {
         Arc::new(App::with_context(Context {
             paths: AppPaths::new(dir.join("data"), dir.join("home")),
             store: Arc::new(Store::in_memory().unwrap()),
@@ -1064,8 +862,15 @@ mod tests {
     fn claude_usage_does_not_treat_malformed_scope_as_a_legacy_request() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let app = app(dir.path());
-        for raw in [json!({"accountId": 42}), json!({"accountId": " "}), json!({"account_id": "old"})] {
-            assert!(matches!(dispatch(&app, "claude_usage", raw), Err(Error::Invalid(_))));
+        for raw in [
+            json!({"accountId": 42}),
+            json!({"accountId": " "}),
+            json!({"account_id": "old"}),
+        ] {
+            assert!(matches!(
+                dispatch(&app, "claude_usage", raw),
+                Err(Error::Invalid(_))
+            ));
         }
         Ok(())
     }
@@ -1075,16 +880,30 @@ mod tests {
         let dir = tempfile::tempdir()?;
         std::fs::create_dir_all(dir.path().join("data"))?;
         let app = app(dir.path());
-        dispatch(&app, "usage_save_price", json!({"price": {
-            "model": "test-model", "input": 2.0, "output": 4.0,
-            "cacheRead": 0.1, "cacheWrite": 0.2
-        }}))?;
-        let dashboard = dispatch(&app, "usage_dashboard", json!({"filter": {
-            "fromMs": null, "toMs": null, "agent": null, "model": null,
-            "limit": 20, "offset": 0, "hostZone": "UTC", "clockOffset": 0
-        }}))?;
+        dispatch(
+            &app,
+            "usage_save_price",
+            json!({"price": {
+                "model": "test-model", "input": 2.0, "output": 4.0,
+                "cacheRead": 0.1, "cacheWrite": 0.2
+            }}),
+        )?;
+        let dashboard = dispatch(
+            &app,
+            "usage_dashboard",
+            json!({"filter": {
+                "fromMs": null, "toMs": null, "agent": null, "model": null,
+                "limit": 20, "offset": 0, "hostZone": "UTC", "clockOffset": 0
+            }}),
+        )?;
         assert_eq!(dashboard["total"], 0);
-        assert!(dashboard["prices"].as_array().unwrap().iter().any(|price| price["model"] == "test-model" && price["input"] == 2.0));
+        assert!(
+            dashboard["prices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|price| price["model"] == "test-model" && price["input"] == 2.0)
+        );
         Ok(())
     }
 
@@ -1107,16 +926,35 @@ mod tests {
         let list = dispatch(&app, "mcp_library", json!({}))?;
         assert_eq!(list["rows"][1]["bindings"][0]["state"], "unreadable");
         assert!(!list.to_string().contains("test-secret"));
-        assert_eq!(fs::metadata(app.context().paths.data().join("mcp-library.json"))?.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(app.context().paths.data().join("mcp-library.json"))?
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
 
-        assert_eq!(change(json!({"type": "bind", "names": ["shared"], "targets": ["claude"], "enabled": false}))?["state"], "succeeded");
+        assert_eq!(
+            change(
+                json!({"type": "bind", "names": ["shared"], "targets": ["claude"], "enabled": false})
+            )?["state"],
+            "succeeded"
+        );
         let file: Value = serde_json::from_str(&fs::read_to_string(&claude)?)?;
         assert!(file["mcpServers"].get("shared").is_none());
-        assert_eq!(file["mcpServers"]["unknown"], original["mcpServers"]["unknown"]);
+        assert_eq!(
+            file["mcpServers"]["unknown"],
+            original["mcpServers"]["unknown"]
+        );
         let server = dispatch(&app, "mcp_library_edit", json!({"name":"shared"}))?;
         assert!(!server.to_string().contains("test-secret"));
-        assert_eq!(change(json!({"type": "save", "servers": [server], "targets": ["claude", "codex"],
-            "description": "Shared server", "replace": true}))?["state"], "succeeded");
+        assert_eq!(
+            change(
+                json!({"type": "save", "servers": [server], "targets": ["claude", "codex"],
+            "description": "Shared server", "replace": true})
+            )?["state"],
+            "succeeded"
+        );
         let file: Value = serde_json::from_str(&fs::read_to_string(&claude)?)?;
         assert_eq!(file["mcpServers"]["shared"]["timeout"], 37);
         assert_eq!(file["mcpServers"]["shared"]["env"]["TOKEN"], "test-secret");
@@ -1133,19 +971,31 @@ mod tests {
     #[test]
     fn skill_zip_copy_preserves_local_edits_and_restores_bindings() -> Result<()> {
         use base64::Engine;
-        use std::{fs, io::{Cursor, Write}};
+        use std::{
+            fs,
+            io::{Cursor, Write},
+        };
 
         let dir = tempfile::tempdir()?;
         let app = app(dir.path());
         let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
         let zip_error = |error: zip::result::ZipError| Error::invalid(error.to_string());
-        archive.start_file("demo/SKILL.md", options).map_err(zip_error)?;
+        archive
+            .start_file("demo/SKILL.md", options)
+            .map_err(zip_error)?;
         archive.write_all(b"---\nname: demo\ndescription: Example skill\n---\n# Demo\n")?;
-        archive.start_file("demo/references/example.txt", options).map_err(zip_error)?;
+        archive
+            .start_file("demo/references/example.txt", options)
+            .map_err(zip_error)?;
         archive.write_all(b"included reference")?;
-        let contents = base64::engine::general_purpose::STANDARD.encode(archive.finish().map_err(zip_error)?.into_inner());
-        let record = dispatch(&app, "skill_library_install", json!({"source": {"type":"zip", "contents":contents}, "targets":["codex"], "mode":"copy"}))?;
+        let contents = base64::engine::general_purpose::STANDARD
+            .encode(archive.finish().map_err(zip_error)?.into_inner());
+        let record = dispatch(
+            &app,
+            "skill_library_install",
+            json!({"source": {"type":"zip", "contents":contents}, "targets":["codex"], "mode":"copy"}),
+        )?;
         assert_eq!(record["state"], "succeeded", "{record}");
         let copy = app.context().paths.home().join(".codex/skills/demo");
         let reference = copy.join("references/example.txt");
@@ -1153,15 +1003,24 @@ mod tests {
         assert_eq!(fs::read_to_string(&reference)?, "included reference");
         let change = |value| dispatch(&app, "skill_library_change", value);
         fs::write(&reference, "local edits")?;
-        assert_ne!(change(json!({"type": "remove", "folders": ["demo"]}))?["state"], "succeeded");
+        assert_ne!(
+            change(json!({"type": "remove", "folders": ["demo"]}))?["state"],
+            "succeeded"
+        );
         assert_eq!(fs::read_to_string(&reference)?, "local edits");
         fs::write(&reference, "included reference")?;
-        assert_eq!(change(json!({"type": "remove", "folders": ["demo"]}))?["state"], "succeeded");
+        assert_eq!(
+            change(json!({"type": "remove", "folders": ["demo"]}))?["state"],
+            "succeeded"
+        );
         assert!(!copy.exists());
         let list = dispatch(&app, "skill_library", json!({}))?;
         let backup = &list["backups"][0]["id"];
         assert!(backup.is_string());
-        assert_eq!(change(json!({"type": "restore", "id": backup}))?["state"], "succeeded");
+        assert_eq!(
+            change(json!({"type": "restore", "id": backup}))?["state"],
+            "succeeded"
+        );
         assert_eq!(fs::read_to_string(reference)?, "included reference");
         Ok(())
     }
@@ -1178,8 +1037,17 @@ mod tests {
         assert_eq!(created["name"], "api");
         let snapshot = dispatch(&app, "app_startup_snapshot", json!({}))?;
         assert_eq!(snapshot["workspaces"].as_array().map(Vec::len), Some(1));
-        assert_eq!(snapshot["agents"].as_array().map(Vec::len), Some(AgentKind::ALL.len()));
-        assert!(snapshot["agents"].as_array().unwrap().iter().all(|agent| agent["cliChecked"] == false));
+        assert_eq!(
+            snapshot["agents"].as_array().map(Vec::len),
+            Some(AgentKind::ALL.len())
+        );
+        assert!(
+            snapshot["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|agent| agent["cliChecked"] == false)
+        );
         let before = crate::util::now_millis();
         let clock = dispatch(&app, "clock", json!({}))?;
         let now = clock["nowMs"].as_i64().unwrap_or_default();
@@ -1199,9 +1067,7 @@ mod tests {
     #[test]
     fn hello_is_ready_only_for_the_bundled_build() {
         let build = "a".repeat(64);
-        let hello = |build: &str, version: &str| {
-            json!({ "hello": { "version": version, "protocol": PROTOCOL, "build": build } })
-        };
+        let hello = |build: &str, version: &str| json!({ "hello": { "version": version, "protocol": PROTOCOL, "build": build } });
         assert_eq!(
             check_hello(&hello(&build, VERSION), &build),
             Handshake::Ready(VERSION.into())
@@ -1215,51 +1081,10 @@ mod tests {
             Handshake::Outdated(_)
         ));
         let legacy = json!({ "hello": { "version": VERSION, "protocol": PROTOCOL } });
-        assert!(matches!(check_hello(&legacy, &build), Handshake::Outdated(_)));
-    }
-
-    #[test]
-    fn a_stalled_client_is_dropped_without_affecting_others() {
-        use std::os::unix::net::UnixStream;
-
-        let clients = Clients::default();
-        let (stalled_tx, stalled_rx) = mpsc::sync_channel(1);
-        let (healthy_tx, healthy_rx) = mpsc::sync_channel(4);
-        let (stalled_socket, _stalled_peer) = UnixStream::pair().unwrap();
-        let (healthy_socket, _healthy_peer) = UnixStream::pair().unwrap();
-        assert!(clients.add(Out {
-            id: 1,
-            queue: stalled_tx,
-            socket: Arc::new(stalled_socket),
-        }));
-        assert!(clients.add(Out {
-            id: 2,
-            queue: healthy_tx,
-            socket: Arc::new(healthy_socket),
-        }));
-
-        clients.broadcast("one\n");
-        assert_eq!(healthy_rx.try_recv().unwrap(), "one\n");
-
-        // The stalled client never drains its one-slot queue, so the next
-        // broadcast fills it and drops the client; the healthy one still gets
-        // the line, and the stalled client keeps what it was owed.
-        clients.broadcast("two\n");
-        assert_eq!(clients.len(), 1);
-        assert_eq!(healthy_rx.try_recv().unwrap(), "two\n");
-        assert_eq!(stalled_rx.try_recv().unwrap(), "one\n");
-    }
-
-    #[test]
-    fn the_gate_caps_concurrent_requests() {
-        let gate = Gate::new();
-        let mut permits = Vec::new();
-        for _ in 0..MAX_INFLIGHT {
-            permits.push(gate.enter().expect("under the limit"));
-        }
-        assert!(gate.enter().is_none(), "the cap is enforced");
-        drop(permits.pop());
-        assert!(gate.enter().is_some(), "a finished request frees a slot");
+        assert!(matches!(
+            check_hello(&legacy, &build),
+            Handshake::Outdated(_)
+        ));
     }
 
     #[test]

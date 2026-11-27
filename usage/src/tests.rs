@@ -21,6 +21,61 @@ fn write_lines(path: &std::path::Path, lines: &[serde_json::Value]) {
 }
 
 #[test]
+fn malformed_utf8_line_does_not_discard_other_usage() -> crate::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut usage = Usage::open(&dir.path().join("usage.db"))?;
+    let path = dir.path().join("claude.jsonl");
+    let mut transcript = fs::File::create(&path)?;
+    for id in ["first", "last"] {
+        writeln!(
+            transcript,
+            "{}",
+            json!({"type":"assistant", "message":{"id":id,"usage":{"input_tokens":10}}})
+        )?;
+        if id == "first" {
+            transcript.write_all(b"{\"bad\":\"\xff\"}\n")?;
+        }
+    }
+    drop(transcript);
+
+    let mut sync = crate::SyncResult::default();
+    sources::sync_file(&mut usage.conn, "claude", &path, &mut sync)?;
+    assert_eq!(sync.imported, 2);
+    assert_eq!(usage.dashboard(&filter())?.summary.input, 20);
+    Ok(())
+}
+
+#[test]
+fn dashboard_handles_extreme_native_counters_and_timestamps() -> crate::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut usage = Usage::open(&dir.path().join("usage.db"))?;
+    let path = dir.path().join("pi.jsonl");
+    let timestamp = chrono::DateTime::<chrono::Utc>::MAX_UTC.timestamp_millis();
+    write_lines(
+        &path,
+        &std::array::from_fn::<_, 3, _>(|id| {
+            json!({"type":"message", "id":id.to_string(), "timestamp":timestamp,
+                "message":{"role":"assistant","usage":{"input":i64::MAX,"cost":{"total":1e308}}}})
+        }),
+    );
+    sources::sync_file(
+        &mut usage.conn,
+        "pi",
+        &path,
+        &mut crate::SyncResult::default(),
+    )?;
+    let dashboard = usage.dashboard(&Filter {
+        host_zone: Some("Asia/Tokyo".into()),
+        ..filter()
+    })?;
+    assert_eq!(dashboard.total, 3);
+    assert_eq!(dashboard.daily[0].timestamp, timestamp);
+    assert_eq!(dashboard.summary.input, u64::MAX);
+    assert_eq!(dashboard.summary.cost, f64::MAX);
+    Ok(())
+}
+
+#[test]
 fn imports_claude_pi_and_codex_without_double_counting() {
     let dir = tempfile::tempdir().unwrap();
     let mut usage = Usage::open(&dir.path().join("usage.db")).unwrap();
@@ -440,6 +495,43 @@ fn antigravity_backfills_native_orchestrator_models_and_timing_from_wal() {
     assert_eq!(detail(&usage, 3).model, "gemini-4-hydrogen-tiered-high");
     assert_eq!(detail(&usage, 4).model, "gemini-4-hydrogen");
     assert_eq!(sync_antigravity(&mut usage, dir.path()), 0);
+}
+
+#[test]
+fn antigravity_reports_corrupt_metadata_once_until_recovery() -> crate::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().join(".gemini/antigravity-cli");
+    let path = antigravity_transcript(&root, "native");
+    write_lines(
+        &path,
+        &[json!({
+            "step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","input_tokens":80
+        })],
+    );
+    fs::create_dir(root.join("conversations"))?;
+    let db = root.join("conversations/native.db");
+    fs::write(&db, [b'x'; 512])?;
+    let mut usage = Usage::open(&dir.path().join("usage.db"))?;
+    let mut sync = || {
+        let mut result = crate::SyncResult::default();
+        sources::sync_antigravity(&mut usage.conn, dir.path(), &mut result);
+        result
+    };
+
+    let first = sync();
+    assert_eq!(first.imported, 1);
+    assert_eq!(first.errors.len(), 1);
+    assert!(first.errors[0].starts_with("Antigravity native metadata:"));
+    let repeated = sync();
+    assert_eq!(repeated.imported, 0);
+    assert!(repeated.errors.is_empty());
+
+    fs::remove_file(&db)?;
+    assert!(sync().errors.is_empty());
+    fs::write(&db, [b'x'; 512])?;
+    assert_eq!(sync().errors, first.errors);
+    assert_eq!(usage.dashboard(&filter())?.summary.input, 80);
+    Ok(())
 }
 
 #[test]

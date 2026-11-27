@@ -6,11 +6,12 @@
 use crate::util::LockExt;
 use std::collections::HashMap;
 use std::io::Read;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -28,7 +29,6 @@ struct Output {
 
 struct Terminal {
     child: Mutex<Option<Child>>,
-    pid: u32,
     limit: usize,
     output: Mutex<Output>,
     done: Condvar,
@@ -36,8 +36,7 @@ struct Terminal {
 
 impl Terminal {
     fn push(&self, chunk: &str) {
-        let mut output = self
-            .output.locked();
+        let mut output = self.output.locked();
         output.text.push_str(chunk);
         if output.text.len() > self.limit {
             let mut cut = output.text.len() - self.limit;
@@ -50,8 +49,7 @@ impl Terminal {
     }
 
     fn snapshot(&self) -> Value {
-        let output = self
-            .output.locked();
+        let output = self.output.locked();
         let mut value = json!({"output": output.text, "truncated": output.truncated});
         if let Some((code, signal)) = &output.exit {
             value["exitStatus"] = json!({"exitCode": code, "signal": signal});
@@ -60,18 +58,64 @@ impl Terminal {
     }
 
     fn kill(&self) {
-        // SAFETY: signals the process group this terminal created.
-        unsafe {
-            libc::kill(-(self.pid as i32), libc::SIGKILL);
+        if let Some(child) = self.child.locked().as_mut() {
+            kill_group(child);
         }
     }
+
+    fn abort_start(&self) {
+        if let Some(mut child) = self.child.locked().take() {
+            kill_group(&mut child);
+            let _ = child.wait();
+        }
+    }
+
+    fn record_exit(&self) {
+        let exit = loop {
+            {
+                let mut slot = self.child.locked();
+                let Some(child) = slot.as_mut() else { return };
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        slot.take();
+                        break (
+                            status.code(),
+                            status.signal().map(|signal| format!("signal {signal}")),
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        slot.take();
+                        break (None, None);
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        self.output.locked().exit = Some(exit);
+        self.done.notify_all();
+    }
+}
+
+fn kill_group(child: &mut Child) {
+    // SAFETY: signals the process group this terminal created.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.kill();
 }
 
 type OnOutput = Arc<dyn Fn(&str) + Send + Sync>;
 
+#[derive(Default)]
+struct TerminalSet {
+    open: HashMap<String, Arc<Terminal>>,
+    closed: bool,
+}
+
 pub struct Terminals {
     next: AtomicU64,
-    open: Mutex<HashMap<String, Arc<Terminal>>>,
+    state: Mutex<TerminalSet>,
     on_output: OnOutput,
 }
 
@@ -79,14 +123,16 @@ impl Terminals {
     pub fn new(on_output: OnOutput) -> Self {
         Self {
             next: AtomicU64::new(1),
-            open: Mutex::new(HashMap::new()),
+            state: Mutex::default(),
             on_output,
         }
     }
 
     fn get(&self, params: &Value) -> Result<Arc<Terminal>, RpcError> {
         let id = params["terminalId"].as_str().unwrap_or_default();
-        self.open.locked()
+        self.state
+            .locked()
+            .open
             .get(id)
             .cloned()
             .ok_or_else(|| RpcError::invalid_params(format!("Unknown terminal {id}")))
@@ -94,12 +140,8 @@ impl Terminals {
 
     /// The text a tool card shows for an embedded terminal.
     pub fn text(&self, id: &str) -> Option<(String, Option<i32>)> {
-        let terminal = self
-            .open.locked()
-            .get(id)
-            .cloned()?;
-        let output = terminal
-            .output.locked();
+        let terminal = self.state.locked().open.get(id).cloned()?;
+        let output = terminal.output.locked();
         Some((
             output.text.clone(),
             output.exit.as_ref().and_then(|exit| exit.0),
@@ -127,9 +169,11 @@ impl Terminals {
             .map(Path::new)
             .filter(|cwd| cwd.is_absolute())
             .unwrap_or(root);
-        let limit = params["outputByteLimit"]
-            .as_u64()
-            .map_or(DEFAULT_LIMIT, |limit| limit as usize);
+        let limit = match params["outputByteLimit"].as_u64() {
+            Some(limit) => usize::try_from(limit)
+                .map_err(|_| RpcError::invalid_params("terminal output limit is too large"))?,
+            None => DEFAULT_LIMIT,
+        };
         // A bare command line with no args runs through the shell, as agents expect.
         let mut process = if args.is_empty() && command.contains(char::is_whitespace) {
             let mut process = Command::new("/bin/sh");
@@ -159,6 +203,10 @@ impl Terminals {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
+        let mut state = self.state.locked();
+        if state.closed {
+            return Err(RpcError::internal("The agent is stopping"));
+        }
         let mut child = process
             .spawn()
             .map_err(|error| RpcError::internal(format!("Could not run {command}: {error}")))?;
@@ -174,20 +222,19 @@ impl Terminals {
                 .map(|err| Box::new(err) as Box<dyn Read + Send>),
         ];
         let terminal = Arc::new(Terminal {
-            pid: child.id(),
             child: Mutex::new(Some(child)),
             limit,
             output: Mutex::new(Output::default()),
             done: Condvar::new(),
         });
-        let readers: Vec<_> = streams
+        let readers = streams
             .into_iter()
             .flatten()
             .map(|mut stream| {
                 let terminal = terminal.clone();
                 let on_output = self.on_output.clone();
                 let id = id.clone();
-                std::thread::spawn(move || {
+                std::thread::Builder::new().spawn(move || {
                     let mut buf = [0u8; 8192];
                     let mut carry = Vec::new();
                     while let Ok(read) = stream.read(&mut buf) {
@@ -205,37 +252,32 @@ impl Terminals {
                         terminal.push(&text);
                         on_output(&id);
                     }
+                    if !carry.is_empty() {
+                        terminal.push(&String::from_utf8_lossy(&carry));
+                        on_output(&id);
+                    }
                 })
             })
-            .collect();
-        {
-            let terminal = terminal.clone();
+            .collect::<std::io::Result<Vec<_>>>();
+        let workers = readers.and_then(|readers| {
+            let worker = terminal.clone();
             let on_output = self.on_output.clone();
             let id = id.clone();
-            std::thread::spawn(move || {
+            std::thread::Builder::new().spawn(move || {
                 for reader in readers {
                     let _ = reader.join();
                 }
-                let child = terminal
-                    .child.locked()
-                    .take();
-                let status = child.and_then(|mut child| child.wait().ok());
-                let exit = status.map_or((None, Some("SIGKILL".into())), |status| {
-                    use std::os::unix::process::ExitStatusExt;
-                    (
-                        status.code(),
-                        status.signal().map(|signal| format!("signal {signal}")),
-                    )
-                });
-                terminal
-                    .output.locked()
-                    .exit = Some(exit);
-                terminal.done.notify_all();
+                worker.record_exit();
                 on_output(&id);
-            });
+            })
+        });
+        if let Err(error) = workers {
+            terminal.abort_start();
+            return Err(RpcError::internal(format!(
+                "Could not start terminal workers: {error}"
+            )));
         }
-        self.open.locked()
-            .insert(id.clone(), terminal);
+        state.open.insert(id.clone(), terminal);
         Ok(json!({"terminalId": id}))
     }
 
@@ -245,16 +287,16 @@ impl Terminals {
 
     pub fn wait_for_exit(&self, params: &Value) -> Result<Value, RpcError> {
         let terminal = self.get(params)?;
-        let mut output = terminal
-            .output.locked();
-        while output.exit.is_none() {
+        let mut output = terminal.output.locked();
+        loop {
+            if let Some((code, signal)) = &output.exit {
+                return Ok(json!({"exitCode": code, "signal": signal}));
+            }
             output = terminal
                 .done
                 .wait(output)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        let (code, signal) = output.exit.clone().unwrap_or_default();
-        Ok(json!({"exitCode": code, "signal": signal}))
     }
 
     pub fn kill(&self, params: &Value) -> Result<Value, RpcError> {
@@ -262,32 +304,16 @@ impl Terminals {
         Ok(json!({}))
     }
 
-    /// Kill the command if it still runs and forget the terminal.
+    /// Kill the command if it still runs. Keep output for embedding tool cards.
     pub fn release(&self, params: &Value) -> Result<Value, RpcError> {
-        let terminal = self.get(params)?;
-        if terminal
-            .output.locked()
-            .exit
-            .is_none()
-        {
-            terminal.kill();
-        }
-        // Keep the output: a tool card may still embed it.
-        Ok(json!({}))
+        self.kill(params)
     }
 
     pub fn kill_all(&self) {
-        for terminal in self
-            .open.locked()
-            .values()
-        {
-            if terminal
-                .output.locked()
-                .exit
-                .is_none()
-            {
-                terminal.kill();
-            }
+        let mut state = self.state.locked();
+        state.closed = true;
+        for terminal in state.open.values() {
+            terminal.kill();
         }
     }
 }
@@ -295,7 +321,6 @@ impl Terminals {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn runs_a_command_and_keeps_only_the_tail_within_the_limit() {
@@ -310,8 +335,6 @@ mod tests {
             .unwrap();
         let exit = terminals.wait_for_exit(&created).unwrap();
         assert_eq!(exit["exitCode"], 3);
-        // Readers may finish just after the exit is recorded on a busy machine.
-        std::thread::sleep(Duration::from_millis(50));
         let output = terminals.output(&created).unwrap();
         assert_eq!(output["output"], "ghij");
         assert_eq!(output["truncated"], true);
@@ -328,5 +351,16 @@ mod tests {
         terminals.release(&created).unwrap();
         let exit = terminals.wait_for_exit(&created).unwrap();
         assert!(exit["exitCode"].is_null());
+    }
+
+    #[test]
+    fn shutdown_rejects_late_terminal_creation() {
+        let terminals = Terminals::new(Arc::new(|_| {}));
+        terminals.kill_all();
+        assert!(
+            terminals
+                .create(&json!({"command": "true"}), Path::new("/"), &[])
+                .is_err()
+        );
     }
 }

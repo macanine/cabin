@@ -220,19 +220,14 @@ impl Client {
         } else {
             String::new()
         };
-        let (tx, rx) = mpsc::channel();
-        self.pending.locked()
-            .insert(
-                request_id.clone(),
-                (
-                    Pending::Permission {
-                        item_id: item_id.clone(),
-                        options: decisions,
-                    },
-                    tx,
-                ),
-            );
-        let _ = self.ctx.upsert(item);
+        let rx = self.publish_request(
+            request_id,
+            Pending::Permission {
+                item_id,
+                options: decisions,
+            },
+            item,
+        )?;
         self.view.tool_waiting(&self.ctx, params, tool_call, true);
         self.ctx.waiting();
         let answer = rx.recv().ok();
@@ -351,24 +346,9 @@ impl Client {
                 questions
             }
         };
-        let (tx, rx) = mpsc::channel();
-        self.pending.locked()
-            .insert(
-                request_id.clone(),
-                (
-                    Pending::Elicitation {
-                        item_id: item_id.clone(),
-                        fields,
-                    },
-                    tx,
-                ),
-            );
-        let _ = self.ctx.upsert(question_item(
-            &item_id,
-            &request_id,
-            "The agent asks",
-            questions,
-        ));
+        let item = question_item(&item_id, &request_id, "The agent asks", questions);
+        let rx =
+            self.publish_request(request_id, Pending::Elicitation { item_id, fields }, item)?;
         self.ctx.waiting();
         let answer = rx.recv().ok();
         if self.ctx.is_active() {
@@ -379,6 +359,35 @@ impl Client {
             Some(Answer::Elicitation(value)) => value,
             _ => json!({"action": "cancel"}),
         })
+    }
+
+    fn publish_request(
+        &self,
+        request_id: String,
+        request: Pending,
+        item: crate::model::ChatItem,
+    ) -> std::result::Result<mpsc::Receiver<Answer>, RpcError> {
+        let (tx, rx) = mpsc::channel();
+        {
+            let mut pending = self.pending.locked();
+            if self.stopping.load(Ordering::Acquire) {
+                return Err(RpcError::internal("The agent is stopping"));
+            }
+            pending.insert(request_id.clone(), (request, tx));
+        }
+        let item = self.ctx.upsert(item).map_err(|error| {
+            self.pending.locked().remove(&request_id);
+            RpcError::internal(format!("Could not save the agent request: {error}"))
+        })?;
+        if self.stopping.load(Ordering::Acquire) {
+            // Stop may have drained the request before the card was saved.
+            let _ = self.ctx.update_item(&item.id, |item| {
+                if item.status == ChatItemStatus::Waiting {
+                    item.status = ChatItemStatus::Cancelled;
+                }
+            });
+        }
+        Ok(rx)
     }
 
     fn read_file(&self, params: &Value) -> std::result::Result<Value, RpcError> {
@@ -413,10 +422,7 @@ impl Client {
     }
 
     fn cancel_pending(&self) {
-        let pending: Vec<_> = self
-            .pending.locked()
-            .drain()
-            .collect();
+        let pending: Vec<_> = self.pending.locked().drain().collect();
         for (_, (pending, tx)) in pending {
             let item_id = match &pending {
                 Pending::Permission { item_id, .. } | Pending::Elicitation { item_id, .. } => {
@@ -477,10 +483,10 @@ impl Handler for Client {
     }
 
     fn exited(&self, code: Option<i32>, stderr: &str, expected: bool) {
+        let stopping = self.stopping.swap(true, Ordering::AcqRel);
         self.terminals.kill_all();
         self.cancel_pending();
-        if expected || self.stopping.load(Ordering::Acquire) {
-            self.ctx.stop();
+        if expected || stopping {
             return;
         }
         let tail = stderr
@@ -510,13 +516,12 @@ pub struct AcpSession {
 impl AcpSession {
     pub fn spawn(agent: AgentKind, spec: RuntimeSpec, ctx: Arc<ChatContext>) -> Result<Arc<Self>> {
         if let Some(install) = &spec.install {
-            super::ensure_installed(
-                &super::RuntimeBinary {
-                    path: spec.binary.clone(),
-                    install: Some(install.clone()),
-                },
-                &spec.env,
-            )?;
+            super::runtimes::ensure_installed_until(&spec.binary, install, &spec.env, &|| {
+                !ctx.is_active()
+            })?;
+        }
+        if !ctx.is_active() {
+            return Err(Error::Cancelled);
         }
         let launch = launch::launch(agent, &spec)?;
         let view = Arc::new(View::new(&spec.cwd));
@@ -560,6 +565,8 @@ impl AcpSession {
             Ok(session) => Ok(session),
             Err(error) => {
                 client.stopping.store(true, Ordering::Release);
+                client.cancel_pending();
+                client.terminals.kill_all();
                 peer.stop();
                 Err(error)
             }
@@ -860,7 +867,8 @@ impl AcpSession {
         let result = (|| {
             let settings = launch::settings_for(self.agent, permission);
             let native = launch::native_permissions(self.agent);
-            let unavailable = || Error::Unavailable("The agent does not offer this permission mode".into());
+            let unavailable =
+                || Error::Unavailable("The agent does not offer this permission mode".into());
             if native && settings.is_empty() {
                 return Err(unavailable());
             }
@@ -1037,10 +1045,7 @@ impl LiveSession for AcpSession {
     }
 
     fn respond(&self, request_id: &str, decision: &str, answers: &Value) -> Result<()> {
-        let entry = self
-            .client
-            .pending.locked()
-            .remove(request_id);
+        let entry = self.client.pending.locked().remove(request_id);
         let Some((pending, tx)) = entry else {
             return Err(Error::NotFound("request".into()));
         };

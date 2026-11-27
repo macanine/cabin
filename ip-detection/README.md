@@ -44,6 +44,11 @@ SOCKS5 proxy. Explicit proxy URLs accept hostnames and IPv4 addresses. Use `dire
 direct connection. System proxy settings and `NO_PROXY` are outside the client's environment
 proxy selection.
 
+Local hostname resolution uses the system resolver and waits only within the request deadline.
+Up to 16 system lookups can be active per process. A timed-out lookup keeps its slot until the
+system call returns. When all slots are busy, a new hostname lookup fails immediately. Numeric
+addresses bypass this limit. DNS performed by a proxy is part of the proxy connection.
+
 ## Provider order
 
 **Exit address.** Cloudflare Trace, IP.SB, IPinfo, IPWHOIS, GeoJS, country.is, IPQuery, then

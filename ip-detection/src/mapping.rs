@@ -41,7 +41,7 @@ pub(super) fn country_code(code: Option<String>) -> Option<String> {
     code.filter(|code| {
         code.len() == 2
             && code.bytes().all(|byte| byte.is_ascii_alphabetic())
-            && !matches!(code.as_str(), "XX" | "T1")
+            && !code.eq_ignore_ascii_case("XX")
     })
     .map(|code| code.to_ascii_uppercase())
 }
@@ -115,14 +115,8 @@ pub(crate) fn parse(service: Service, data: &Value) -> Result<IpInfo, String> {
             if let Some(point) = text(data, &["loc"])
                 && let Some((lat, lon)) = point.split_once(',')
             {
-                info.latitude = lat
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|value| (-90.0..=90.0).contains(value));
-                info.longitude = lon
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|value| (-180.0..=180.0).contains(value));
+                info.latitude = lat.trim().parse().ok();
+                info.longitude = lon.trim().parse().ok();
             }
         }
         Service::IpWhoIs => {
@@ -162,5 +156,9 @@ pub(crate) fn parse(service: Service, data: &Value) -> Result<IpInfo, String> {
         }
     }
 
+    info.latitude = info.latitude.filter(|value| (-90.0..=90.0).contains(value));
+    info.longitude = info
+        .longitude
+        .filter(|value| (-180.0..=180.0).contains(value));
     Ok(info)
 }

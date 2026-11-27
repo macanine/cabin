@@ -6,13 +6,14 @@
 mod mapping;
 mod quality;
 mod race;
+mod resolver;
 
 pub use quality::{Classification, QualityService};
 
 use std::fmt;
 use std::io::Read;
 use std::net::IpAddr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -178,6 +179,7 @@ impl std::error::Error for DetectionError {}
 pub enum ConfigurationError {
     NoServices,
     ZeroTimeout,
+    TimeoutTooLarge,
     InvalidProxy,
 }
 
@@ -186,6 +188,7 @@ impl fmt::Display for ConfigurationError {
         match self {
             Self::NoServices => write!(f, "at least one IP detection service is required"),
             Self::ZeroTimeout => write!(f, "the request timeout must be greater than zero"),
+            Self::TimeoutTooLarge => write!(f, "the request timeout is too large"),
             Self::InvalidProxy => write!(f, "invalid or unsupported proxy URL"),
         }
     }
@@ -273,29 +276,18 @@ impl DetectorBuilder {
         if self.timeout.is_zero() {
             return Err(ConfigurationError::ZeroTimeout);
         }
+        if Instant::now().checked_add(self.timeout).is_none() {
+            return Err(ConfigurationError::TimeoutTooLarge);
+        }
 
-        let mut agent = ureq::AgentBuilder::new()
+        let ipv4_only = self.ipv4_only;
+        let agent = ureq::AgentBuilder::new()
             .redirects(0)
             .timeout(self.timeout)
-            .timeout_connect(self.timeout.max(Duration::from_secs(8)))
+            .timeout_connect(self.timeout)
+            .resolver(move |netloc: &str| resolver::resolve(netloc, ipv4_only))
             .user_agent(concat!("cabin-ip-detection/", env!("CARGO_PKG_VERSION")));
-        if self.ipv4_only {
-            agent = agent.resolver(|netloc: &str| {
-                use std::net::ToSocketAddrs;
-                let addresses: Vec<_> = netloc
-                    .to_socket_addrs()?
-                    .filter(std::net::SocketAddr::is_ipv4)
-                    .collect();
-                if addresses.is_empty() {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::AddrNotAvailable,
-                        "No IPv4 address available",
-                    ));
-                }
-                Ok(addresses)
-            });
-        }
-        agent = match self.proxy {
+        let agent = match self.proxy {
             ProxyMode::Environment => agent.try_proxy_from_env(true),
             ProxyMode::Direct => agent.try_proxy_from_env(false),
             ProxyMode::Explicit(proxy) => {
@@ -366,11 +358,12 @@ impl Detector {
                             service,
                             url: service.url(),
                         },
-                        timeout,
+                        Some(timeout),
                     )
                     .and_then(|info| detector.require_public(info))
             },
             Result::is_ok,
+            |service, error| Err(ServiceFailure::spawn_failed(service, error)),
         );
         let mut failures = Vec::new();
         for answer in outcomes {
@@ -400,7 +393,7 @@ impl Detector {
                 service,
                 url: service.url(),
             },
-            self.timeout,
+            None,
         )
         .and_then(|info| self.require_public(info))
         .map_err(|error| DetectionError {
@@ -420,7 +413,8 @@ impl Detector {
             urls,
             race::Schedule::address(self.timeout),
             move |(service, url), timeout| {
-                let result = detector.try_endpoint_for(Endpoint { service, url: &url }, timeout)?;
+                let result =
+                    detector.try_endpoint_for(Endpoint { service, url: &url }, Some(timeout))?;
                 if result.ip == ip {
                     Ok(result)
                 } else {
@@ -434,6 +428,7 @@ impl Detector {
                 }
             },
             |answer| answer.as_ref().is_ok_and(IpInfo::has_location),
+            |(service, _), error| Err(ServiceFailure::spawn_failed(service, error)),
         );
         let mut bare = None;
         let mut failures = Vec::new();
@@ -492,18 +487,28 @@ impl Detector {
 
     #[cfg(test)]
     fn try_endpoint(&self, endpoint: Endpoint<'_>) -> Result<IpInfo, ServiceFailure> {
-        self.try_endpoint_for(endpoint, self.timeout)
+        self.try_endpoint_for(endpoint, None)
     }
 
     fn try_endpoint_for(
         &self,
         endpoint: Endpoint<'_>,
-        timeout: Duration,
+        budget: Option<Duration>,
     ) -> Result<IpInfo, ServiceFailure> {
+        let started = Instant::now();
+        let remaining = || budget.map(|budget| budget.saturating_sub(started.elapsed()));
         let mut attempts = 0usize;
         loop {
+            let timeout = remaining().unwrap_or(self.timeout);
+            if timeout.is_zero() {
+                return Err(ServiceFailure {
+                    service: endpoint.service,
+                    attempts,
+                    kind: FailureKind::Transport("address detection deadline elapsed".into()),
+                });
+            }
             attempts = attempts.saturating_add(1);
-            match self.agent.get(endpoint.url).timeout(timeout).call() {
+            match request(&self.agent, endpoint.url, timeout) {
                 Ok(response) if response.status() == 200 => {
                     let result = read_body(response)
                         .and_then(|bytes| mapping::parse_body(endpoint.service, &bytes));
@@ -520,33 +525,56 @@ impl Detector {
                         kind: FailureKind::HttpStatus(response.status()),
                     });
                 }
-                Err(ureq::Error::Status(status, _)) => {
+                Err(kind) => {
+                    if matches!(kind, FailureKind::Transport(_)) && attempts <= self.retries {
+                        let exponent = (attempts - 1).min(2) as u32;
+                        let base = self
+                            .retry_delay
+                            .saturating_mul(1 << exponent)
+                            .min(Duration::from_secs(4));
+                        let max = base.saturating_mul(2).min(Duration::from_secs(4));
+                        let jitter =
+                            Duration::from_secs_f64((max - base).as_secs_f64() * fastrand::f64());
+                        let delay = base + jitter;
+                        if remaining().is_none_or(|left| delay < left) {
+                            std::thread::sleep(delay);
+                            continue;
+                        }
+                    }
                     return Err(ServiceFailure {
                         service: endpoint.service,
                         attempts,
-                        kind: FailureKind::HttpStatus(status),
-                    });
-                }
-                Err(ureq::Error::Transport(error)) if attempts <= self.retries => {
-                    let exponent = (attempts - 1).min(2) as u32;
-                    let base = self
-                        .retry_delay
-                        .saturating_mul(1 << exponent)
-                        .min(Duration::from_secs(4));
-                    let max = base.saturating_mul(2).min(Duration::from_secs(4));
-                    let jitter =
-                        Duration::from_secs_f64((max - base).as_secs_f64() * fastrand::f64());
-                    drop(error);
-                    std::thread::sleep(base + jitter);
-                }
-                Err(ureq::Error::Transport(error)) => {
-                    return Err(ServiceFailure {
-                        service: endpoint.service,
-                        attempts,
-                        kind: FailureKind::Transport(error.to_string()),
+                        kind,
                     });
                 }
             }
+        }
+    }
+}
+
+fn request(
+    agent: &ureq::Agent,
+    url: &str,
+    timeout: Duration,
+) -> Result<ureq::Response, FailureKind> {
+    resolver::with_timeout(timeout, || {
+        agent
+            .get(url)
+            .timeout(timeout)
+            .call()
+            .map_err(|error| match error {
+                ureq::Error::Status(status, _) => FailureKind::HttpStatus(status),
+                ureq::Error::Transport(error) => FailureKind::Transport(error.to_string()),
+            })
+    })
+}
+
+impl ServiceFailure {
+    fn spawn_failed(service: Service, error: std::io::Error) -> Self {
+        Self {
+            service,
+            attempts: 0,
+            kind: FailureKind::Transport(format!("could not start request worker: {error}")),
         }
     }
 }

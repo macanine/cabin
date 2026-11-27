@@ -205,7 +205,9 @@ impl super::extensions::McpCodec for Mcp {
             .remove(old)
             .filter(|item| item.is_table_like())
             .unwrap_or_else(|| toml_edit::Item::Table(toml_edit::Table::new()));
-        let table = entry.as_table_like_mut().expect("a table");
+        let table = entry.as_table_like_mut().ok_or_else(|| {
+            Error::invalid(format!("The MCP entry {old} in config.toml is not a table"))
+        })?;
         match &server.transport {
             McpTransport::Stdio { command, args, env } => {
                 for key in ["url", "http_headers", "bearer_token_env_var"] {

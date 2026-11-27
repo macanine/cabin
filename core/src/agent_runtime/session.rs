@@ -9,8 +9,8 @@ use super::context::{self, ChatContext, LiveSession, TurnInput};
 use crate::chat::{Sink, emit, pending_message};
 use crate::error::{Error, Result};
 use crate::model::{
-    AppEvent, ChatAsyncTask, ChatAttachment, ChatItemKind, ChatItemStatus, ChatPermissionMode,
-    ChatRunState, ChatState, PlanDecision, PlanReview, SessionStatus,
+    AppEvent, ChatAsyncTask, ChatAttachment, ChatItem, ChatItemKind, ChatItemStatus,
+    ChatPermissionMode, ChatRunState, ChatState, PlanDecision, PlanReview, SessionStatus,
 };
 use crate::store::Store;
 
@@ -22,10 +22,43 @@ fn start_prompt(item: &mut crate::model::ChatItem) {
     item.turn_id = item.id.clone();
 }
 
+fn approval_decision<'a>(item: Option<&ChatItem>, decision: &'a str) -> Result<&'a str> {
+    let normalized = match decision {
+        "allow" => "accept",
+        "allow_session" => "acceptForSession",
+        "deny" => "decline",
+        other => other,
+    };
+    let base = normalized
+        .split_once(':')
+        .map_or(normalized, |(base, _)| base);
+    if !matches!(
+        base,
+        "accept" | "acceptForSession" | "acceptAlways" | "decline" | "declineAlways" | "cancel"
+    ) {
+        return Err(Error::invalid("Unknown approval decision"));
+    }
+    let offered = item
+        .and_then(|item| item.approval.as_ref())
+        .is_some_and(|approval| {
+            approval
+                .decisions
+                .iter()
+                .any(|decision| decision.decision == normalized)
+        });
+    if !offered {
+        return Err(Error::invalid(format!(
+            "This request does not offer the decision \"{normalized}\""
+        )));
+    }
+    Ok(normalized)
+}
+
 pub struct ChatSession {
     ctx: Arc<ChatContext>,
     runtime: Mutex<Option<Arc<dyn LiveSession>>>,
     model: Mutex<Option<String>>,
+    prompt: Mutex<()>,
 }
 
 impl ChatSession {
@@ -40,6 +73,7 @@ impl ChatSession {
             ctx: ctx.clone(),
             runtime: Mutex::new(None),
             model: Mutex::new(spec.model.clone()),
+            prompt: Mutex::new(()),
         });
         emit(
             &chat.ctx.sink,
@@ -49,7 +83,10 @@ impl ChatSession {
             },
         );
         let worker = chat.clone();
-        std::thread::spawn(move || worker.open(spec));
+        if let Err(error) = std::thread::Builder::new().spawn(move || worker.open(spec)) {
+            chat.ctx
+                .fail(format!("Could not start the chat worker: {error}"));
+        }
         Ok(chat)
     }
 
@@ -61,29 +98,32 @@ impl ChatSession {
                 return;
             }
         };
-        *self
-            .runtime.locked() = Some(runtime);
-        if self.ctx.state().state == ChatRunState::Starting && self.ctx.is_active() {
-            self.ctx.set_state(ChatRunState::Ready, None);
+        {
+            let mut slot = self.runtime.locked();
+            if !self.ctx.is_active() {
+                drop(slot);
+                runtime.stop();
+                return;
+            }
+            *slot = Some(runtime);
         }
-        if (spec.prompt.is_some() || !spec.attachments.is_empty())
-            && let Err(error) = self.send_prepared(
+        if spec.prompt.is_some() || !spec.attachments.is_empty() {
+            if let Err(error) = self.send_prepared(
                 spec.prompt.as_deref().unwrap_or(""),
                 spec.prompt_id,
                 spec.attachments,
-            )
-        {
-            self.fail(error.to_string());
+                ChatRunState::Starting,
+            ) {
+                self.fail(error.to_string());
+            }
+        } else if self.ctx.state().state == ChatRunState::Starting {
+            self.ctx.set_state(ChatRunState::Ready, None);
         }
     }
 
     pub fn set_model(&self, model: Option<String>) {
-        *self
-            .model.locked() = model.clone();
-        if let Some(runtime) = self
-            .runtime.locked()
-            .as_ref()
-        {
+        *self.model.locked() = model.clone();
+        if let Ok(runtime) = self.runtime() {
             let _ = runtime.set_model(model);
         }
     }
@@ -106,22 +146,21 @@ impl ChatSession {
 
     pub fn fail(&self, message: String) {
         self.ctx.fail(message);
-        if let Some(runtime) = self
-            .runtime.locked()
-            .take()
-        {
+        if let Some(runtime) = self.runtime.locked().take() {
             runtime.stop();
         }
     }
 
     fn pid(&self) -> u32 {
-        self.runtime.locked()
+        self.runtime
+            .locked()
             .as_ref()
             .map_or(0, |runtime| runtime.pid())
     }
 
     fn runtime(&self) -> Result<Arc<dyn LiveSession>> {
-        self.runtime.locked()
+        self.runtime
+            .locked()
             .clone()
             .ok_or_else(|| Error::Unavailable("Conversation is not running".into()))
     }
@@ -131,12 +170,7 @@ impl ChatSession {
         if text.is_empty() && attachments.is_empty() {
             return Err(Error::invalid("Message is empty"));
         }
-        if self.state().state != ChatRunState::Ready {
-            return Err(Error::Conflict(
-                "The agent is not ready for another message".into(),
-            ));
-        }
-        self.send_prepared(text, None, attachments)
+        self.send_prepared(text, None, attachments, ChatRunState::Ready)
     }
 
     fn send_prepared(
@@ -144,26 +178,28 @@ impl ChatSession {
         text: &str,
         existing: Option<String>,
         attachments: Vec<ChatAttachment>,
+        expected: ChatRunState,
     ) -> Result<()> {
+        let _prompt = self.prompt.locked();
+        if self.state().state != expected || !self.ctx.is_active() {
+            return Err(Error::Conflict(
+                "The agent is not ready for another message".into(),
+            ));
+        }
         let runtime = self.runtime()?;
-        let mut item = match existing.and_then(|id| {
-            self.ctx
+        let mut item = match existing {
+            Some(id) => self
+                .ctx
                 .store
-                .chat_items(&self.ctx.id)
-                .ok()?
-                .into_iter()
-                .find(|item| item.id == id)
-        }) {
-            Some(item) => item,
+                .chat_item(&self.ctx.id, &id)?
+                .ok_or_else(|| Error::NotFound("pending chat message".into()))?,
             None => pending_message(text, attachments.clone()),
         };
         item.status = ChatItemStatus::Pending;
         start_prompt(&mut item);
         let item = self.ctx.upsert(item)?;
         self.ctx.begin_turn();
-        let model = self
-            .model.locked()
-            .clone();
+        let model = self.model.locked().clone();
         let input = TurnInput {
             id: item.id.clone(),
             text: text.to_string(),
@@ -171,7 +207,8 @@ impl ChatSession {
             model,
         };
         let ctx = self.ctx.clone();
-        std::thread::spawn(move || {
+        let item_id = item.id.clone();
+        if let Err(error) = std::thread::Builder::new().spawn(move || {
             let outcome = runtime.send(input);
             let _ = ctx.update_item(&item.id, |item| match &outcome {
                 Ok(()) => item.status = ChatItemStatus::Completed,
@@ -182,8 +219,16 @@ impl ChatSession {
             });
             if let Err(error) = outcome {
                 ctx.fail(error.to_string());
+                runtime.stop();
             }
-        });
+        }) {
+            let message = format!("Could not start the prompt worker: {error}");
+            let _ = self.ctx.update_item(&item_id, |item| {
+                item.status = ChatItemStatus::Failed;
+                item.detail = message.clone();
+            });
+            self.fail(message);
+        }
         Ok(())
     }
 
@@ -195,7 +240,9 @@ impl ChatSession {
             return Err(Error::invalid("Message is empty"));
         }
         match self.state().state {
-            ChatRunState::Ready => return self.send_prepared(text, None, attachments),
+            ChatRunState::Ready => {
+                return self.send_prepared(text, None, attachments, ChatRunState::Ready);
+            }
             ChatRunState::Running | ChatRunState::Waiting => {}
             _ => {
                 return Err(Error::Conflict("The agent is not running".into()));
@@ -215,7 +262,8 @@ impl ChatSession {
         };
         let chat = self.clone();
         let text = text.to_string();
-        std::thread::spawn(move || match runtime.steer(input) {
+        let item_id = item.id.clone();
+        if let Err(error) = std::thread::Builder::new().spawn(move || match runtime.steer(input) {
             Ok(context::SteerOutcome::Delivered) => {
                 let _ = chat.ctx.update_item(&item.id, |item| {
                     item.status = ChatItemStatus::Completed;
@@ -225,12 +273,20 @@ impl ChatSession {
             Ok(context::SteerOutcome::PromptRequired) => {
                 // The turn ended first: wait for the chat to settle, then prompt.
                 for _ in 0..600 {
-                    if chat.state().state != ChatRunState::Running {
+                    if !matches!(
+                        chat.state().state,
+                        ChatRunState::Running | ChatRunState::Waiting
+                    ) {
                         break;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                if let Err(error) = chat.send_prepared(&text, Some(item.id.clone()), attachments) {
+                if let Err(error) = chat.send_prepared(
+                    &text,
+                    Some(item.id.clone()),
+                    attachments,
+                    ChatRunState::Ready,
+                ) {
                     let _ = chat.ctx.update_item(&item.id, |item| {
                         item.status = ChatItemStatus::Failed;
                         item.detail = error.to_string();
@@ -243,7 +299,12 @@ impl ChatSession {
                     item.detail = error.to_string();
                 });
             }
-        });
+        }) {
+            let _ = self.ctx.update_item(&item_id, |item| {
+                item.status = ChatItemStatus::Failed;
+                item.detail = format!("Could not start the steering worker: {error}");
+            });
+        }
         Ok(())
     }
 
@@ -287,31 +348,7 @@ impl ChatSession {
         if item.is_some_and(|item| item.kind == ChatItemKind::UserInputRequest) {
             return self.runtime()?.respond(request_id, decision, &answers);
         }
-        let normalized = match decision {
-            "allow" => "accept",
-            "allow_session" => "acceptForSession",
-            "deny" => "decline",
-            other => other,
-        };
-        if !matches!(
-            normalized,
-            "accept" | "acceptForSession" | "acceptAlways" | "decline" | "declineAlways" | "cancel"
-        ) {
-            return Err(Error::invalid("Unknown approval decision"));
-        }
-        let offered = item
-            .and_then(|item| item.approval.as_ref())
-            .is_some_and(|approval| {
-                approval
-                    .decisions
-                    .iter()
-                    .any(|decision| decision.decision == normalized)
-            });
-        if !offered {
-            return Err(Error::invalid(format!(
-                "This request does not offer the decision \"{normalized}\""
-            )));
-        }
+        let normalized = approval_decision(item, decision)?;
         self.runtime()?.respond(request_id, normalized, &answers)
     }
 
@@ -343,13 +380,10 @@ impl ChatSession {
     }
 
     pub fn stop(&self) {
-        let runtime = self
-            .runtime.locked()
-            .take();
+        self.ctx.stop();
+        let runtime = self.runtime.locked().take();
         if let Some(runtime) = runtime {
             runtime.stop();
-        } else {
-            self.ctx.stop();
         }
     }
 }
@@ -425,4 +459,25 @@ mod tests {
         assert_eq!(ctx.current_turn(), late.id);
         Ok(())
     }
+}
+#[test]
+fn approval_requires_the_exact_offered_option() -> Result<()> {
+    let item = context::approval_item(
+        "approval-1",
+        "request-1",
+        "plan",
+        "Review",
+        "Plan",
+        &[
+            ("accept", "Approve"),
+            ("accept:with:note", "Approve with note"),
+        ],
+    );
+    assert_eq!(
+        approval_decision(Some(&item), "accept:with:note")?,
+        "accept:with:note"
+    );
+    assert_eq!(approval_decision(Some(&item), "allow")?, "accept");
+    assert!(approval_decision(Some(&item), "accept:unknown").is_err());
+    Ok(())
 }

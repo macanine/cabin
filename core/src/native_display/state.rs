@@ -200,22 +200,36 @@ fn fields(profile: &Value) -> DisplayFields {
     .collect()
 }
 
-fn replace_fields(config: &mut Value, mut fields: DisplayFields) {
-    let object = config.as_object_mut().expect("parsed profile");
+fn profile_object(config: &mut Value) -> Result<&mut Map<String, Value>> {
+    config
+        .as_object_mut()
+        .ok_or_else(|| Error::invalid("Chrome settings are not a JSON object."))
+}
+
+fn profile_section<'a>(
+    object: &'a mut Map<String, Value>,
+    key: &str,
+) -> Result<&'a mut Map<String, Value>> {
+    object
+        .entry(key)
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| Error::invalid(format!("Browser setting {key} is not a JSON object.")))
+}
+
+fn replace_fields(config: &mut Value, mut fields: DisplayFields) -> Result<()> {
+    let object = profile_object(config)?;
     if let Some(value) = fields.shift_remove("native_display") {
         object.insert("native_display".into(), value);
     } else {
         object.shift_remove("native_display");
     }
     if let Some(size) = fields.shift_remove("window_size") {
-        config
-            .as_object_mut()
-            .expect("parsed profile")
-            .entry("chrome")
-            .or_insert_with(|| json!({}))["window_size"] = size;
-    } else if let Some(chrome) = config.get_mut("chrome").and_then(Value::as_object_mut) {
+        profile_section(object, "chrome")?.insert("window_size".into(), size);
+    } else if let Some(chrome) = object.get_mut("chrome").and_then(Value::as_object_mut) {
         chrome.shift_remove("window_size");
     }
+    Ok(())
 }
 
 pub(super) fn json_bytes(value: &impl Serialize) -> Result<Vec<u8>> {
@@ -478,7 +492,7 @@ pub(super) fn apply_profile(
     }
     let managed = target.native_fields();
     let current_fields = fields(&config);
-    replace_fields(&mut config, managed.clone());
+    replace_fields(&mut config, managed.clone())?;
     let next = if fields_equal(&managed, &current_fields) {
         current.to_vec()
     } else {
@@ -495,7 +509,7 @@ pub(super) fn restore_profile(
 ) -> Result<Vec<u8>> {
     let baseline = profile(original, true)?;
     let before = config.clone();
-    replace_fields(&mut config, fields(&baseline));
+    replace_fields(&mut config, fields(&baseline))?;
     if json_equal(&config, &before) {
         Ok(current.to_vec())
     } else if json_equal(&config, &baseline) {
@@ -525,18 +539,16 @@ impl Environment {
         {
             return Err(Error::invalid("The browser environment is incomplete."));
         }
-        config["timezone"] = json!(self.timezone);
-        config["locale"] = json!(self.locale);
-        if !config["navigator"].is_object() {
-            config["navigator"] = json!({});
+        let object = profile_object(config)?;
+        profile_section(object, "chrome")?.insert("lang".into(), json!(self.chrome_language));
+        object.insert("timezone".into(), json!(self.timezone));
+        object.insert("locale".into(), json!(self.locale));
+        if !object.get("navigator").is_some_and(Value::is_object) {
+            object.insert("navigator".into(), json!({}));
         }
-        config["navigator"]["language"] = json!(self.language);
-        config["navigator"]["languages"] = json!(self.languages);
-        config
-            .as_object_mut()
-            .expect("parsed profile")
-            .entry("chrome")
-            .or_insert_with(|| json!({}))["lang"] = json!(self.chrome_language);
+        let navigator = profile_section(object, "navigator")?;
+        navigator.insert("language".into(), json!(self.language));
+        navigator.insert("languages".into(), json!(self.languages));
         Ok(())
     }
 }

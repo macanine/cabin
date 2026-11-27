@@ -5,7 +5,7 @@ use crate::util::LockExt;
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -454,6 +454,11 @@ impl Store {
 
     pub fn chat_items(&self, id: &str) -> Result<Vec<ChatItem>> {
         self.chat_item_tail(id, CHAT_ITEM_LIMIT)
+    }
+
+    #[cfg(any(unix, test))]
+    pub(crate) fn chat_item(&self, session_id: &str, id: &str) -> Result<Option<ChatItem>> {
+        read_chat_item(&self.conn(), session_id, id)
     }
 
     /// The newest `limit` items in reading order. The inner query keeps the
@@ -940,33 +945,30 @@ impl Store {
         Ok(out)
     }
 
-    pub fn put_chat_item(&self, session_id: &str, mut item: ChatItem) -> Result<ChatItem> {
+    pub fn put_chat_item(&self, session_id: &str, item: ChatItem) -> Result<ChatItem> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let old: Option<(u32, u32, Option<i64>)> = tx.query_row("SELECT ordinal, revision, json_extract(data, '$.startedAt') FROM chat_items WHERE session_id = ?1 AND id = ?2", params![session_id, item.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
-        // The store owns timing: the first write starts an item, every write updates it.
-        let now = crate::util::now_millis();
-        item.updated_at = now;
-        item.started_at = old
-            .and_then(|(_, _, started)| started)
-            .filter(|started| *started > 0)
-            .unwrap_or(now);
-        let (ordinal, revision) = match old {
-            Some((ordinal, revision, _)) => (ordinal, revision + 1),
-            None => (
-                tx.query_row(
-                    "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM chat_items WHERE session_id = ?1",
-                    [session_id],
-                    |r| r.get(0),
-                )?,
-                1,
-            ),
-        };
-        item.ordinal = ordinal;
-        item.revision = revision;
-        tx.execute("INSERT INTO chat_items (session_id, id, ordinal, revision, data) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(session_id, id) DO UPDATE SET revision = excluded.revision, data = excluded.data", params![session_id, item.id, ordinal, revision, json(&item)?])?;
+        let item = write_chat_item(&tx, session_id, item)?;
         tx.commit()?;
         Ok(item)
+    }
+
+    #[cfg(any(unix, test))]
+    pub(crate) fn update_chat_item(
+        &self,
+        session_id: &str,
+        id: &str,
+        update: impl FnOnce(&mut ChatItem),
+    ) -> Result<Option<ChatItem>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let Some(mut item) = read_chat_item(&tx, session_id, id)? else {
+            return Ok(None);
+        };
+        update(&mut item);
+        let item = write_chat_item(&tx, session_id, item)?;
+        tx.commit()?;
+        Ok(Some(item))
     }
 
     // ------------------------------------------------------------ operations
@@ -1185,6 +1187,51 @@ impl Store {
     }
 }
 
+#[cfg(any(unix, test))]
+fn read_chat_item(conn: &Connection, session_id: &str, id: &str) -> Result<Option<ChatItem>> {
+    Ok(conn
+        .query_row(
+            "SELECT data FROM chat_items WHERE session_id = ?1 AND id = ?2",
+            params![session_id, id],
+            |row| from_json(&row.get::<_, String>(0)?),
+        )
+        .optional()?)
+}
+
+fn write_chat_item(tx: &Transaction<'_>, session_id: &str, mut item: ChatItem) -> Result<ChatItem> {
+    let old: Option<(u32, u32, Option<i64>)> = tx.query_row("SELECT ordinal, revision, json_extract(data, '$.startedAt') FROM chat_items WHERE session_id = ?1 AND id = ?2", params![session_id, item.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+    // The store owns timing: the first write starts an item, every write updates it.
+    let now = crate::util::now_millis();
+    item.updated_at = now;
+    item.started_at = old
+        .and_then(|(_, _, started)| started)
+        .filter(|started| *started > 0)
+        .unwrap_or(now);
+    let (ordinal, revision) = match old {
+        Some((ordinal, revision, _)) => (
+            ordinal,
+            revision.checked_add(1).ok_or_else(|| {
+                Error::Conflict(format!(
+                    "Chat item {} has reached its revision limit",
+                    item.id
+                ))
+            })?,
+        ),
+        None => (
+            tx.query_row(
+                "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM chat_items WHERE session_id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )?,
+            1,
+        ),
+    };
+    item.ordinal = ordinal;
+    item.revision = revision;
+    tx.execute("INSERT INTO chat_items (session_id, id, ordinal, revision, data) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(session_id, id) DO UPDATE SET revision = excluded.revision, data = excluded.data", params![session_id, item.id, ordinal, revision, json(&item)?])?;
+    Ok(item)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1318,6 +1365,43 @@ mod tests {
         assert_eq!(store.session("s1")?.worktree, Some(tree));
         store.set_session_worktree("s1", None)?;
         assert_eq!(store.session("s1")?.worktree, None);
+        Ok(())
+    }
+
+    #[test]
+    fn an_item_outside_the_recent_tail_can_still_be_updated() -> Result<()> {
+        let store = Store::in_memory()?;
+        insert_chat(&store)?;
+        let first = store.put_chat_item("s1", chat_item("first"))?;
+        store.put_chat_item("s1", chat_item("second"))?;
+        assert_eq!(store.chat_item_tail("s1", 1)?[0].id, "second");
+
+        let updated = store
+            .update_chat_item("s1", "first", |item| item.detail.push_str("Updated"))?
+            .ok_or_else(|| Error::NotFound("first chat item".into()))?;
+        assert_eq!(updated.ordinal, first.ordinal);
+        assert_eq!(updated.started_at, first.started_at);
+        assert_eq!(updated.revision, first.revision + 1);
+        assert!(updated.detail.ends_with("Updated"));
+        assert_eq!(
+            store.chat_item("s1", "first")?.map(|item| item.detail),
+            Some(updated.detail)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_chat_item_at_the_revision_limit_returns_an_error() -> Result<()> {
+        let store = Store::in_memory()?;
+        insert_chat(&store)?;
+        let item = store.put_chat_item("s1", chat_item("first"))?;
+        store
+            .conn()
+            .execute("UPDATE chat_items SET revision = ?1", [u32::MAX])?;
+        assert!(matches!(
+            store.put_chat_item("s1", item),
+            Err(Error::Conflict(_))
+        ));
         Ok(())
     }
 

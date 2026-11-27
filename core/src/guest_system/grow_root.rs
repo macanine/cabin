@@ -180,8 +180,10 @@ impl Table {
     }
 
     // The validated root is last in sector order, irrespective of its partition number.
-    fn root(&self) -> &Partition {
-        self.partitions.last().expect("validated root partition")
+    fn root(&self) -> Result<&Partition> {
+        self.partitions
+            .last()
+            .ok_or_else(|| Error::invalid("Root GPT has no partitions"))
     }
 
     fn at_disk_end(&self, device: &RootDevice) -> bool {
@@ -369,7 +371,7 @@ struct Snapshot {
 
 impl Snapshot {
     fn verify(&self) -> Result<()> {
-        let root = self.table.root();
+        let root = self.table.root()?;
         if !self.table.at_disk_end(&self.device)
             || !near_disk_end(&self.device, root.start, root.size)
             || root.size != self.device.kernel_size
@@ -430,7 +432,7 @@ impl GrowRoot {
         }
         let output = self.system.run(&command)?;
         let marker = if dry_run { "CHANGE:" } else { "CHANGED:" };
-        let growth = Growth::parse(&output, marker, device, snapshot.table.root())?;
+        let growth = Growth::parse(&output, marker, device, snapshot.table.root()?)?;
         if dry_run {
             growth.check_dump(&output, &device.partition)?;
         }
@@ -439,7 +441,10 @@ impl GrowRoot {
 
     fn check_after(before: &Snapshot, after: &Snapshot, size: u64) -> Result<()> {
         let mut expected = before.table.partitions.clone();
-        expected.last_mut().expect("validated root partition").size = size;
+        let Some(root) = expected.last_mut() else {
+            return Err(Error::invalid("Root GPT has no partitions"));
+        };
+        root.size = size;
         if before.device.disk != after.device.disk
             || before.device.partition != after.device.partition
             || before.device.number != after.device.number
@@ -450,7 +455,7 @@ impl GrowRoot {
             || before.fs.blocks > after.fs.blocks
             || expected != after.table.partitions
             || !after.table.at_disk_end(&after.device)
-            || !near_disk_end(&after.device, after.table.root().start, size)
+            || !near_disk_end(&after.device, after.table.root()?.start, size)
         {
             return Err(Error::Conflict(
                 "Root disk geometry differs from the validated growth plan".into(),
@@ -469,8 +474,9 @@ impl GrowRoot {
         let message = record
             .error
             .unwrap_or_else(|| "Could not grow guest root disk".into());
+        let log: Vec<_> = record.steps.into_iter().flat_map(|step| step.log).collect();
         Err(Error::Command {
-            message: format!("{message}\n{}", record.steps[0].log.join("\n")),
+            message: format!("{message}\n{}", log.join("\n")),
             output: String::new(),
         })
     }
@@ -490,7 +496,7 @@ impl Step for GrowRoot {
             wait_for_cloud_init(self.system.as_ref())?;
         }
         let before = self.snapshot()?;
-        let root = before.table.root();
+        let root = before.table.root()?;
         let growth = if before.table.at_disk_end(&before.device)
             && near_disk_end(&before.device, root.start, root.size)
         {
@@ -513,7 +519,10 @@ impl Step for GrowRoot {
     }
 
     fn apply(&mut self, _ctx: &StepCtx<'_>) -> Result<()> {
-        let (before, growth) = self.prepared.as_ref().expect("growth has been prepared");
+        let (before, growth) = self
+            .prepared
+            .as_ref()
+            .ok_or_else(|| Error::Internal("Root growth was not prepared".into()))?;
         let mut current = self.snapshot()?;
         if before.device != current.device
             || before.table != current.table
@@ -532,7 +541,7 @@ impl Step for GrowRoot {
             current = self.snapshot()?;
             growth.new_size
         } else {
-            before.table.root().size
+            before.table.root()?.size
         };
         Self::check_after(before, &current, size)?;
         if current.device.kernel_size < size {
@@ -561,14 +570,17 @@ impl Step for GrowRoot {
     }
 
     fn verify(&mut self, _ctx: &StepCtx<'_>) -> Result<()> {
-        let (before, growth) = self.prepared.as_ref().expect("growth has been prepared");
+        let (before, growth) = self
+            .prepared
+            .as_ref()
+            .ok_or_else(|| Error::Internal("Root growth was not prepared".into()))?;
         let after = self.snapshot()?;
         Self::check_after(
             before,
             &after,
             growth
                 .as_ref()
-                .map_or(before.table.root().size, |growth| growth.new_size),
+                .map_or(before.table.root()?.size, |growth| growth.new_size),
         )?;
         after.verify()
     }

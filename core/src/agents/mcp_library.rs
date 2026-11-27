@@ -464,6 +464,13 @@ pub fn export(ctx: &Context, name: Option<&str>) -> Result<String> {
     serde_json::to_string_pretty(&serde_json::json!({"mcpServers": servers})).map_err(Into::into)
 }
 
+fn require_codec(kind: AgentKind) -> Result<&'static dyn McpCodec> {
+    let agent = adapter(kind);
+    agent
+        .mcp()
+        .ok_or_else(|| Error::Unavailable(format!("{} has no MCP support", agent.spec().name)))
+}
+
 fn decode_pasted_json(mut value: Value) -> Result<BTreeMap<String, Option<McpServer>>> {
     let entries = super::extensions::json::table(&mut value, "mcpServers")?;
     let mut disabled = BTreeSet::new();
@@ -479,7 +486,7 @@ fn decode_pasted_json(mut value: Value) -> Result<BTreeMap<String, Option<McpSer
             disabled.insert(name.clone());
         }
     }
-    let codec = adapter(AgentKind::Claude).mcp().expect("JSON MCP format");
+    let codec = require_codec(AgentKind::Claude)?;
     let mut servers = decode_native(codec, Some(&value.to_string()))?;
     for name in disabled {
         if let Some(Some(server)) = servers.get_mut(&name) {
@@ -493,7 +500,7 @@ pub fn parse_paste(text: &str) -> Result<Vec<McpServer>> {
     if text.len() > 2 * 1024 * 1024 {
         return Err(Error::invalid("Paste a config smaller than 2 MiB"));
     }
-    let decode = |agent| decode_native(adapter(agent).mcp().expect("supported format"), Some(text));
+    let decode = |agent| decode_native(require_codec(agent)?, Some(text));
     let servers = match serde_json::from_str::<Value>(text) {
         Ok(value) if value.get("mcp").is_some() => decode(AgentKind::Opencode),
         Ok(value) if value.get("mcpServers").is_some() => decode_pasted_json(value),
@@ -657,7 +664,7 @@ fn apply(change: McpChange, catalog: &mut Catalog, files: &mut [AgentFile]) -> R
                     shelved: old.and_then(|entry| entry.shelved.clone()),
                 };
                 if let Some(shelved) = &entry.shelved {
-                    let codec = adapter(AgentKind::Claude).mcp().expect("Claude MCP codec");
+                    let codec = require_codec(AgentKind::Claude)?;
                     let text = codec.unshelve(None, &name, shelved)?;
                     let text = codec.upsert(Some(&text), &entry.server, None)?;
                     entry.shelved = codec.shelve(&text, &name)?;
@@ -772,11 +779,11 @@ impl Step for WriteMcp {
         let baseline = decode_catalog(original.as_deref())?;
         let mut catalog = baseline.clone();
         let mut files = native_files(&self.ctx);
-        apply(
-            self.change.take().expect("prepare runs once"),
-            &mut catalog,
-            &mut files,
-        )?;
+        let change = self
+            .change
+            .take()
+            .ok_or_else(|| Error::Internal("The MCP operation was already prepared".into()))?;
+        apply(change, &mut catalog, &mut files)?;
         for native in files
             .into_iter()
             .filter_map(|file| file.native.ok().flatten())
@@ -789,11 +796,14 @@ impl Step for WriteMcp {
             {
                 step.log(format!("Backed up to {}", backup.display()));
             }
-            self.writes.push(FileChange::new(
-                native.path,
-                native.original,
-                native.text.expect("updated text"),
-            ));
+            let text = native.text.ok_or_else(|| {
+                Error::Internal(format!(
+                    "MCP update for {} has no contents",
+                    native.path.display()
+                ))
+            })?;
+            self.writes
+                .push(FileChange::new(native.path, native.original, text));
         }
         if catalog != baseline {
             self.writes.push(FileChange::new(

@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::mapping::{asn, text};
-use crate::{Detector, IpType, race, read_body};
+use crate::{Detector, IpType, race, read_body, request};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QualityService {
@@ -172,7 +172,12 @@ pub(super) fn parse(source: QualityService, ip: IpAddr, data: &Value) -> Option<
             )
         }
     };
-    let inferred = detected.is_none() && matches!(source, IpApiCom | IpQuery);
+    let inferred = detected.is_none()
+        && match source {
+            IpApiCom => data["hosting"] == false && data["mobile"] == false,
+            IpQuery => data["risk"]["is_datacenter"] == false && data["risk"]["is_mobile"] == false,
+            _ => false,
+        };
     let ip_type = detected.or(inferred.then_some(IpType::Residential))?;
     Some(Classification {
         source,
@@ -194,6 +199,7 @@ impl Detector {
             race::Schedule::quality(),
             move |source, timeout| query(&agent, source, ip, timeout),
             |answer| answer.as_ref().is_some_and(|answer| !answer.inferred),
+            |_, _| None,
         );
         let mut answers = outcomes.into_iter().flatten();
         let first = answers.next()?;
@@ -210,7 +216,10 @@ fn query(
     ip: IpAddr,
     timeout: Duration,
 ) -> Option<Classification> {
-    let response = agent.get(&source.url(ip)).timeout(timeout).call().ok()?;
+    if timeout.is_zero() {
+        return None;
+    }
+    let response = request(agent, &source.url(ip), timeout).ok()?;
     if response.status() != 200 {
         return None;
     }

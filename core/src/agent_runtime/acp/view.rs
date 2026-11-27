@@ -149,23 +149,19 @@ impl View {
     }
 
     pub fn set_goal_actions(&self, actions: Vec<String>) {
-        *self
-            .goal_actions.locked() = actions;
+        *self.goal_actions.locked() = actions;
     }
 
     pub fn set_owned(&self, categories: &'static [&'static str]) {
-        *self
-            .owned.locked() = categories;
+        *self.owned.locked() = categories;
     }
 
     pub fn set_terminals(&self, terminals: Arc<Terminals>) {
-        *self
-            .terminals.locked() = Some(terminals);
+        *self.terminals.locked() = Some(terminals);
     }
 
     pub fn set_session(&self, id: &str) {
-        *self
-            .session_id.locked() = Some(id.to_string());
+        *self.session_id.locked() = Some(id.to_string());
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -177,8 +173,7 @@ impl View {
     }
 
     pub fn edit_controls(&self, ctx: &ChatContext, edit: impl FnOnce(&mut ChatControls)) {
-        let owned = *self
-            .owned.locked();
+        let owned = *self.owned.locked();
         let controls = {
             let mut state = self.state();
             edit(&mut state.controls);
@@ -311,9 +306,7 @@ impl View {
     /// Route an update to its scope: a known child session, an OpenCode
     /// child-session tag, or the chat itself.
     fn scope_of(&self, ctx: &ChatContext, params: &Value, update: &Value) -> Scope {
-        let main = self
-            .session_id.locked()
-            .clone();
+        let main = self.session_id.locked().clone();
         if let Some(parent_tool) = update
             .pointer("/_meta/claudeCode/parentToolUseId")
             .and_then(Value::as_str)
@@ -567,9 +560,7 @@ impl View {
                         }
                     }
                 }
-                let actions = self
-                    .goal_actions.locked()
-                    .clone();
+                let actions = self.goal_actions.locked().clone();
                 if let Some(goal) = goal_snapshot(update, &actions) {
                     self.edit_controls(ctx, |controls| controls.goal = goal);
                 }
@@ -701,7 +692,12 @@ impl View {
                 .segments
                 .get(&scope)
                 .is_some_and(|segment| segment.item.kind == kind);
-            if !reuse {
+            let segment = if reuse {
+                let Some(segment) = state.segments.get_mut(&scope) else {
+                    return;
+                };
+                segment
+            } else {
                 if let Some(mut done) = state.segments.remove(&scope) {
                     done.item.status = ChatItemStatus::Completed;
                     drop(state);
@@ -718,12 +714,12 @@ impl View {
                 if kind == ChatItemKind::Reasoning {
                     item.title = "Thinking".into();
                 }
-                state.segments.insert(scope.clone(), Segment { item });
-            }
-            let segment = state
-                .segments
-                .get_mut(&scope)
-                .expect("segment just ensured");
+                state
+                    .segments
+                    .entry(scope.clone())
+                    .insert_entry(Segment { item })
+                    .into_mut()
+            };
             segment.item.text.push_str(&text);
             segment.item.clone()
         };
@@ -814,9 +810,7 @@ impl View {
     }
 
     fn session_message(&self, ctx: &ChatContext, update: &Value) {
-        let main = self
-            .session_id.locked()
-            .clone();
+        let main = self.session_id.locked().clone();
         let sender = update["senderSessionId"].as_str();
         let Some(child) = sender.filter(|sender| Some(*sender) != main.as_deref()) else {
             return;
@@ -963,10 +957,7 @@ impl View {
         let id = format!("{TOOL_PREFIX}{}", tool.id);
         let mut output = tool.text.join("\n");
         let mut exit = None;
-        if let Some(terminals) = self
-            .terminals.locked()
-            .as_ref()
-        {
+        if let Some(terminals) = self.terminals.locked().as_ref() {
             for terminal in &tool.terminals {
                 if let Some((text, code)) = terminals.text(terminal) {
                     // The agent reads the raw output; the card shows it cleaned.
@@ -1633,9 +1624,18 @@ mod tests {
             ]
         }]));
         let choices = &options[0].choices;
-        assert_eq!((choices[0].name.as_str(), choices[0].group.as_deref()), ("big-pickle", Some("opencode")));
-        assert_eq!((choices[1].name.as_str(), choices[1].group.as_deref()), ("claude-haiku", Some("anthropic")));
-        assert_eq!((choices[2].name.as_str(), choices[2].group.as_deref()), ("Plain", None));
+        assert_eq!(
+            (choices[0].name.as_str(), choices[0].group.as_deref()),
+            ("big-pickle", Some("opencode"))
+        );
+        assert_eq!(
+            (choices[1].name.as_str(), choices[1].group.as_deref()),
+            ("claude-haiku", Some("anthropic"))
+        );
+        assert_eq!(
+            (choices[2].name.as_str(), choices[2].group.as_deref()),
+            ("Plain", None)
+        );
         assert_eq!(choices[0].value, "opencode/big-pickle");
     }
 
@@ -1659,7 +1659,10 @@ mod tests {
             started_at: 0,
             updated_at: 0,
         };
-        merge_async_task(&mut task, &json!({ "toolCallId": "call_7", "state": "completed", "summary": "42 passed" }));
+        merge_async_task(
+            &mut task,
+            &json!({ "toolCallId": "call_7", "state": "completed", "summary": "42 passed" }),
+        );
         assert_eq!(task.item_id.as_deref(), Some("acp-tool:call_7"));
         assert_eq!(task.state, "completed");
         assert_eq!(task.summary.as_deref(), Some("42 passed"));

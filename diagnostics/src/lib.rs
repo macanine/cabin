@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod files;
+
+use files::open_regular;
+
 const SEGMENT_BYTES: u64 = 2 * 1024 * 1024;
 const ARCHIVES: usize = 3;
 const MESSAGE_CHARS: usize = 1024;
@@ -89,7 +93,7 @@ pub enum Capture {
     New,
 }
 
-fn options(path: &Path) -> io::Result<OpenOptions> {
+fn create_parent(path: &Path) -> io::Result<()> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -103,34 +107,23 @@ fn options(path: &Path) -> io::Result<OpenOptions> {
         }
         builder.create(parent)?;
     }
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if !metadata.is_file() => {
-            return Err(io::Error::other("expected a regular diagnostic file"));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let options = OpenOptions::new();
-    #[cfg(unix)]
-    let options = {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut options = options;
-        options.mode(0o600);
-        options
-    };
-    Ok(options)
+    Ok(())
 }
 
 /// Open a scoped raw capture. The same file can be inherited by a subprocess.
 pub fn open_capture(path: &Path, mode: Capture) -> io::Result<File> {
-    let mut options = options(path)?;
+    create_parent(path)?;
+    let mut options = OpenOptions::new();
     match mode {
         Capture::Append => options.create(true).append(true),
-        Capture::Replace => options.create(true).write(true).truncate(true),
+        Capture::Replace => options.create(true).write(true),
         Capture::New => options.create_new(true).append(true),
     };
-    options.open(path)
+    let file = open_regular(path, &mut options)?;
+    if matches!(mode, Capture::Replace) {
+        file.set_len(0)?;
+    }
+    Ok(file)
 }
 
 fn archive(path: &Path, index: usize) -> PathBuf {
@@ -153,24 +146,37 @@ fn lock_path(path: &Path) -> PathBuf {
 }
 
 fn append(path: &Path, line: &str, durable: bool, limit: u64) -> io::Result<()> {
-    let lock_path = lock_path(path);
-    let lock = options(&lock_path)?
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(lock_path)?;
-    lock.lock()?;
-    let open = || {
-        options(path)?
+    let line_bytes = line.len() as u64;
+    if line_bytes > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "diagnostic record exceeds the segment size",
+        ));
+    }
+    create_parent(path)?;
+    let lock = open_regular(
+        &lock_path(path),
+        OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
-            .open(path)
+            .write(true)
+            .truncate(false),
+    )?;
+    lock.lock()?;
+    let open = || {
+        open_regular(
+            path,
+            OpenOptions::new().create(true).read(true).append(true),
+        )
     };
     let mut file = open()?;
     let length = file.metadata()?.len();
-    if length > 0 && length.saturating_add(line.len() as u64 + 1) > limit {
+    let needs_separator = length > 0 && !starts_on_line(&mut file, length)?;
+    if length
+        .saturating_add(line_bytes)
+        .saturating_add(u64::from(needs_separator))
+        > limit
+    {
         // Close before renaming, including on Windows. The stable lock remains held.
         drop(file);
         for index in (1..=ARCHIVES).rev() {
@@ -187,14 +193,9 @@ fn append(path: &Path, line: &str, durable: bool, limit: u64) -> io::Result<()> 
             }
         }
         file = open()?;
-    } else if length > 0 {
+    } else if needs_separator {
         // Isolate a partial record left by an interrupted write.
-        file.seek(SeekFrom::End(-1))?;
-        let mut byte = [0];
-        file.read_exact(&mut byte)?;
-        if byte[0] != b'\n' {
-            file.write_all(b"\n")?;
-        }
+        file.write_all(b"\n")?;
     }
     file.write_all(line.as_bytes())?;
     if durable {
@@ -203,44 +204,51 @@ fn append(path: &Path, line: &str, durable: bool, limit: u64) -> io::Result<()> 
     Ok(())
 }
 
+fn starts_on_line(file: &mut File, offset: u64) -> io::Result<bool> {
+    if offset == 0 {
+        return Ok(true);
+    }
+    file.seek(SeekFrom::Start(offset - 1))?;
+    let mut byte = [0];
+    file.read_exact(&mut byte)?;
+    Ok(byte[0] == b'\n')
+}
+
 /// Read up to `max_bytes` from the end of a regular capture. `offset` excludes
 /// earlier output from a live stream that is shared by successive attempts.
 pub fn tail(path: &Path, max_bytes: u64, offset: u64) -> String {
-    let read = || -> io::Result<String> {
-        if !fs::symlink_metadata(path)?.is_file() {
-            return Ok(String::new());
-        }
-        let mut file = File::open(path)?;
-        let length = file.metadata()?.len();
-        let start = length
-            .saturating_sub(max_bytes)
-            .max(if length >= offset { offset } else { 0 });
-        file.seek(SeekFrom::Start(start))?;
-        let mut bytes = Vec::new();
-        file.take(max_bytes).read_to_end(&mut bytes)?;
-        let text = String::from_utf8_lossy(&bytes);
-        if start > offset {
-            Ok(text
-                .split_once('\n')
-                .map_or("", |(_, rest)| rest)
-                .to_owned())
-        } else {
-            Ok(text.into_owned())
-        }
+    read_tail(path, max_bytes, offset).unwrap_or_default().0
+}
+
+fn read_tail(path: &Path, max_bytes: u64, offset: u64) -> io::Result<(String, u64)> {
+    let mut file = open_regular(path, OpenOptions::new().read(true))?;
+    let length = file.metadata()?.len();
+    let offset = if length >= offset { offset } else { 0 };
+    let start = length.saturating_sub(max_bytes).max(offset);
+    let partial = start > offset && !starts_on_line(&mut file, start)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.take(length - start).read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = if partial {
+        text.split_once('\n')
+            .map_or("", |(_, rest)| rest)
+            .to_owned()
+    } else {
+        text.into_owned()
     };
-    read().unwrap_or_default()
+    Ok((text, bytes.len() as u64))
 }
 
 /// Read recent JSON records in chronological order, across one or more segments.
 pub fn recent_records(path: &Path, mut bytes: u64) -> Vec<serde_json::Value> {
     // Legacy logs may have no lock. Hold a shared lock when present so a
     // concurrent rotation cannot present the same segment twice.
-    let lock_path = lock_path(path);
-    let _lock = fs::symlink_metadata(&lock_path)
-        .ok()
-        .filter(|meta| meta.is_file())
-        .and_then(|_| File::open(lock_path).ok())
-        .and_then(|lock| lock.lock_shared().ok().map(|()| lock));
+    let _lock = match open_regular(&lock_path(path), OpenOptions::new().read(true)) {
+        Ok(lock) if lock.lock_shared().is_ok() => Some(lock),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        _ => return Vec::new(),
+    };
     let mut segments = Vec::new();
     for index in 0..=ARCHIVES {
         if bytes == 0 {
@@ -251,8 +259,8 @@ pub fn recent_records(path: &Path, mut bytes: u64) -> Vec<serde_json::Value> {
         } else {
             archive(path, index)
         };
-        let text = tail(&path, bytes, 0);
-        bytes = bytes.saturating_sub(text.len() as u64);
+        let (text, read) = read_tail(&path, bytes, 0).unwrap_or_default();
+        bytes -= read;
         segments.push(text);
     }
     segments
@@ -314,6 +322,8 @@ mod tests {
             .write_all(b"first long line\nsecond\nlast\n")
             .unwrap();
         assert_eq!(tail(&path, 15, 0), "second\nlast\n");
+        assert_eq!(tail(&path, 12, 0), "second\nlast\n");
+        assert_eq!(tail(&path, 9, 100), "last\n");
         assert_eq!(tail(&path, 64, 16), "second\nlast\n");
         assert!(open_capture(&path, Capture::New).is_err());
         #[cfg(unix)]
@@ -325,5 +335,89 @@ mod tests {
             assert!(tail(&link, 64, 0).is_empty());
             assert!(open_capture(&link, Capture::Replace).is_err());
         }
+    }
+
+    #[test]
+    fn keeps_the_full_segment_and_rejects_records_larger_than_the_limit() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join(EVENT_FILE);
+        append(&path, "[1]\n", false, 8)?;
+        append(&path, "[2]\n", false, 8)?;
+        assert_eq!(fs::read_to_string(&path)?, "[1]\n[2]\n");
+        assert!(!archive(&path, 1).exists());
+        assert_eq!(
+            append(&path, "[123456]\n", false, 8)
+                .expect_err("oversized record should be rejected")
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::read_to_string(path)?, "[1]\n[2]\n");
+        Ok(())
+    }
+
+    #[test]
+    fn recent_record_budget_does_not_skip_into_an_older_segment() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join(EVENT_FILE);
+        append(&path, "[0]\n", false, 8)?;
+        append(&path, "[10,20]\n", false, 8)?;
+        assert!(recent_records(&path, 5).is_empty());
+        assert_eq!(recent_records(&path, 8), vec![serde_json::json!([10, 20])]);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn file_checks_precede_truncation_and_locking() -> io::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join(EVENT_FILE);
+        let other = dir.path().join("other.log");
+        fs::write(&other, "[1]\n")?;
+        fs::hard_link(&other, &path)?;
+        assert_eq!(
+            open_capture(&path, Capture::Replace).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(tail(&path, 64, 0).is_empty());
+        assert_eq!(fs::read_to_string(&other)?, "[1]\n");
+        fs::remove_file(&path)?;
+        fs::write(&path, "[2]\n")?;
+        symlink(&other, lock_path(&path))?;
+        assert!(append_record(&path, "[3]\n", false).is_err());
+        assert!(recent_records(&path, 64).is_empty());
+        assert_eq!(fs::read_to_string(path)?, "[2]\n");
+        assert_eq!(fs::read_to_string(other)?, "[1]\n");
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+    ))]
+    fn rejects_fifo_without_waiting_for_the_other_end() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("capture.log");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()?
+                .success()
+        );
+        let (send, receive) = std::sync::mpsc::channel();
+        let read = std::thread::Builder::new().spawn(move || {
+            let _ = send.send(read_tail(&path, 64, 0));
+        })?;
+        let result = receive
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("diagnostic read blocked on a FIFO");
+        read.join().expect("diagnostic reader panicked");
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        Ok(())
     }
 }

@@ -150,14 +150,12 @@ impl ChatContext {
     }
 
     pub fn controls(&self) -> ChatControls {
-        self.controls.locked()
-            .clone()
+        self.controls.locked().clone()
     }
 
     pub fn publish_controls(&self, controls: ChatControls) {
         {
-            let mut current = self
-                .controls.locked();
+            let mut current = self.controls.locked();
             if *current == controls {
                 return;
             }
@@ -177,13 +175,11 @@ impl ChatContext {
     }
 
     pub fn state(&self) -> ChatState {
-        self.state.locked()
-            .clone()
+        self.state.locked().clone()
     }
 
     pub fn permission(&self) -> ChatPermissionMode {
-        *self
-            .permission.locked()
+        *self.permission.locked()
     }
 
     /// The agent changed its own mode: keep the chat's choice and the UI in step.
@@ -204,24 +200,36 @@ impl ChatContext {
     }
 
     pub fn set_permission(&self, permission: ChatPermissionMode) {
-        *self
-            .permission.locked() = permission;
+        *self.permission.locked() = permission;
     }
 
     pub fn set_state(&self, next: ChatRunState, message: Option<String>) {
-        if !self.active.load(Ordering::Acquire) {
-            return;
-        }
-        self.force_state(next, message);
+        self.transition(next, message, false);
     }
 
-    fn force_state(&self, next: ChatRunState, message: Option<String>) {
+    fn transition(&self, next: ChatRunState, message: Option<String>, final_state: bool) {
         let state = ChatState {
             state: next,
             message,
         };
-        *self
-            .state.locked() = state.clone();
+        {
+            let mut current = self.state.locked();
+            if !final_state && !self.is_active() {
+                return;
+            }
+            *current = state.clone();
+        }
+        let status = match next {
+            ChatRunState::Starting => SessionStatus::Starting,
+            ChatRunState::Stopped => SessionStatus::Stopped,
+            ChatRunState::Error => SessionStatus::Failed {
+                message: state
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "The agent stopped".into()),
+            },
+            _ => SessionStatus::Running { pid: 0 },
+        };
         emit(
             &self.sink,
             AppEvent::ChatState {
@@ -233,33 +241,18 @@ impl ChatContext {
             &self.sink,
             AppEvent::SessionStatus {
                 id: self.id.clone(),
-                status: self.status(),
+                status,
             },
         );
     }
 
-    pub fn status(&self) -> SessionStatus {
-        let state = self.state();
-        match state.state {
-            ChatRunState::Starting => SessionStatus::Starting,
-            ChatRunState::Stopped => SessionStatus::Stopped,
-            ChatRunState::Error => SessionStatus::Failed {
-                message: state.message.unwrap_or_else(|| "The agent stopped".into()),
-            },
-            _ => SessionStatus::Running { pid: 0 },
-        }
-    }
-
     pub fn begin_turn(&self) {
-        *self
-            .baseline.locked() =
-            crate::workspace_diff::snapshot(&self.root);
+        *self.baseline.locked() = crate::workspace_diff::snapshot(&self.root);
         self.set_state(ChatRunState::Running, None);
     }
 
     pub fn current_turn(&self) -> String {
-        self.current_turn.locked()
-            .clone()
+        self.current_turn.locked().clone()
     }
 
     fn assign_turn(&self, item: &mut ChatItem) {
@@ -267,8 +260,7 @@ impl ChatContext {
             if item.turn_id.is_empty() {
                 item.turn_id = item.id.clone();
             }
-            *self
-                .current_turn.locked() = item.turn_id.clone();
+            *self.current_turn.locked() = item.turn_id.clone();
             return;
         }
         if item.turn_id.is_empty() {
@@ -285,6 +277,11 @@ impl ChatContext {
             crate::chat_view::present(&mut item, &self.root);
         }
         let item = self.store.put_chat_item(&self.id, item)?;
+        self.publish_item(&item);
+        Ok(item)
+    }
+
+    fn publish_item(&self, item: &ChatItem) {
         emit(
             &self.sink,
             AppEvent::ChatItem {
@@ -292,15 +289,10 @@ impl ChatContext {
                 item: item.clone(),
             },
         );
-        Ok(item)
     }
 
     pub fn tasks(&self) -> Vec<ChatAsyncTask> {
-        let mut tasks: Vec<_> = self
-            .tasks.locked()
-            .values()
-            .cloned()
-            .collect();
+        let mut tasks: Vec<_> = self.tasks.locked().values().cloned().collect();
         tasks.sort_by(|left, right| {
             left.started_at
                 .cmp(&right.started_at)
@@ -310,15 +302,12 @@ impl ChatContext {
     }
 
     pub fn task(&self, id: &str) -> Option<ChatAsyncTask> {
-        self.tasks.locked()
-            .get(id)
-            .cloned()
+        self.tasks.locked().get(id).cloned()
     }
 
     pub fn upsert_task(&self, task: ChatAsyncTask) {
         {
-            let mut tasks = self
-                .tasks.locked();
+            let mut tasks = self.tasks.locked();
             tasks.insert(task.id.clone(), task.clone());
         }
         emit(
@@ -335,16 +324,11 @@ impl ChatContext {
         id: &str,
         update: impl FnOnce(&mut ChatItem),
     ) -> Result<Option<ChatItem>> {
-        let Some(mut item) = self
-            .store
-            .chat_items(&self.id)?
-            .into_iter()
-            .find(|item| item.id == id)
-        else {
-            return Ok(None);
-        };
-        update(&mut item);
-        self.upsert(item).map(Some)
+        let item = self.store.update_chat_item(&self.id, id, update)?;
+        if let Some(item) = &item {
+            self.publish_item(item);
+        }
+        Ok(item)
     }
 
     pub fn plan_draft(&self, mut plan: PlanReview) -> Result<PlanReview> {
@@ -384,13 +368,11 @@ impl ChatContext {
     }
 
     pub fn begin_plan_execution(&self, plan_id: String, revision: i64) {
-        *self
-            .plan_execution.locked() = Some((plan_id, revision));
+        *self.plan_execution.locked() = Some((plan_id, revision));
     }
 
     pub fn clear_plan_execution(&self) {
-        self.plan_execution.locked()
-            .take();
+        self.plan_execution.locked().take();
     }
 
     pub fn subagent(&self, id: &str) -> Option<SubagentTask> {
@@ -538,9 +520,7 @@ impl ChatContext {
             return;
         }
         settle_items(&self.store, &self.sink, &self.id, completed);
-        let execution = self
-            .plan_execution.locked()
-            .take();
+        let execution = self.plan_execution.locked().take();
         if let Some((plan_id, revision)) = execution
             && let Ok(Some(plan)) = self.store.set_plan_execution(
                 &self.id,
@@ -566,7 +546,7 @@ impl ChatContext {
         settle_items(&self.store, &self.sink, &self.id, false);
         self.settle_subagents();
         self.expire_plans();
-        self.force_state(ChatRunState::Error, Some(message));
+        self.transition(ChatRunState::Error, Some(message), true);
     }
 
     pub fn stop(&self) {
@@ -576,7 +556,7 @@ impl ChatContext {
         settle_items(&self.store, &self.sink, &self.id, false);
         self.settle_subagents();
         self.expire_plans();
-        self.force_state(ChatRunState::Stopped, None);
+        self.transition(ChatRunState::Stopped, None, true);
     }
 
     pub fn waiting(&self) {
@@ -586,10 +566,7 @@ impl ChatContext {
     }
 
     fn report_workspace_changes(&self) {
-        let Some(base) = self
-            .baseline.locked()
-            .take()
-        else {
+        let Some(base) = self.baseline.locked().take() else {
             return;
         };
         let Some(head) = crate::workspace_diff::snapshot(&self.root) else {

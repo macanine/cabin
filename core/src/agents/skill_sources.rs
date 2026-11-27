@@ -480,6 +480,7 @@ pub(super) fn from_zip(bytes: &[u8], target: &Path) -> Result<String> {
         return Err(Error::invalid("The skill ZIP has too many files"));
     }
     let mut manifests = Vec::new();
+    let mut paths = Vec::with_capacity(archive.len());
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(bad_zip)?;
         let path = entry
@@ -487,8 +488,9 @@ pub(super) fn from_zip(bytes: &[u8], target: &Path) -> Result<String> {
             .filter(|path| safe_path(path))
             .ok_or_else(|| Error::invalid("Unsafe path in skill ZIP"))?;
         if entry.is_file() && path.file_name().is_some_and(|name| name == "SKILL.md") {
-            manifests.push(path);
+            manifests.push(path.clone());
         }
+        paths.push(path);
     }
     manifests.sort_by_key(|path| path.components().count());
     let manifest = manifests
@@ -501,12 +503,11 @@ pub(super) fn from_zip(bytes: &[u8], target: &Path) -> Result<String> {
         ));
     }
     let mut extract = Extract::new(target);
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(bad_zip)?;
-        let path = entry.enclosed_name().expect("checked ZIP paths");
+    for (index, path) in paths.into_iter().enumerate() {
         let Ok(path) = path.strip_prefix(subtree) else {
             continue;
         };
+        let mut entry = archive.by_index(index).map_err(bad_zip)?;
         if entry.is_dir() {
             continue;
         }

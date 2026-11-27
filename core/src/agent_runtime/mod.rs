@@ -39,7 +39,7 @@ pub fn relativize(path: &str, root: &Path) -> Option<String> {
 /// The runtime binary a chat drives, and how to install it when it is missing.
 pub struct RuntimeBinary {
     pub path: std::path::PathBuf,
-    /// npm argv that creates `path`; `None` when it is already there or overridden.
+    /// npm argv for a managed runtime, including an already installed version.
     pub install: Option<Vec<String>>,
 }
 
@@ -56,41 +56,8 @@ pub fn ensure_installed(
     binary: &RuntimeBinary,
     env: &[(String, String)],
 ) -> crate::error::Result<()> {
-    use crate::error::Error;
-    let Some(argv) = &binary.install else {
-        return Ok(());
-    };
-    if binary.path.is_file() {
-        return Ok(());
+    if let Some(argv) = &binary.install {
+        runtimes::ensure_installed_until(&binary.path, argv, env, &|| false)?;
     }
-    if let Some(dir) = argv
-        .iter()
-        .position(|arg| arg == "--prefix")
-        .and_then(|index| argv.get(index + 1))
-    {
-        std::fs::create_dir_all(dir)
-            .map_err(|error| Error::io("create the runtime folder", error))?;
-    }
-    let out = std::process::Command::new(&argv[0])
-        .args(&argv[1..])
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|error| Error::io("install the agent runtime", error))?;
-    if out.status.success() && binary.path.is_file() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let tail: String = stderr
-        .chars()
-        .rev()
-        .take(600)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    Err(Error::Unavailable(format!(
-        "Could not install the agent runtime: {}",
-        tail.trim()
-    )))
+    Ok(())
 }

@@ -14,7 +14,7 @@ mod tests;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use chrono::TimeZone;
+use chrono::{Offset, TimeZone};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
@@ -268,7 +268,9 @@ impl Usage {
             filter.model
         ])?;
         while let Some(row) = rows.next()? {
-            let reported: Option<f64> = row.get(10)?;
+            let reported = row
+                .get::<_, Option<f64>>(10)?
+                .filter(|cost| cost.is_finite() && *cost >= 0.0);
             let mut log = Log {
                 id: row.get(0)?,
                 agent: row.get(1)?,
@@ -303,7 +305,11 @@ impl Usage {
             let host_ms = log.timestamp.saturating_sub(filter.clock_offset);
             let day = chrono::DateTime::from_timestamp_millis(host_ms)
                 .and_then(|instant| {
-                    let date = instant.with_timezone(&zone).date_naive();
+                    let local = instant.with_timezone(&zone);
+                    let date = instant
+                        .naive_utc()
+                        .checked_add_offset(local.offset().fix())?
+                        .date();
                     (0..24)
                         .find_map(|hour| {
                             date.and_hms_opt(hour, 0, 0)
@@ -356,12 +362,12 @@ impl Usage {
 
 fn accumulate(counts: &mut Counts, log: &Log) {
     counts.requests += 1;
-    counts.input += log.input;
-    counts.output += log.output;
-    counts.cache_read += log.cache_read;
-    counts.cache_write += log.cache_write;
+    counts.input = counts.input.saturating_add(log.input);
+    counts.output = counts.output.saturating_add(log.output);
+    counts.cache_read = counts.cache_read.saturating_add(log.cache_read);
+    counts.cache_write = counts.cache_write.saturating_add(log.cache_write);
     if let Some(cost) = log.cost {
-        counts.cost += cost;
+        counts.cost = (counts.cost + cost).min(f64::MAX);
     } else {
         counts.unpriced_requests += 1;
     }

@@ -271,7 +271,9 @@ impl Files {
                 (next, Some(state), stale)
             }
             Request::Restore => {
-                let saved = saved.as_ref().expect("restore needs saved state");
+                let saved = saved
+                    .as_ref()
+                    .ok_or_else(|| Error::Internal("Restore state was not loaded".into()))?;
                 let sway = fs::read_to_string(&self.sway)?;
                 saved.check(&current, &config, &sway)?;
                 let before = session.output()?;
@@ -299,7 +301,11 @@ impl Files {
                 };
                 (next, next_state, false)
             }
-            Request::Status | Request::BrowserStatus => unreachable!(),
+            Request::Status | Request::BrowserStatus => {
+                return Err(Error::Internal(
+                    "A display status request cannot change files".into(),
+                ));
+            }
         };
         let next_profile = profile(&next, false)?;
         let inject = injection(&next_profile)?;

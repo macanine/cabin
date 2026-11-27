@@ -202,10 +202,17 @@ pub fn measure(
             result.detail = sample.detail;
         }
         ProxyTestKind::Download => {
+            let http_proxy = match ureq::Proxy::new(&url) {
+                Ok(proxy) => proxy,
+                Err(error) => {
+                    result.detail = format!("Could not configure the temporary proxy: {error}");
+                    return result;
+                }
+            };
             let agent = ureq::AgentBuilder::new()
                 .resolver(crate::ipv4::resolve)
                 .try_proxy_from_env(false)
-                .proxy(ureq::Proxy::new(&url).expect("generated loopback proxy address"))
+                .proxy(http_proxy)
                 .timeout_connect(DOWNLOAD_TIMEOUT)
                 .timeout(DOWNLOAD_TIMEOUT)
                 .redirects(0)

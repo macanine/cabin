@@ -2,7 +2,7 @@
 //!
 //! Commands are always argv arrays; nothing here goes through a shell.
 
-use std::io::Read;
+use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -111,24 +111,47 @@ impl Output {
 pub trait System: Send + Sync {
     fn run(&self, spec: &CommandSpec) -> Result<Output>;
 
+    fn run_cancellable(&self, spec: &CommandSpec, cancelled: &dyn Fn() -> bool) -> Result<Output> {
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let output = self.run(spec)?;
+        if cancelled() {
+            Err(Error::Cancelled)
+        } else {
+            Ok(output)
+        }
+    }
+
     /// Run and require exit code 0.
     fn check(&self, spec: &CommandSpec) -> Result<String> {
-        let output = self.run(spec)?;
-        if output.success() {
-            Ok(output.stdout)
-        } else {
-            Err(Error::Command {
-                message: format!(
-                    "`{}` failed{}",
-                    spec.display(),
-                    output
-                        .code
-                        .map(|code| format!(" with exit code {code}"))
-                        .unwrap_or_default()
-                ),
-                output: output.combined(),
-            })
-        }
+        command_stdout(spec, self.run(spec)?)
+    }
+
+    fn check_cancellable(
+        &self,
+        spec: &CommandSpec,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<String> {
+        command_stdout(spec, self.run_cancellable(spec, cancelled)?)
+    }
+}
+
+fn command_stdout(spec: &CommandSpec, output: Output) -> Result<String> {
+    if output.success() {
+        Ok(output.stdout)
+    } else {
+        Err(Error::Command {
+            message: format!(
+                "`{}` failed{}",
+                spec.display(),
+                output
+                    .code
+                    .map(|code| format!(" with exit code {code}"))
+                    .unwrap_or_default()
+            ),
+            output: output.combined(),
+        })
     }
 }
 
@@ -139,6 +162,24 @@ pub struct HostSystem {
 
 impl System for HostSystem {
     fn run(&self, spec: &CommandSpec) -> Result<Output> {
+        self.run_inner(spec, None)
+    }
+
+    fn run_cancellable(&self, spec: &CommandSpec, cancelled: &dyn Fn() -> bool) -> Result<Output> {
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+        self.run_inner(spec, Some(cancelled))
+    }
+}
+
+impl HostSystem {
+    fn run_inner(
+        &self,
+        spec: &CommandSpec,
+        cancelled: Option<&dyn Fn() -> bool>,
+    ) -> Result<Output> {
+        const POLL: Duration = Duration::from_millis(25);
         let (program, args) = spec
             .argv
             .split_first()
@@ -154,7 +195,8 @@ impl System for HostSystem {
         if let Some(cwd) = &spec.cwd {
             command.current_dir(cwd);
         }
-        if spec.timeout.is_some() {
+        let grouped = spec.timeout.is_some() || cancelled.is_some();
+        if grouped {
             command.process_group(0);
         }
         let started = Instant::now();
@@ -165,27 +207,59 @@ impl System for HostSystem {
                 Error::io(format!("start {program}"), error)
             }
         })?;
-        let stdout = capture(child.stdout.take(), spec.output_limit);
-        let stderr = capture(child.stderr.take(), spec.output_limit);
+        let pipes = (|| {
+            let stdout = capture(child.stdout.take(), spec.output_limit)?;
+            let stderr = capture(child.stderr.take(), spec.output_limit)?;
+            Ok::<_, io::Error>((stdout, stderr))
+        })();
+        let (stdout, stderr) = pipes.map_err(|error| {
+            if grouped {
+                stop_command(&mut child);
+            } else {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Error::io("start command output reader", error)
+        })?;
         let status = loop {
+            if cancelled.is_some_and(|cancelled| cancelled()) {
+                stop_command(&mut child);
+                return Err(Error::Cancelled);
+            }
             if let Some(status) = child.try_wait()? {
                 break status;
             }
             if spec.timeout.is_some_and(|limit| started.elapsed() >= limit) {
                 return Err(command_timeout(spec, &mut child));
             }
-            std::thread::sleep(Duration::from_millis(25));
+            std::thread::sleep(POLL);
         };
         let mut receive = |pipe: Receiver<Option<String>>| {
-            let captured = match spec.timeout {
-                Some(limit) => match pipe.recv_timeout(limit.saturating_sub(started.elapsed())) {
-                    Ok(captured) => captured,
-                    Err(RecvTimeoutError::Disconnected) => Some(String::new()),
-                    Err(RecvTimeoutError::Timeout) => {
+            let captured = loop {
+                if cancelled.is_some_and(|cancelled| cancelled()) {
+                    stop_command(&mut child);
+                    return Err(Error::Cancelled);
+                }
+                let remaining = spec
+                    .timeout
+                    .map(|limit| limit.saturating_sub(started.elapsed()));
+                let wait = if cancelled.is_some() {
+                    remaining.map_or(POLL, |remaining| remaining.min(POLL))
+                } else if let Some(remaining) = remaining {
+                    remaining
+                } else {
+                    break pipe.recv().unwrap_or_else(|_| Some(String::new()));
+                };
+                match pipe.recv_timeout(wait) {
+                    Ok(captured) => break captured,
+                    Err(RecvTimeoutError::Disconnected) => break Some(String::new()),
+                    Err(RecvTimeoutError::Timeout)
+                        if spec.timeout.is_some_and(|limit| started.elapsed() >= limit) =>
+                    {
                         return Err(command_timeout(spec, &mut child));
                     }
-                },
-                None => pipe.recv().unwrap_or_else(|_| Some(String::new())),
+                    Err(RecvTimeoutError::Timeout) => {}
+                }
             };
             captured.ok_or_else(|| Error::Command {
                 message: format!("`{}` exceeded its output limit", spec.display()),
@@ -203,9 +277,9 @@ impl System for HostSystem {
 fn capture(
     pipe: Option<impl Read + Send + 'static>,
     limit: Option<u64>,
-) -> Receiver<Option<String>> {
+) -> io::Result<Receiver<Option<String>>> {
     let (send, receive) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
+    std::thread::Builder::new().spawn(move || {
         let mut bytes = Vec::new();
         if let Some(mut pipe) = pipe {
             if let Some(limit) = limit {
@@ -219,20 +293,24 @@ fn capture(
             }
         }
         let _ = send.send(Some(String::from_utf8(bytes).unwrap_or_default()));
-    });
-    receive
+    })?;
+    Ok(receive)
 }
 
 fn command_timeout(spec: &CommandSpec, child: &mut Child) -> Error {
-    // A child that already exited can still have descendants holding its pipes.
-    // Timed commands run in a separate group so the deadline reaches those too.
-    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
-    let _ = child.kill();
-    let _ = child.wait();
+    stop_command(child);
     Error::Command {
         message: format!("`{}` timed out", spec.display()),
         output: String::new(),
     }
+}
+
+fn stop_command(child: &mut Child) {
+    // A child that already exited can still have descendants holding its pipes.
+    // Timed and cancellable commands run in a separate group to reach those too.
+    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(test)]
@@ -348,5 +426,19 @@ mod tests {
         let result =
             system.run(&CommandSpec::new(["sleep", "5"]).timeout(Duration::from_millis(100)));
         assert!(matches!(result, Err(Error::Command { .. })));
+    }
+
+    #[test]
+    fn cancellable_command_checks_inherited_output_pipes() {
+        let system = HostSystem {
+            path: "/usr/bin:/bin".into(),
+        };
+        let started = Instant::now();
+        let result = system.run_cancellable(
+            &CommandSpec::new(["/bin/sh", "-c", "sleep 5 & exit 0"]),
+            &|| started.elapsed() >= Duration::from_millis(100),
+        );
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 }
