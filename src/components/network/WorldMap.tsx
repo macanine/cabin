@@ -238,7 +238,7 @@ export function WorldMap({ links, points, selected, onSelect, onDismiss, hopDeta
   const [minute, setMinute] = useState(() => Math.floor(Date.now() / 60_000));
   const [theme, setTheme] = useState(0);
   const [popup, setPopup] = useState<HTMLDivElement | null>(null);
-  const [popupSize, setPopupSize] = useState({ width: 216, height: 125 });
+  const [popupSize, setPopupSize] = useState({ width: 272, height: 140 });
   const positions = useMemo(() => mapPointPositions(points, size.w, size.h), [points, size.w, size.h]);
 
   useEffect(() => {
@@ -339,7 +339,7 @@ export function WorldMap({ links, points, selected, onSelect, onDismiss, hopDeta
           : { position: "left" as const, crossAxis: 0 };
         const boundary = canvas.current ?? undefined;
         return (
-          <Popover key={point.key} opened={selected === point.key} onChange={(opened) => opened ? onSelect?.(point.key) : onDismiss?.()} position={placement.position} offset={{ mainAxis: 8, crossAxis: placement.crossAxis }} middlewares={{ flip: { boundary, padding: 4 }, shift: { boundary, padding: 4 } }} preventPositionChangeWhenVisible={false} withinPortal withArrow returnFocus shadow="md" width={216}>
+          <Popover key={point.key} opened={selected === point.key} onChange={(opened) => opened ? onSelect?.(point.key) : onDismiss?.()} position={placement.position} offset={{ mainAxis: 8, crossAxis: placement.crossAxis }} middlewares={{ flip: { boundary, padding: 4 }, shift: { boundary, padding: 4 } }} preventPositionChangeWhenVisible={false} withinPortal withArrow returnFocus shadow="md" width={272}>
             <Popover.Target>{marker}</Popover.Target>
             <Popover.Dropdown className="net-map-popover" ref={selected === point.key ? setPopup : undefined}>
               {selected === point.key ? hopDetail : null}

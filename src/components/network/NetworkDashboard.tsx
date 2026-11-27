@@ -248,14 +248,26 @@ export function NetworkDashboard() {
       <div className="net-card net-where">
         <div className="net-stage">
           <WorldMap links={links} points={points} selected={selected} draft={dirty} onSelect={selectPoint}
-            onDismiss={() => setSelection(panelPoint)} hopDetail={hasHopPopover && <PointCard info={pointInfo(selected)} />} />
+            onDismiss={() => setSelection(panelPoint)} hopDetail={hasHopPopover && <PointCard compact info={pointInfo(selected)} />} />
           <div className="net-map-status" aria-live="polite">
             {dirty && <span>Draft path</span>}
             {unmapped > 0 && <span>{unmapped} {unmapped === 1 ? "hop location" : "hop locations"} unknown</span>}
           </div>
         </div>
         <div className="net-where-point">
-          <PointCard info={pointInfo(footerPoint)} />
+          <PointCard
+            info={pointInfo(footerPoint)}
+            actions={
+              <div className="net-point-switch" role="tablist" aria-label="Inspect route endpoint">
+                <button type="button" role="tab" aria-selected={footerPoint === "exit"} onClick={() => selectPoint("exit")}>
+                  Exit
+                </button>
+                <button type="button" role="tab" aria-selected={footerPoint === "origin"} onClick={() => selectPoint("origin")}>
+                  This computer
+                </button>
+              </div>
+            }
+          />
         </div>
       </div>
 

@@ -2,7 +2,7 @@ import { Tooltip } from "@mantine/core";
 import {
   IconAlertTriangle, IconCheck, IconCopy, IconEye, IconEyeOff, IconMoon, IconSun,
 } from "@tabler/icons-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { clipboard } from "../../services/ipc/dialogs";
 import { daylight, maskIp, NEXT_VISIBILITY, type IpVisibility } from "../../lib/geo";
 import { Flag } from "../Flag";
@@ -40,24 +40,26 @@ function Address({ ip, privacy }: { ip: string; privacy: boolean }) {
   }
 
   return (
-    <span className="flex min-w-0 items-center gap-1">
-      <span className="net-ip-value mono" aria-label={visibility === "shown" ? ip : "Address, hidden"}>
+    <span className="flex w-full min-w-0 items-center gap-1">
+      <span className="net-ip-value mono" title={visibility === "shown" ? ip : undefined} aria-label={visibility === "shown" ? ip : "Address, hidden"}>
         {maskIp(ip, visibility).map((part, index) => (
           <span key={index} className={part.blur ? "net-blur" : undefined}>{part.text}</span>
         ))}
       </span>
-      {privacy && (
-        <Tooltip label={VISIBILITY_LABEL[visibility]} openDelay={300}>
-          <button className="net-icon-button" onClick={cycle} aria-label={VISIBILITY_LABEL[visibility]}>
-            {visibility === "shown" ? <IconEye size={14} /> : <IconEyeOff size={14} />}
+      <span className="ml-auto flex shrink-0 items-center gap-0.5">
+        {privacy && (
+          <Tooltip label={VISIBILITY_LABEL[visibility]} openDelay={300}>
+            <button type="button" className="net-icon-button" onClick={cycle} aria-label={VISIBILITY_LABEL[visibility]}>
+              {visibility === "shown" ? <IconEye size={14} /> : <IconEyeOff size={14} />}
+            </button>
+          </Tooltip>
+        )}
+        <Tooltip label={copied ? "Copied" : "Copy the address"} openDelay={200}>
+          <button type="button" className="net-icon-button" aria-label="Copy the address" onClick={() => void clipboard.write(ip).then(() => setCopied(true)).catch(() => undefined)}>
+            {copied ? <IconCheck size={13} className="text-ok" /> : <IconCopy size={13} />}
           </button>
         </Tooltip>
-      )}
-      <Tooltip label={copied ? "Copied" : "Copy the address"} openDelay={200}>
-        <button className="net-icon-button" aria-label="Copy the address" onClick={() => void clipboard.write(ip).then(() => setCopied(true)).catch(() => undefined)}>
-          {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
-        </button>
-      </Tooltip>
+      </span>
     </span>
   );
 }
@@ -103,8 +105,8 @@ export interface PointInfo {
   classification?: { label: string; detail: string | null };
 }
 
-/** One labelled fact; every fact shares the label column so values align. */
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+/** One labelled fact; label sits above the value so addresses and networks never crush. */
+function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="net-point-fact">
       <dt>{label}</dt>
@@ -114,42 +116,53 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
 }
 
 /**
- * One point of the route (this Mac, a node, the exit): the place and its IP
- * type on top, then aligned facts (address, network and AS, local time).
+ * One point of the route (this computer, a node, the exit): full-width
+ * header with location, IP type and optional view switcher, a clean inline
+ * alert when refresh fails, then a responsive multi-column metric strip.
  */
-export function PointCard({ info }: { info: PointInfo }) {
+export function PointCard({ info, compact = false, actions }: {
+  info: PointInfo;
+  compact?: boolean;
+  actions?: ReactNode;
+}) {
   const failed = Boolean(info.error && !info.ip);
+  const hasFacts = Boolean(info.ip || info.isp || info.place);
   return (
-    <div className={`net-point${failed ? " failed" : ""}`}>
-      <div className="flex min-w-0 items-center gap-3">
-        <span className="net-flag" aria-hidden><Flag code={info.flag} size={16} pending={info.loading} /></span>
-        {info.loading && <span className="sr-only" role="status">Refreshing location</span>}
-        <div className="min-w-0 flex-1">
-          <div className="net-point-title">{info.title}</div>
-          <div className="truncate text-xs text-muted">{info.sub}</div>
+    <div className={`net-point${compact ? " compact" : ""}${failed ? " failed" : ""}`}>
+      <div className="net-point-head">
+        <div className="net-point-id">
+          <span className="net-flag" aria-hidden><Flag code={info.flag} size={compact ? 14 : 17} pending={info.loading} /></span>
+          {info.loading && <span className="sr-only" role="status">Refreshing location</span>}
+          <div className="min-w-0 flex-1">
+            <div className="net-point-heading">
+              <strong className="net-point-title" title={info.title}>{info.title}</strong>
+              {info.classification && (
+                <Tooltip label={info.classification.detail ? `Source: ${info.classification.detail}` : "IP type"} openDelay={300} disabled={!info.classification.detail}>
+                  <span className="net-point-badge">{info.classification.label}</span>
+                </Tooltip>
+              )}
+            </div>
+            <div className="net-point-sub" title={info.sub}>{info.sub}</div>
+          </div>
         </div>
-        {info.classification && (
-          <Tooltip label={info.classification.detail ? `Source: ${info.classification.detail}` : "IP type"} openDelay={300} disabled={!info.classification.detail}>
-            <span className="net-point-badge">{info.classification.label}</span>
-          </Tooltip>
-        )}
+        {actions && <div className="net-point-actions">{actions}</div>}
       </div>
       {info.error && !info.loading && (
         <div className="net-exit-error" role="alert">
-          <IconAlertTriangle size={13} />
+          <IconAlertTriangle size={14} />
           <span>{info.error}</span>
         </div>
       )}
-      {(info.ip || info.isp || info.place) && (
+      {hasFacts && (
         <dl className="net-point-facts">
           {info.ip ? (
             <Fact label="Address"><Address key={info.ip} ip={info.ip} privacy={info.privacy} /></Fact>
           ) : null}
           {info.isp && (
             <Fact label="Network">
-              <span className="flex min-w-0 items-center gap-2">
-                <span className="truncate" title={info.isp}>{info.isp}</span>
-                {info.asn != null && <span className="mono shrink-0 text-xs text-faint">AS{info.asn}</span>}
+              <span className="net-point-network">
+                <span className="net-point-isp" title={info.isp}>{info.isp}</span>
+                {info.asn != null && <span className="net-point-asn mono">AS{info.asn}</span>}
               </span>
             </Fact>
           )}
