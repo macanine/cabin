@@ -136,6 +136,86 @@ export function selectNetworkSummary(state: AppState): NetSummary {
   return summary;
 }
 
+export interface NetGuidance {
+  headline: string;
+  explanation: string;
+  tip?: string;
+}
+
+/** Plain-language explanation of the current network gate state so blocked users know why and what to do. */
+export function networkGuidance(status: NetworkStatus | null, summary: NetSummary): NetGuidance {
+  if (!status || !status.available) {
+    return {
+      headline: "No managed gateway",
+      explanation: "This machine doesn’t have a managed network gateway configured.",
+    };
+  }
+  if (summary.tone === "busy") {
+    return {
+      headline: "Checking the connection…",
+      explanation: "Verifying the outbound route, exit location, and VM environment before opening internet access.",
+    };
+  }
+  if (status.paused) {
+    return {
+      headline: "Internet access is paused",
+      explanation: "You paused outbound traffic for the VM. Agents and Chrome inside Ubuntu cannot reach the web until you resume.",
+    };
+  }
+  if (summary.tone === "ok") {
+    return {
+      headline: "Internet access verified",
+      explanation: "The VM’s route, public exit, and environment passed verification. Outbound traffic is open.",
+    };
+  }
+  if (status.exitPolicyError) {
+    return {
+      headline: "Internet blocked: public IP changed",
+      explanation: "Cabin locked the VM’s internet because your public exit IP changed while Static IP protection is on. This prevents agents and Chrome from silently appearing from an unexpected location.",
+      tip: "Switched Wi-Fi, VPN, or proxy node on purpose? Approve the new exit. If your IP rotates often, switch Exit IP protection to Dynamic residential IP.",
+    };
+  }
+  if (status.error || !status.running) {
+    return {
+      headline: "Network gateway isn’t running",
+      explanation: "The local gateway process that bridges VM traffic to the internet stopped unexpectedly.",
+      tip: "Try checking again, or restart the machine in Machine settings if the gateway does not recover.",
+    };
+  }
+  const id = summary.blocker?.id;
+  if (id === "timezone" || id === "language") {
+    return {
+      headline: "Internet blocked: VM region mismatch",
+      explanation: "Ubuntu’s time zone or language doesn’t match your current exit location. Align it in VM region settings (or turn on Follow exit), then check again.",
+    };
+  }
+  if (id === "browser" || id === "browserLive") {
+    return {
+      headline: "Internet blocked: Chrome environment out of sync",
+      explanation: "Chrome’s configured or running profile doesn’t match the VM’s current exit region. Sync or restart Chrome in Browser environment to reopen internet access.",
+    };
+  }
+  if (id === "route" || id === "dns" || id === "transport") {
+    return {
+      headline: "Internet blocked: connection failed",
+      explanation: "The VM couldn’t reach the internet through the current route. Check your host network, VPN, or proxy nodes, then run a check again.",
+    };
+  }
+  if (id === "exit") {
+    return {
+      headline: "Internet blocked: exit couldn’t be verified",
+      explanation: summary.blocker?.title === "Public IP addresses differ"
+        ? "The VM’s exit IP didn’t match the host verification check. Review your VPN or proxy route, then check again."
+        : "Cabin couldn’t confirm the VM’s public exit location. Review your route or check again in a moment.",
+    };
+  }
+  return {
+    headline: summary.blocker ? `Internet blocked: ${blockingReason(summary.blocker)}` : "Internet access couldn’t be verified",
+    explanation: "Outbound VM traffic stays locked until the network check passes.",
+    tip: "Open diagnostics below to see which check failed, then run Check again.",
+  };
+}
+
 const IP_TYPES: Record<NonNullable<GeoInfo["ipType"]>, string> = {
   mobile: "Mobile network",
   residential: "Residential",

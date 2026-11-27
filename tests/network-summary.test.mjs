@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { blockingChecks, checkFix, exitIpTypeLabel, networkSummary, selectNetworkSummary, splitChecks } from "../src/lib/networkSummary.ts";
+import { blockingChecks, checkFix, exitIpTypeLabel, networkGuidance, networkSummary, selectNetworkSummary, splitChecks } from "../src/lib/networkSummary.ts";
 
 const check = (id, status, required = true) => ({
   id, title: id, category: "environment", status, required, summary: "", evidence: [],
@@ -119,4 +119,21 @@ test("an open Chrome on other values blocks; both browser checks open its panel"
   assert.deepEqual(checkFix(check("browser", "fail")), { label: "Open browser environment", target: "browser" });
   // A closed or sleeping Chrome is skipped: nothing to fix.
   assert.equal(checkFix(check("browserLive", "skipped", false)), null);
+});
+
+test("networkGuidance explains static exit IP blocks, pauses, region mismatches, and open gates", () => {
+  const ipChanged = status({ exitPolicyError: "Static exit changed from 1.1.1.1 to 2.2.2.2." });
+  const ipGuide = networkGuidance(ipChanged, networkSummary(ipChanged, true));
+  assert.match(ipGuide.headline, /public IP changed/i);
+  assert.match(ipGuide.explanation, /Static IP protection/i);
+  assert.match(ipGuide.tip ?? "", /Dynamic residential IP/i);
+
+  const paused = status({ paused: true, gate: "open" });
+  assert.match(networkGuidance(paused, networkSummary(paused, true)).headline, /paused/i);
+
+  const tz = status({ report: report([check("route", "pass"), check("timezone", "fail")]) });
+  assert.match(networkGuidance(tz, networkSummary(tz, true)).headline, /region mismatch/i);
+
+  const open = status({ gate: "open" });
+  assert.match(networkGuidance(open, networkSummary(open, true)).headline, /verified/i);
 });

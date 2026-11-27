@@ -23,6 +23,90 @@
   overflow: hidden;
 }
 .net-card + .net-card { margin-top: 14px; }
+/* Clear section headers so every block on Settings → Network explains its purpose. */
+.net-section { display: grid; gap: 8px; min-width: 0; }
+.net-section-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 16px; padding-inline: 2px; }
+.net-section-head h3 { margin: 0; font-size: var(--text-md); font-weight: 600; color: var(--text); }
+.net-section-head p { margin: 2px 0 0; color: var(--muted); font-size: var(--text-xs); line-height: 1.4; }
+
+/* Guided blocked / paused / verified status card (NetworkGatePanel & NetworkDashboard). */
+.net-guide-card {
+  --guide-tone: var(--muted);
+  display: grid;
+  gap: 10px;
+  padding: 15px 16px;
+  border: 1px solid color-mix(in srgb, var(--guide-tone) 30%, var(--border));
+  border-radius: var(--card-radius);
+  background: color-mix(in srgb, var(--guide-tone) 6%, var(--surface));
+}
+.net-guide-card.ok { --guide-tone: var(--ok); }
+.net-guide-card.info { --guide-tone: var(--info); }
+.net-guide-card.warn { --guide-tone: var(--warn); }
+.net-guide-card.bad { --guide-tone: var(--bad); }
+.net-guide-head { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.net-guide-icon {
+  display: grid;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--guide-tone) 14%, transparent);
+  color: var(--guide-tone);
+}
+.net-guide-detail {
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--guide-tone) 18%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* Calm direct-mode path strip (shown when proxy routing is off). */
+.net-direct-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  background: color-mix(in srgb, var(--bg) 55%, var(--surface));
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.net-direct-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.net-status-badge {
+  display: grid;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--hover);
+  color: var(--muted);
+}
+.net-status-badge.ok {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+  color: var(--ok);
+}
+.net-status-badge.busy {
+  background: color-mix(in srgb, var(--info) 14%, transparent);
+  color: var(--info);
+}
+
 /* The answer first: is the internet open, and over what. */
 .net-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 16px; }
 .net-head-copy { display: grid; flex: 1 1 200px; gap: 1px; min-width: 0; }

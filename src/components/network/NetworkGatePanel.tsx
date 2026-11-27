@@ -1,8 +1,11 @@
-import { Button, Switch } from "@mantine/core";
-import { IconAlertTriangle, IconArrowRight, IconCheck, IconChevronRight, IconHelpCircle } from "@tabler/icons-react";
+import { Button, Loader, Switch } from "@mantine/core";
+import {
+  IconAlertTriangle, IconArrowRight, IconCheck, IconChevronRight, IconHelpCircle,
+  IconPlayerPause, IconShieldCheck, IconShieldLock,
+} from "@tabler/icons-react";
 import { useState, type ReactNode } from "react";
 import { attempt } from "../../lib/operations";
-import { blockingReason, checkFix, selectNetworkSummary, splitChecks, type FixTarget } from "../../lib/networkSummary";
+import { checkFix, networkGuidance, selectNetworkSummary, splitChecks, type FixTarget } from "../../lib/networkSummary";
 import type { NetworkCheckItem, NetworkCheckReport, NetworkCheckStatus, NetworkStatus } from "../../services/ipc/generated/core";
 import { confirmAction } from "../../services/ipc/dialogs";
 import { networkIpc } from "../../services/ipc/network";
@@ -145,40 +148,51 @@ export function NetworkGatePanel({ status, onRemediate, history }: {
     );
   }
 
-  const title = checking ? "Checking the connection…"
-    : status.paused ? "Internet access paused"
-      : summary.tone === "ok" ? "Internet access verified"
-        : summary.tone === "off" ? "No managed gateway"
-          : status.exitPolicyError ? "Internet blocked: the approved exit changed"
-            : status.error || !status.running ? "Network gateway unavailable"
-              : exitProblem && summary.blocker?.title === "Public IP addresses differ" ? "Internet blocked: the static exit didn’t match"
-                : summary.blocker ? `Internet blocked: ${blockingReason(summary.blocker)}`
-                  : "Internet access couldn’t be verified";
+  const guidance = networkGuidance(status, summary);
+  const bannerTone = checking ? "info" : status.paused ? "warn" : summary.tone === "ok" ? "ok" : summary.tone === "bad" ? "bad" : "off";
+  const detailLine = status.exitPolicyError ?? (summary.tone === "bad" && summary.detail !== guidance.headline ? summary.detail : null);
 
   return (
     <section className="grid gap-4" aria-label="Network check">
-      <div className="grid gap-3">
-        <div role="status">
-          <h2 className="m-0 text-lg leading-tight font-semibold">{title}</h2>
-        </div>
-        {!checking && status.available && (status.running || status.paused) && (
-          <div className="flex flex-wrap items-center gap-2">
-            {status.paused ? <Button size="sm" disabled={!canChange} onClick={() => void run("pause")}>Resume internet</Button>
-              : status.exitPolicyError ? <>
-                <Button size="sm" onClick={() => onRemediate("route")}>Review route</Button>
-                <Button size="sm" variant="default" disabled={!canVerify} onClick={() => void run("accept")}>Approve new exit</Button>
-              </> : <>
-                {fix && <Button size="sm" onClick={() => onRemediate(fix.target)}>{exitProblem ? "Review IP settings" : fix.label}</Button>}
-                <Button size="sm" variant={fix || summary.tone === "ok" ? "subtle" : "filled"} disabled={!canVerify} onClick={() => void run("verify")}>Check again</Button>
-                {summary.tone === "ok" && <Button size="sm" variant="subtle" disabled={!canChange} onClick={() => void run("pause")}>Pause internet</Button>}
-              </>}
+      <div className={`net-guide-card ${bannerTone}`} role="status">
+        <div className="net-guide-head">
+          <span className="net-guide-icon" aria-hidden>
+            {checking ? <Loader size={14} /> : status.paused ? <IconPlayerPause size={16} /> : summary.tone === "ok" ? <IconShieldCheck size={16} /> : <IconShieldLock size={16} />}
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="m-0 text-[15px] leading-snug font-semibold text-fg">{guidance.headline}</h2>
+            <p className="m-0 mt-1 text-sm leading-relaxed text-muted">{guidance.explanation}</p>
           </div>
+        </div>
+        {detailLine && !checking && (
+          <div className="net-guide-detail mono">{detailLine}</div>
+        )}
+        {!checking && status.available && (status.running || status.paused) && (
+          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+            {status.paused ? (
+              <Button size="xs" disabled={!canChange} loading={busy === "pause"} onClick={() => void run("pause")}>Resume internet</Button>
+            ) : status.exitPolicyError ? (
+              <>
+                <Button size="xs" disabled={!canVerify} onClick={() => void run("accept")}>Approve new exit</Button>
+                <Button size="xs" variant="default" onClick={() => onRemediate("route")}>Review route &amp; IP policy</Button>
+              </>
+            ) : (
+              <>
+                {fix && <Button size="xs" onClick={() => onRemediate(fix.target)}>{exitProblem ? "Review route" : fix.label}</Button>}
+                <Button size="xs" variant={fix || summary.tone === "ok" ? "default" : "filled"} disabled={!canVerify} onClick={() => void run("verify")}>Check again</Button>
+                {summary.tone === "ok" && <Button size="xs" variant="subtle" color="gray" disabled={!canChange} loading={busy === "pause"} onClick={() => void run("pause")}>Pause internet</Button>}
+              </>
+            )}
+          </div>
+        )}
+        {guidance.tip && !checking && (
+          <p className="m-0 text-xs leading-relaxed text-faint">{guidance.tip}</p>
         )}
       </div>
 
-      <details className="group border-t border-line pt-2.5">
+      <details className="group border-t border-line pt-2.5" open={summary.tone === "bad" && !status.exitPolicyError && Boolean(report)}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-md px-0.5 py-1 text-sm font-medium text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
-          Diagnostics and settings <IconChevronRight size={15} className="group-open:rotate-90" />
+          Diagnostics and settings <IconChevronRight size={15} className="transition-transform duration-150 group-open:rotate-90" />
         </summary>
         <div className="mt-3 grid gap-3">
           {status.error && <RecoveryPanel compact message={status.error} />}

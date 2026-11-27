@@ -7,6 +7,7 @@ import {
   Divider,
   Group,
   Loader,
+  Menu,
   Modal,
   Select,
   Stack,
@@ -19,6 +20,7 @@ import {
   IconFileImport,
   IconFileExport,
   IconKey,
+  IconPlus,
   IconRotateClockwise,
   IconTrash,
 } from "@tabler/icons-react";
@@ -286,58 +288,45 @@ export function CodexAccountsPanel({ status, hideLimits = false }: { status: Age
 
   return (
     <div className="codex-accounts">
-      <Group justify="space-between" align="flex-start">
+      <Group justify="space-between" align="center" gap="sm">
         <div>
           <Text fw={600} size="sm">Saved accounts</Text>
           <Text size="xs" c="dimmed" mt={2}>
-            Switch between Codex logins. Switching is blocked while a Codex session is running.
+            Switch between Codex logins while no Codex session is running.
           </Text>
         </div>
-        <Group gap="xs">
-          <Button
-            size="xs"
-            variant="default"
-            leftSection={<IconDownload size={14} />}
-            disabled={!status.authenticated || busy != null}
-            onClick={saveCurrent}
-          >
-            Save current
-          </Button>
-          <Button
-            size="xs"
-            leftSection={<IconFileImport size={14} />}
-            disabled={busy != null}
-            onClick={importFile}
-          >
-            Import file
-          </Button>
-          <Button
-            size="xs"
-            variant="subtle"
-            leftSection={<IconKey size={14} />}
-            disabled={busy != null}
-            aria-expanded={pasteOpen}
-            aria-controls={pasteOpen ? "codex-import-paste" : undefined}
-            onClick={() => {
-              setPasteOpen(!pasteOpen);
-              setPaste("");
-            }}
-          >
-            Paste credentials
-          </Button>
-        </Group>
+        <Menu position="bottom-end" withinPortal shadow="md" width={210}>
+          <Menu.Target>
+            <Button size="xs" variant="default" leftSection={<IconPlus size={14} />} disabled={busy != null}>
+              Add account
+            </Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item leftSection={<IconDownload size={14} />} disabled={!status.authenticated} onClick={() => void saveCurrent()}>
+              Save current login
+            </Menu.Item>
+            <Menu.Item leftSection={<IconFileImport size={14} />} onClick={() => void importFile()}>
+              Import file…
+            </Menu.Item>
+            <Menu.Item leftSection={<IconKey size={14} />} onClick={() => { setPasteOpen(!pasteOpen); setPaste(""); }}>
+              {pasteOpen ? "Hide paste box" : "Paste credentials JSON"}
+            </Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
       </Group>
-
-      <Checkbox size="xs" mt="sm" checked={activateImport} onChange={(event) => setActivateImport(event.currentTarget.checked)} label="Switch to the first imported account" />
 
       {pasteOpen && (
         <form id="codex-import-paste" className="mt-3 grid gap-3 rounded-lg border border-line bg-hover p-3"
           onSubmit={(event) => { event.preventDefault(); void submitPaste(); }}>
           <Textarea label="Credential JSON" autoFocus value={paste} onChange={(event) => setPaste(event.currentTarget.value)}
-            description="Accepts Codex auth.json, a CLIProxyAPI Codex auth file, or a Sub2API export. Cabin stores credentials privately in the VM."
+            description="Accepts Codex auth.json, a CLIProxyAPI Codex auth file, or a Sub2API export. Stored privately in the VM."
             autosize minRows={3} maxRows={10} spellCheck={false} autoComplete="off" />
-          <Group justify="flex-end">
-            <Button type="submit" size="xs" loading={busy === "paste"} disabled={!paste.trim() || busy != null}>Import</Button>
+          <Group justify="space-between" align="center">
+            <Checkbox size="xs" checked={activateImport} onChange={(event) => setActivateImport(event.currentTarget.checked)} label="Activate after import" />
+            <Group gap="xs">
+              <Button size="xs" variant="default" onClick={() => setPasteOpen(false)}>Cancel</Button>
+              <Button type="submit" size="xs" loading={busy === "paste"} disabled={!paste.trim() || busy != null}>Import</Button>
+            </Group>
           </Group>
         </form>
       )}

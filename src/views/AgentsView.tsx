@@ -1,7 +1,9 @@
-import { Button, Loader, SegmentedControl, Tooltip } from "@mantine/core";
-import { IconDownload, IconPlug, IconRefresh, IconSparkles, IconTerminal2 } from "@tabler/icons-react";
+import { ActionIcon, Button, Loader, Menu, Tooltip } from "@mantine/core";
+import {
+  IconChevronRight, IconDots, IconDownload, IconPlug, IconRefresh, IconSparkles, IconTerminal2,
+} from "@tabler/icons-react";
 import { useCallback, useRef, useState } from "react";
-import { AcpRuntimePanel } from "../components/AcpRuntimePanel";
+import { AcpRuntimePanel, runtimeSummary } from "../components/AcpRuntimePanel";
 import { AGENT_KINDS } from "../components/AgentPicker";
 import { useClaudeUsage } from "../components/ClaudeAccount";
 import { AgentLogo, AGENT_NAMES } from "../components/common";
@@ -13,7 +15,7 @@ import { forecastLimit, formatSpan, shortLimitLabel, type LimitForecast, type Li
 import { PaceMeter } from "../components/PaceMeter";
 import { BurnChart, burnable } from "../components/BurnChart";
 import { useMinute } from "../lib/useNow";
-import { AGENT_SECTIONS, agentState, attentionCount, currentClaudeAccount, defaultSection, nodeProblem, type AgentSection, type AgentState } from "../lib/agentsHub";
+import { agentState, attentionCount, currentClaudeAccount, nodeProblem, type AgentSection, type AgentState } from "../lib/agentsHub";
 import { attempt, runOperation } from "../lib/operations";
 import { useAutoRefresh } from "../lib/useAutoRefresh";
 import { agentsIpc } from "../services/ipc/agents";
@@ -24,6 +26,14 @@ import { nodeIpc } from "../services/ipc/node";
 import { useApp } from "../state/store";
 import { uiActions } from "../state/ui";
 import { AgentAccount, PROVIDER_NAMES } from "./agents/AgentAccount";
+
+const AGENT_BLURBS: Record<AgentKind, string> = {
+  claude: "Anthropic’s coding agent CLI with Claude.ai subscription or API billing.",
+  codex: "OpenAI’s coding agent CLI with multi-account switching and quota tracking.",
+  opencode: "Open-source multi-provider coding agent running via native ACP.",
+  pi: "Lightweight extensible coding agent CLI with custom provider support.",
+  antigravity: "Google’s agentic coding CLI with live model and thinking controls.",
+};
 
 function useAgentSetup() {
   const [node, setNode] = useState<NodeState | null>(null);
@@ -66,7 +76,6 @@ function useAgentSetup() {
 type Setup = ReturnType<typeof useAgentSetup>;
 
 type Window = LimitWindow & { windowMinutes?: number | null };
-/** `scope` names the agent and account, so recorded history never mixes accounts. */
 type Limits = { windows: Window[]; plan: string | null; scope: string };
 
 function useAgentLimits(agents: AgentStatus[], enabled: boolean): Partial<Record<AgentKind, Limits | null>> {
@@ -115,7 +124,6 @@ export function AgentsView({ agent, section }: { agent?: AgentKind; section?: Ag
   return <MachineGate><AgentsContent selected={agent} section={section} /></MachineGate>;
 }
 
-/** The agent to open on when none was asked for: one that needs you, else the first installed. */
 function firstAgent(agents: AgentStatus[]): AgentKind {
   const by = (test: (agent: AgentStatus) => boolean) => AGENT_KINDS.find((kind) => agents.some((agent) => agent.kind === kind && test(agent)));
   return by((agent) => agent.installed && ["warn", "bad"].includes(agentState(agent).tone)) ?? by((agent) => agent.installed) ?? AGENT_KINDS[0];
@@ -124,34 +132,16 @@ function firstAgent(agents: AgentStatus[]): AgentKind {
 const show = (agent: AgentKind, section?: AgentSection) => uiActions.navigate({ kind: "agents", agent, section });
 const LEFT = (forecast: LimitForecast) => Math.max(0, Math.round(100 - forecast.used));
 
-const PILL_TONE: Record<AgentState["tone"], string> = {
-  ok: "ok", info: "info", warn: "warn", bad: "bad", off: "",
+const DOT: Record<AgentState["tone"], string> = {
+  ok: "bg-ok", info: "bg-info", warn: "bg-warn", bad: "bg-bad", off: "bg-faint/45",
 };
 
-/** Compact remaining-quota bars inside each top overview card. */
-function CardMeters({ windows }: { windows: Window[] }) {
-  const now = useMinute();
-  return (
-    <div className="ag-card-meters">
-      {windows.slice(0, 2).map((window) => {
-        const forecast = forecastLimit(window, now);
-        const label = shortLimitLabel(window.label);
-        return (
-          <div key={window.label} className="ag-card-meter" data-tone={forecast.tone} title={`${label}: ${LEFT(forecast)}% left · ${forecast.text}`}>
-            <span className="ag-card-meter-label">{label.replace("Weekly", "Week")}</span>
-            <PaceMeter forecast={forecast} size="sm" label={`${label} ${LEFT(forecast)}% left`} />
-            <span className="ag-card-meter-value">{LEFT(forecast)}%</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 /**
- * Single-canvas Agents control center: a responsive 5-card overview deck on top
- * (all agents, versions and live quotas at one glance), followed by the focused
- * agent's actions, live burn charts, account controls and runtime setup.
+ * Calm, zero-duplication Agents workspace:
+ * 1) One lightweight horizontal agent bar at the top (logo + name + status dot).
+ * 2) One focused, spacious single-column canvas below where every fact appears
+ *    exactly once (header with single primary action, live plan limits if any,
+ *    account controls, and compact runtime/extensions disclosures).
  */
 function AgentsContent({ selected, section }: { selected?: AgentKind; section?: AgentSection }) {
   const agents = useApp((state) => state.agents);
@@ -175,20 +165,39 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
           </>
         ) : undefined}
       >
-        <Button
-          size="xs"
-          variant="default"
-          leftSection={<IconRefresh size={14} />}
-          disabled={setup.installing != null}
-          loading={setup.checking}
-          onClick={() => void setup.check()}
-        >
-          Refresh
-        </Button>
+        <Tooltip label="Refresh agent status" openDelay={300}>
+          <ActionIcon size="md" variant="subtle" color="gray" aria-label="Refresh agent status"
+            disabled={setup.installing != null} loading={setup.checking} onClick={() => void setup.check()}>
+            <IconRefresh size={16} />
+          </ActionIcon>
+        </Tooltip>
       </ViewHeader>
+
       <div className="ag-page">
-        <div className="ag-inner">
-          {setup.checkError && <p className="callout warn m-0" role="status">Couldn’t check agent status. Select Refresh to try again.</p>}
+        <div className="ag-shell">
+          <nav className="ag-bar" aria-label="Agents">
+            {AGENT_KINDS.map((entry) => {
+              const status = agents.find((agent) => agent.kind === entry);
+              const state = agentState(status);
+              const active = entry === kind;
+              return (
+                <button
+                  key={entry}
+                  type="button"
+                  className="ag-pill press"
+                  aria-current={active ? "page" : undefined}
+                  data-installed={status?.installed ? "true" : "false"}
+                  onClick={() => show(entry)}
+                >
+                  <AgentLogo agent={entry} size={17} />
+                  <span>{AGENT_NAMES[entry]}</span>
+                  <span className={`ag-pill-dot ${status ? DOT[state.tone] : "bg-faint/40"}`} title={status ? state.label : "Checking…"} aria-hidden />
+                </button>
+              );
+            })}
+          </nav>
+
+          {setup.checkError && <p className="callout warn m-0" role="status">Couldn’t check agent status. Refresh to retry.</p>}
           {setup.problem && (
             <div className="callout warn flex flex-wrap items-center justify-between gap-2">
               <span>{setup.problem}</span>
@@ -196,53 +205,10 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
             </div>
           )}
 
-          <nav className="ag-deck stagger" aria-label="Agents">
-            {AGENT_KINDS.map((entry) => {
-              const status = agents.find((agent) => agent.kind === entry);
-              const state = agentState(status);
-              const active = entry === kind;
-              const entryLimits = limits[entry];
-              return (
-                <button
-                  key={entry}
-                  type="button"
-                  className="ag-card press"
-                  aria-current={active ? "true" : undefined}
-                  data-installed={status?.installed ? "true" : "false"}
-                  onClick={() => show(entry)}
-                >
-                  <div className="ag-card-top">
-                    <span className="ag-card-logo"><AgentLogo agent={entry} size={20} /></span>
-                    <span className={`pill ag-card-pill ${status ? PILL_TONE[state.tone] : ""}`}>
-                      {status ? state.label : "Checking…"}
-                    </span>
-                  </div>
-                  <div className="ag-card-name">
-                    <strong>{AGENT_NAMES[entry]}</strong>
-                    <span>
-                      {status?.version ? `v${status.version}` : PROVIDER_NAMES[entry]}
-                      {entryLimits?.plan ? ` · ${entryLimits.plan}` : ""}
-                    </span>
-                  </div>
-                  {(entryLimits?.windows.length ?? 0) > 0 ? (
-                    <CardMeters windows={entryLimits!.windows} />
-                  ) : (
-                    <div className="ag-card-foot">
-                      {!status ? "Checking CLI…"
-                        : !status.installed ? "Not installed"
-                        : status.authenticated ? PROVIDER_NAMES[entry]
-                        : "Needs sign-in"}
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
-
-          <AgentDetail
+          <AgentCanvas
             key={kind}
             kind={kind}
-            section={section}
+            openSetup={section === "setup"}
             status={agents.find((entry) => entry.kind === kind)}
             limits={limits[kind]}
             setup={setup}
@@ -256,18 +222,14 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
   );
 }
 
-/** The agent's plan limits: what is left, when it resets, and where the pace lands. */
 function PlanLimits({ kind, limits }: { kind: AgentKind; limits: Limits }) {
   const now = useMinute();
   return (
-    <section className="ag-section" aria-label="Plan limits">
-      <header className="ag-section-head">
-        <div>
-          <h3>Plan limits</h3>
-          <span>Live windows with pace forecast since each window opened</span>
-        </div>
-        {limits.plan && <span className="pill">{limits.plan}</span>}
-      </header>
+    <section className="ag-block" aria-label="Plan limits">
+      <div className="ag-block-head">
+        <h3>Plan limits</h3>
+        <span>Pace estimate since each window opened</span>
+      </div>
       <div className="ag-limit-tiles">
         {limits.windows.map((window) => {
           const forecast = forecastLimit(window, now);
@@ -280,10 +242,10 @@ function PlanLimits({ kind, limits }: { kind: AgentKind; limits: Limits }) {
               </div>
               <div className="ag-tile-figure">
                 <strong>{LEFT(forecast)}<small>%</small></strong>
-                <span>remaining</span>
+                <span>left</span>
               </div>
               {burnable(window, now)
-                ? <BurnChart window={window} forecast={forecast} scope={limits.scope} now={now} height={64} axis />
+                ? <BurnChart window={window} forecast={forecast} scope={limits.scope} now={now} height={60} axis />
                 : <PaceMeter forecast={forecast} label={name} />}
               <span className="ag-tile-forecast">{forecast.text}</span>
             </div>
@@ -294,10 +256,9 @@ function PlanLimits({ kind, limits }: { kind: AgentKind; limits: Limits }) {
   );
 }
 
-/** Focused control center for one agent: hero bar, live quotas, account & runtime. */
-function AgentDetail({ kind, section, status, limits, setup, onOpenTerminal, starting }: {
+function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, starting }: {
   kind: AgentKind;
-  section?: AgentSection;
+  openSetup: boolean;
   status?: AgentStatus;
   limits?: Limits | null;
   setup: Setup;
@@ -310,113 +271,158 @@ function AgentDetail({ kind, section, status, limits, setup, onOpenTerminal, sta
   const needsInstall = Boolean(status && (!status.installed || (status.cliChecked && !status.version)));
   const account = currentClaudeAccount(status);
   const provider = account?.provider || PROVIDER_NAMES[kind];
-  const tab = section ?? defaultSection(status);
-  const hasUnifiedLimits = Boolean(limits && limits.windows.length > 0);
+  const runtime = setup.runtimes.find((entry) => entry.agent === kind);
+  const hasLimits = Boolean(limits && limits.windows.length > 0);
+  const [runtimeOpen, setRuntimeOpen] = useState(openSetup);
+
+  if (!status) {
+    return (
+      <div className="ag-empty">
+        <Loader size="xs" aria-label="Checking agent" />
+        <span>Checking {AGENT_NAMES[kind]}…</span>
+      </div>
+    );
+  }
+
+  // Uninstalled or broken CLI: calm, single-focus install card (no empty tabs).
+  if (needsInstall) {
+    return (
+      <section className="ag-install-card view-enter">
+        <span className="ag-install-logo"><AgentLogo agent={kind} size={32} /></span>
+        <h2>{AGENT_NAMES[kind]}</h2>
+        <p>{AGENT_BLURBS[kind]}</p>
+        <div className="ag-install-meta">
+          <span>{provider}</span>
+          <span>·</span>
+          <code>{status.package}</code>
+        </div>
+        {status.configError && <p className="m-0 text-xs text-bad [overflow-wrap:anywhere]">{status.configError}</p>}
+        <Button
+          size="sm"
+          mt="xs"
+          leftSection={<IconDownload size={15} />}
+          loading={setup.installing === kind}
+          disabled={setup.installing != null || nodeBlocked}
+          onClick={() => void setup.install(status)}
+        >
+          {status.installed ? `Reinstall ${AGENT_NAMES[kind]}` : `Install ${AGENT_NAMES[kind]}`}
+        </Button>
+      </section>
+    );
+  }
+
+  const metaParts = [
+    [provider, limits?.plan].filter(Boolean).join(" "),
+    status.version ? `v${status.version}` : null,
+    account?.email ?? null,
+    state.tone !== "ok" ? state.label : null,
+  ].filter(Boolean);
 
   return (
-    <div className="ag-workspace view-enter">
-      <header className="ag-hero">
-        <span className="ag-hero-mark"><AgentLogo agent={kind} size={28} /></span>
+    <div className="ag-canvas view-enter">
+      <header className="ag-header">
+        <span className="ag-header-logo"><AgentLogo agent={kind} size={26} /></span>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2">
             <h2>{AGENT_NAMES[kind]}</h2>
-            <span className={`pill ${status ? PILL_TONE[state.tone] : ""}`}>{status ? state.label : "Checking…"}</span>
-            {limits?.plan && <span className="pill">{limits.plan}</span>}
+            <span className={`size-2 shrink-0 rounded-full ${DOT[state.tone]}`} title={state.label} aria-hidden />
           </div>
-          <p>
-            <span>{provider}</span>
-            {status?.version && <span className="tabular-nums"> · v{status.version}</span>}
-            {status?.package && <> · <code className="mono text-xs text-muted">{status.package}</code></>}
-          </p>
+          <p className="ag-header-meta" title={metaParts.join(" · ")}>{metaParts.join(" · ")}</p>
         </div>
-        <div className="ag-hero-actions">
-          {canOperate && state.tone === "warn" && (
+        <div className="flex shrink-0 items-center gap-1.5">
+          {canOperate && state.tone === "warn" ? (
             <Button size="xs" leftSection={<IconTerminal2 size={14} />} loading={starting === kind}
               disabled={starting != null} onClick={() => onOpenTerminal(kind)}>Sign in</Button>
-          )}
-          {canOperate && state.tone !== "warn" && (
-            <Tooltip label={`Open ${AGENT_NAMES[kind]} CLI terminal`} openDelay={300}>
-              <Button size="xs" variant="default" leftSection={<IconTerminal2 size={14} />} loading={starting === kind}
-                disabled={starting != null} onClick={() => onOpenTerminal(kind)}>Terminal</Button>
-            </Tooltip>
-          )}
-          {canOperate && (
-            <Button size="xs" variant="default" loading={setup.installing === kind}
-              disabled={setup.installing != null || nodeBlocked} onClick={() => status && void setup.install(status)}>Update CLI</Button>
-          )}
-          {needsInstall && (
-            <Button size="xs" leftSection={<IconDownload size={14} />}
-              loading={setup.installing === kind} disabled={setup.installing != null || nodeBlocked}
-              onClick={() => status && void setup.install(status)}>{status?.installed ? "Reinstall" : "Install"}</Button>
-          )}
-          {canOperate && (
-            <>
-              <Button size="xs" variant="subtle" color="gray" leftSection={<IconPlug size={14} />} onClick={() => uiActions.navigate({ kind: "mcp", agent: kind })}>MCP</Button>
-              <Button size="xs" variant="subtle" color="gray" leftSection={<IconSparkles size={14} />} onClick={() => uiActions.navigate({ kind: "skills", agent: kind })}>Skills</Button>
-            </>
-          )}
+          ) : canOperate ? (
+            <Button size="xs" variant="default" leftSection={<IconTerminal2 size={14} />} loading={starting === kind}
+              disabled={starting != null} onClick={() => onOpenTerminal(kind)}>Open terminal</Button>
+          ) : null}
+          <Menu position="bottom-end" withinPortal shadow="md" width={196}>
+            <Menu.Target>
+              <ActionIcon variant="subtle" color="gray" size="md" aria-label={`More actions for ${AGENT_NAMES[kind]}`}>
+                <IconDots size={16} />
+              </ActionIcon>
+            </Menu.Target>
+            <Menu.Dropdown>
+              {canOperate && (
+                <Menu.Item leftSection={<IconDownload size={14} />} disabled={setup.installing != null || nodeBlocked}
+                  onClick={() => void setup.install(status)}>Update CLI</Menu.Item>
+              )}
+              <Menu.Item leftSection={<IconPlug size={14} />} onClick={() => uiActions.navigate({ kind: "mcp", agent: kind })}>
+                MCP servers
+              </Menu.Item>
+              <Menu.Item leftSection={<IconSparkles size={14} />} onClick={() => uiActions.navigate({ kind: "skills", agent: kind })}>
+                Skills
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
         </div>
       </header>
 
-      {hasUnifiedLimits && limits && <PlanLimits kind={kind} limits={limits} />}
+      {status.configError && <p className="callout bad m-0" role="alert">{status.configError}</p>}
 
-      <section className="ag-panel">
-        <div className="ag-panel-head">
-          <SegmentedControl
-            size="xs"
-            value={tab}
-            onChange={(value) => show(kind, value as AgentSection)}
-            aria-label={`${AGENT_NAMES[kind]} sections`}
-            data={AGENT_SECTIONS.map((item) => ({
-              value: item.value,
-              label: item.value === "setup" ? "Runtime & Extensions" : item.label,
-            }))}
-          />
-          {status?.configError && <span className="text-xs text-bad [overflow-wrap:anywhere]">{status.configError}</span>}
+      {hasLimits && limits && <PlanLimits kind={kind} limits={limits} />}
+
+      <section className="ag-block" aria-label="Account">
+        <div className="ag-block-head">
+          <h3>Account</h3>
         </div>
-        <div className="ag-panel-body">
-          {tab === "account"
-            ? <AgentAccount kind={kind} status={status} onOpenTerminal={onOpenTerminal} starting={starting} hideLimits={hasUnifiedLimits} />
-            : <AgentSetupDetails kind={kind} status={status} setup={setup} />}
+        <div className="ag-surface">
+          <AgentAccount kind={kind} status={status} onOpenTerminal={onOpenTerminal} starting={starting} hideLimits={hasLimits} />
+        </div>
+      </section>
+
+      <section className="ag-block" aria-label="Runtime and extensions">
+        <div className="ag-block-head">
+          <h3>Runtime &amp; extensions</h3>
+        </div>
+        <div className="ag-links-card">
+          {runtime && (
+            <div className="ag-link-group">
+              <button type="button" className="ag-link-row press" aria-expanded={runtimeOpen} onClick={() => setRuntimeOpen((v) => !v)}>
+                <div className="min-w-0 flex-1">
+                  <strong>Chat runtime</strong>
+                  <span>{runtimeSummary(runtime) ?? `${runtime.selected} · ${runtime.package}`}</span>
+                </div>
+                <IconChevronRight size={15} className={`text-faint transition-transform duration-150 ${runtimeOpen ? "rotate-90" : ""}`} />
+              </button>
+              {runtimeOpen && (
+                <div className="ag-link-expand">
+                  <AcpRuntimePanel runtime={runtime} agent={status} onChange={setup.loadRuntimes} />
+                </div>
+              )}
+            </div>
+          )}
+          <button type="button" className="ag-link-row press" onClick={() => uiActions.navigate({ kind: "mcp", agent: kind })}>
+            <IconPlug size={16} className="shrink-0 text-muted" />
+            <div className="min-w-0 flex-1">
+              <strong>MCP servers</strong>
+              <span>Configure user-level tools for {AGENT_NAMES[kind]}</span>
+            </div>
+            <IconChevronRight size={15} className="text-faint" />
+          </button>
+          <button type="button" className="ag-link-row press" onClick={() => uiActions.navigate({ kind: "skills", agent: kind })}>
+            <IconSparkles size={16} className="shrink-0 text-muted" />
+            <div className="min-w-0 flex-1">
+              <strong>Skills</strong>
+              <span>Manage shared skills enabled for {AGENT_NAMES[kind]}</span>
+            </div>
+            <IconChevronRight size={15} className="text-faint" />
+          </button>
+          <details className="ag-backups-details">
+            <summary className="ag-link-row press">
+              <div className="min-w-0 flex-1">
+                <strong>Project skills &amp; backups</strong>
+                <span>Inspect workspace skills and configuration backups</span>
+              </div>
+              <IconChevronRight size={15} className="ag-backups-chevron text-faint" />
+            </summary>
+            <div className="ag-link-expand">
+              <AgentExtensionsPanel kind={kind} />
+            </div>
+          </details>
         </div>
       </section>
     </div>
-  );
-}
-
-function AgentSetupDetails({ kind, status, setup }: { kind: AgentKind; status?: AgentStatus; setup: Setup }) {
-  const runtime = setup.runtimes.find((entry) => entry.agent === kind);
-  return (
-    <section aria-label={`${AGENT_NAMES[kind]} setup`} className="grid min-w-0 gap-5">
-      {!status ? <Loader size="xs" aria-label="Checking installation" /> : <>
-        {runtime && (
-          <div className="min-w-0">
-            <h3 className="m-0 mb-2 text-md font-semibold">Chat runtime</h3>
-            <AcpRuntimePanel runtime={runtime} agent={status} onChange={setup.loadRuntimes} />
-          </div>
-        )}
-        {status.installed && status.version && (
-          <div className="grid gap-2.5 border-t border-line/70 pt-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h3 className="m-0 text-md font-semibold">Extensions &amp; backups</h3>
-                <p className="m-0 mt-0.5 text-xs text-muted">Manage user-level MCP servers, shared skills, or inspect project-local skills.</p>
-              </div>
-              <div className="flex gap-2">
-                <Button size="xs" variant="default" leftSection={<IconPlug size={14} />} onClick={() => uiActions.navigate({ kind: "mcp", agent: kind })}>MCP servers</Button>
-                <Button size="xs" variant="default" leftSection={<IconSparkles size={14} />} onClick={() => uiActions.navigate({ kind: "skills", agent: kind })}>Skills</Button>
-              </div>
-            </div>
-            <details className="extension-project-details">
-              <summary className="cursor-pointer text-sm text-muted">Project skills and agent backups</summary>
-              <AgentExtensionsPanel kind={kind} />
-            </details>
-          </div>
-        )}
-        {!runtime && !(status.installed && status.version) && (
-          <p className="m-0 text-sm text-muted">Install {AGENT_NAMES[kind]} to configure its chat runtime and extensions.</p>
-        )}
-      </>}
-    </section>
   );
 }

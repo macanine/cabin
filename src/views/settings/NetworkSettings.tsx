@@ -110,7 +110,14 @@ function Region() {
 
   const exitValue = (value: string) => <span className="mono text-fg">{value}</span>;
   return (
-    <SettingGroup title="Region">
+    <div className="net-section">
+      <header className="net-section-head">
+        <div>
+          <h3>VM region</h3>
+          <p>Keeps Ubuntu’s time zone and language aligned with your verified exit location.</p>
+        </div>
+      </header>
+      <SettingGroup>
       <SettingRow label="Follow exit" hint="Set the machine's time zone to the verified exit's during each network check.">
         <Switch
           size="sm"
@@ -190,6 +197,7 @@ function Region() {
         </div>
       )}
     </SettingGroup>
+    </div>
   );
 }
 
@@ -208,9 +216,17 @@ export function NetworkSettings() {
   return (
     <SettingsPage wide title="Network" subtitle="How the machine reaches the internet, and the region it presents.">
       <NetworkDashboard />
-      <section id="network-region" className="mt-4 scroll-mt-4 outline-none" tabIndex={-1} aria-label="Region">
+      <section id="network-region" className="mt-5 scroll-mt-4 outline-none" tabIndex={-1} aria-label="VM region">
         {regionReady ? <Region /> : (
-          <SettingGroup title="Region"><SettingRow label="Time zone and language" hint="Available when the machine is connected." /></SettingGroup>
+          <div className="net-section">
+            <header className="net-section-head">
+              <div>
+                <h3>VM region</h3>
+                <p>Keeps Ubuntu’s time zone and language aligned with your verified exit location.</p>
+              </div>
+            </header>
+            <SettingGroup><SettingRow label="Time zone and language" hint="Available once the machine is connected." /></SettingGroup>
+          </div>
         )}
       </section>
     </SettingsPage>

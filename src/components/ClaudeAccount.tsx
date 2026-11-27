@@ -35,27 +35,38 @@ export function ClaudeAccount({ status, hideLimits = false }: { status: AgentSta
   const identity = [account?.email, account?.organization].filter(Boolean).join(" · ");
 
   return (
-    <section className="min-w-0 grid gap-3">
-      <div className="ag-account-banner">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <strong className="text-md font-semibold text-fg [overflow-wrap:anywhere]">{identity || (status.authenticated ? "Signed in to Claude Code" : "Not signed in")}</strong>
-            {account?.plan && <Badge size="xs" variant="light">{account.plan}</Badge>}
-          </div>
-          {account && <p className="m-0 mt-0.5 text-xs text-muted">{account.provider ?? status.authDetail}</p>}
+    <section className="min-w-0 grid gap-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <strong className="text-sm font-medium text-fg [overflow-wrap:anywhere]">
+            {identity || (status.authenticated ? "Signed in to Claude Code" : "Not signed in")}
+          </strong>
+          {account?.usageBased && <p className="m-0 mt-0.5 text-xs text-muted">Usage-based billing seat</p>}
         </div>
+        {account?.plan && <Badge size="xs" color="gray" variant="light">{account.plan}</Badge>}
       </div>
-      {!account && !status.authenticated && !unavailable && <p className="agents-hint m-0">Use <code>/login</code> in Claude Code, or run <code>claude auth login</code> from a workspace shell.</p>}
-      {!account && (unavailable || status.authenticated) && <p className="agents-hint m-0" role="status">{status.authDetail}</p>}
-      {account?.usageBased && <p className="agents-hint m-0">This seat uses usage-based billing.</p>}
-      {account?.method === "subscription" && !account.usageBased && !account.id && <p className="agents-hint m-0">Limits will appear when Claude Code reports the account identity.</p>}
-      {account && account.method !== "subscription" && <p className="agents-hint m-0">Subscription limits are available for Claude.ai sign-ins.</p>}
+      {!account && !status.authenticated && !unavailable && (
+        <p className="m-0 text-xs text-muted">Run <code>/login</code> inside Claude Code, or <code>claude auth login</code> in a terminal.</p>
+      )}
+      {!account && (unavailable || status.authenticated) && <p className="m-0 text-xs text-muted" role="status">{status.authDetail}</p>}
+      {account?.method === "subscription" && !account.usageBased && !account.id && (
+        <p className="m-0 text-xs text-muted">Limits appear once Claude Code reports the account identity.</p>
+      )}
+      {account && account.method !== "subscription" && (
+        <p className="m-0 text-xs text-muted">Subscription windows are available for Claude.ai sign-ins.</p>
+      )}
       {error && <Alert color="yellow">{error}</Alert>}
-      {loading && <p className="row agents-hint m-0" role="status"><Loader size={12} /> Reading account limits…</p>}
+      {loading && <p className="row m-0 text-xs text-muted" role="status"><Loader size={12} /> Reading account limits…</p>}
       {usage && <>
-        {!hideLimits && usage.windows.length > 0 && <div className="account-limits-grid">{usage.windows.map((window) => <AccountLimit key={window.label} scope={`claude:${account?.id ?? "default"}`} label={window.label} used={window.usedPercent} resetsAt={window.resetsAt} resetText={window.resetText} />)}</div>}
-        {usage.noLimits && usage.windows.length === 0 && <p className="agents-hint m-0">Claude Code reports no usage meters for this plan.</p>}
-        <p className="agents-hint m-0">Last checked {formatGuestDateTime(usage.refreshedAt)} · Reported by Claude Code</p>
+        {!hideLimits && usage.windows.length > 0 && (
+          <div className="account-limits-grid">
+            {usage.windows.map((window) => (
+              <AccountLimit key={window.label} scope={`claude:${account?.id ?? "default"}`} label={window.label} used={window.usedPercent} resetsAt={window.resetsAt} resetText={window.resetText} />
+            ))}
+          </div>
+        )}
+        {usage.noLimits && usage.windows.length === 0 && <p className="m-0 text-xs text-muted">No usage windows reported for this plan.</p>}
+        <p className="m-0 text-xs text-faint">Last checked {formatGuestDateTime(usage.refreshedAt)}</p>
       </>}
     </section>
   );
