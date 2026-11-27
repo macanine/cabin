@@ -157,7 +157,9 @@ fn check_gpt_headers(disk: &str) -> Result<()> {
         .map_err(|error| Error::io(format!("read GPT headers on {disk}"), error))?;
     let entries = &headers[446..510];
     let mut protective = entries
-        .chunks_exact(16)
+        .as_chunks::<16>()
+        .0
+        .iter()
         .filter(|entry| entry.iter().any(|byte| *byte != 0));
     if headers[510..512] != [0x55, 0xaa]
         || !protective

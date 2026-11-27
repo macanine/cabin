@@ -68,8 +68,8 @@ try {
   const visible = (label) => run(`(() => { const b = [...document.querySelectorAll("button")].find((e) => e.textContent.includes(${JSON.stringify(label)})); if (!b) return false;
     const r = b.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.right <= innerWidth; })()`);
 
-  for (const [at, text] of [["new", "What should an agent work on?"], ["agents", "Claude Code"], ["usage", "Usage"], ["mcp", "Add MCP"], ["skills", "Add Skill"],
-    ["settings:general", "Default agent"], ["settings:network", "Route via proxy"], ["settings:tools", "Node.js"], ["settings:machine", "Diagnostics and recovery"], ["settings:permissions", "Folder permissions"]]) {
+  for (const [at, text] of [["new", "What should an agent work on?"], ["agents", "Claude Code"], ["usage", "Usage"], ["mcp", "Add server"], ["skills", "Add skill"],
+    ["settings:general", "Default agent"], ["settings:network", "Route through proxy nodes"], ["settings:tools", "Node.js"], ["settings:machine", "Diagnostics and recovery"], ["settings:permissions", "Folder permissions"]]) {
     await test(`${at} opens and fits the smallest window`, async () => {
       await open(at, text);
       const wide = await run(`[...document.querySelectorAll(".main, .split-detail, .set-group, .net-card, .usage-page")].filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => e.className).join()`);

@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import type { View } from "../../src/state/ui";
 
 const at = new URLSearchParams(location.search).get("at") ?? "new";
+// The smoke assertions use English labels regardless of the runner's locale.
+localStorage.setItem("cabin.locale", "en");
 const now = Date.now();
 const sent: unknown[] = [];
 Object.assign(window, { __sent: sent });
