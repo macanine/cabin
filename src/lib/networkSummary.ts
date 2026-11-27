@@ -1,6 +1,7 @@
 // The Mac's network status, worded consistently across the sidebar and diagnostics.
 import type { GeoInfo, NetworkCheckItem, NetworkCheckReport, NetworkStatus } from "../services/ipc/generated/core";
 import type { AppState } from "../state/reducer";
+import { t } from "../i18n/index.ts";
 
 export type NetTone = "ok" | "busy" | "warn" | "bad" | "off";
 export type FixTarget = "region" | "route" | "browser";
@@ -146,73 +147,80 @@ export interface NetGuidance {
 export function networkGuidance(status: NetworkStatus | null, summary: NetSummary): NetGuidance {
   if (!status || !status.available) {
     return {
-      headline: "No managed gateway",
-      explanation: "This machine doesn’t have a managed network gateway configured.",
+      headline: t("network.guide.noGateway.head"),
+      explanation: t("network.guide.noGateway.body"),
+    };
+  }
+  if (status.connectivity === "rechecking") {
+    return {
+      headline: t("network.guide.rechecking.head"),
+      explanation: t("network.guide.rechecking.body"),
+      tip: t("network.guide.rechecking.tip"),
     };
   }
   if (summary.tone === "busy") {
     return {
-      headline: "Checking the connection…",
-      explanation: "Verifying the outbound route, exit location, and VM environment before opening internet access.",
+      headline: t("network.guide.checking.head"),
+      explanation: t("network.guide.checking.body"),
     };
   }
   if (status.paused) {
     return {
-      headline: "Internet access is paused",
-      explanation: "You paused outbound traffic for the VM. Agents and Chrome inside Ubuntu cannot reach the web until you resume.",
+      headline: t("network.guide.paused.head"),
+      explanation: t("network.guide.paused.body"),
     };
   }
   if (summary.tone === "ok") {
     return {
-      headline: "Internet access verified",
-      explanation: "The VM’s route, public exit, and environment passed verification. Outbound traffic is open.",
+      headline: t("network.guide.ok.head"),
+      explanation: t("network.guide.ok.body"),
     };
   }
   if (status.exitPolicyError) {
     return {
-      headline: "Internet blocked: public IP changed",
-      explanation: "Cabin locked the VM’s internet because your public exit IP changed while Static IP protection is on. This prevents agents and Chrome from silently appearing from an unexpected location.",
-      tip: "Switched Wi-Fi, VPN, or proxy node on purpose? Approve the new exit. If your IP rotates often, switch Exit IP protection to Dynamic residential IP.",
+      headline: t("network.guide.ipChanged.head"),
+      explanation: t("network.guide.ipChanged.body"),
+      tip: t("network.guide.ipChanged.tip"),
     };
   }
   if (status.error || !status.running) {
     return {
-      headline: "Network gateway isn’t running",
-      explanation: "The local gateway process that bridges VM traffic to the internet stopped unexpectedly.",
-      tip: "Try checking again, or restart the machine in Machine settings if the gateway does not recover.",
+      headline: t("network.guide.gatewayDown.head"),
+      explanation: t("network.guide.gatewayDown.body"),
+      tip: t("network.guide.gatewayDown.tip"),
     };
   }
   const id = summary.blocker?.id;
   if (id === "timezone" || id === "language") {
     return {
-      headline: "Internet blocked: VM region mismatch",
-      explanation: "Ubuntu’s time zone or language doesn’t match your current exit location. Align it in VM region settings (or turn on Follow exit), then check again.",
+      headline: t("network.guide.region.head"),
+      explanation: t("network.guide.region.body"),
     };
   }
   if (id === "browser" || id === "browserLive") {
     return {
-      headline: "Internet blocked: Chrome environment out of sync",
-      explanation: "Chrome’s configured or running profile doesn’t match the VM’s current exit region. Sync or restart Chrome in Browser environment to reopen internet access.",
+      headline: t("network.guide.browser.head"),
+      explanation: t("network.guide.browser.body"),
     };
   }
   if (id === "route" || id === "dns" || id === "transport") {
     return {
-      headline: "Internet blocked: connection failed",
-      explanation: "The VM couldn’t reach the internet through the current route. Check your host network, VPN, or proxy nodes, then run a check again.",
+      headline: t("network.guide.connFailed.head"),
+      explanation: t("network.guide.connFailed.body"),
     };
   }
   if (id === "exit") {
     return {
-      headline: "Internet blocked: exit couldn’t be verified",
+      headline: t("network.guide.exitUnverified.head"),
       explanation: summary.blocker?.title === "Public IP addresses differ"
-        ? "The VM’s exit IP didn’t match the host verification check. Review your VPN or proxy route, then check again."
-        : "Cabin couldn’t confirm the VM’s public exit location. Review your route or check again in a moment.",
+        ? t("network.guide.exitDiffer.body")
+        : t("network.guide.exitUnknown.body"),
     };
   }
   return {
-    headline: summary.blocker ? `Internet blocked: ${blockingReason(summary.blocker)}` : "Internet access couldn’t be verified",
-    explanation: "Outbound VM traffic stays locked until the network check passes.",
-    tip: "Open diagnostics below to see which check failed, then run Check again.",
+    headline: summary.blocker ? `Internet blocked: ${blockingReason(summary.blocker)}` : t("network.guide.generic.head"),
+    explanation: t("network.guide.generic.body"),
+    tip: t("network.guide.generic.tip"),
   };
 }
 

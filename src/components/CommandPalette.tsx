@@ -12,6 +12,7 @@ import { useApp } from "../state/store";
 import { SETTINGS_TABS, uiActions, useUi, type View } from "../state/ui";
 import { IS_MAC } from "../lib/platform";
 import { sessionKindName } from "./common";
+import { type MessageKey, useI18n } from "../i18n";
 
 interface Entry extends PaletteItem {
   icon: ReactNode;
@@ -20,18 +21,25 @@ interface Entry extends PaletteItem {
 }
 
 const I = { size: 16, stroke: 1.7 } as const;
-const VIEWS: { view: View; label: string; icon: ReactNode; keywords?: string }[] = [
-  { view: { kind: "chrome" }, label: "Chrome", icon: <IconBrandChrome {...I} />, keywords: "browser desktop environment" },
-  { view: { kind: "agents" }, label: "Agents and providers", icon: <IconRobot {...I} />, keywords: "claude codex opencode pi antigravity account limits sign in" },
-  { view: { kind: "usage" }, label: "Usage", icon: <IconChartBar {...I} />, keywords: "cost tokens spend" },
-  { view: { kind: "mcp" }, label: "MCP servers", icon: <IconPlug {...I} /> },
-  { view: { kind: "skills" }, label: "Skills", icon: <IconSparkles {...I} /> },
+const VIEWS: { view: View; labelKey: MessageKey; icon: ReactNode; keywords?: string }[] = [
+  { view: { kind: "chrome" }, labelKey: "nav.chrome", icon: <IconBrandChrome {...I} />, keywords: "browser desktop environment chrome 浏览器" },
+  { view: { kind: "agents" }, labelKey: "palette.agentsAndProviders", icon: <IconRobot {...I} />, keywords: "claude codex opencode pi antigravity account limits sign in 智能体" },
+  { view: { kind: "usage" }, labelKey: "nav.usage", icon: <IconChartBar {...I} />, keywords: "cost tokens spend usage 用量" },
+  { view: { kind: "mcp" }, labelKey: "palette.extensionsMcp", icon: <IconPlug {...I} />, keywords: "mcp servers extensions plugins 扩展" },
+  { view: { kind: "skills" }, labelKey: "palette.extensionsSkills", icon: <IconSparkles {...I} />, keywords: "skills discover extensions 技能" },
 ];
-const TAB_LABEL: Record<(typeof SETTINGS_TABS)[number], string> = {
-  general: "General", network: "Network", tools: "Tools", machine: "Machine", storage: "Storage", permissions: "Folder permissions",
+const TAB_LABEL_KEY: Record<(typeof SETTINGS_TABS)[number], MessageKey> = {
+  general: "settings.tab.general",
+  network: "settings.tab.network",
+  remote: "settings.tab.remote",
+  tools: "settings.tab.tools",
+  machine: "settings.tab.machine",
+  storage: "settings.tab.storage",
+  permissions: "settings.tab.permissions",
 };
 
 function useEntries(): Entry[] {
+  const { t, locale } = useI18n();
   const sessions = useApp((state) => state.sessions);
   const workspaces = useApp((state) => state.workspaces);
   const activity = useActivity();
@@ -44,7 +52,7 @@ function useEntries(): Entry[] {
       .map((session, index) => ({
         id: `task:${session.id}`,
         label: session.name,
-        hint: [name.get(session.workspaceId), waiting(session.id) ? "needs you" : shortAge(lastActivity(session), now)].filter(Boolean).join(" · "),
+        hint: [name.get(session.workspaceId), waiting(session.id) ? t("nav.needsYou") : shortAge(lastActivity(session), now)].filter(Boolean).join(" · "),
         group: "Tasks",
         keywords: `${sessionKindName(session.agent)}${session.archived ? " archived" : ""}`,
         onSearchOnly: session.archived || index >= 6,
@@ -54,21 +62,22 @@ function useEntries(): Entry[] {
     const active = workspaces.filter((w) => !w.archived);
     return [
       ...tasks,
-      { id: "new", label: "New task", shortcut: IS_MAC ? "⌘N" : "Ctrl+Shift+N", group: "New", icon: <IconPlus {...I} />, run: () => uiActions.navigate({ kind: "new" }) },
+      { id: "new", label: t("nav.newTask"), shortcut: IS_MAC ? "⌘N" : "Ctrl+Shift+N", group: "New", icon: <IconPlus {...I} />, run: () => uiActions.navigate({ kind: "new" }) },
       ...active.flatMap((w): Entry[] => [
-        { id: `new:${w.id}`, label: `New task in ${w.name}`, group: "New", onSearchOnly: true, icon: <IconPlus {...I} />, run: () => uiActions.navigate({ kind: "new", workspaceId: w.id }) },
-        { id: `term:${w.id}`, label: `New terminal in ${w.name}`, group: "New", keywords: "shell", onSearchOnly: true, icon: <IconTerminal2 {...I} />, run: () => void openTerminal(w.id) },
+        { id: `new:${w.id}`, label: `${t("nav.newTask")} · ${w.name}`, group: "New", onSearchOnly: true, icon: <IconPlus {...I} />, run: () => uiActions.navigate({ kind: "new", workspaceId: w.id }) },
+        { id: `term:${w.id}`, label: `${t("nav.newTerminal")} · ${w.name}`, group: "New", keywords: "shell terminal", onSearchOnly: true, icon: <IconTerminal2 {...I} />, run: () => void openTerminal(w.id) },
       ]),
-      ...VIEWS.map(({ view, label, icon, keywords }): Entry => ({ id: `view:${view.kind}`, label, group: "Go to", keywords, icon, run: () => uiActions.navigate(view) })),
-      { id: "settings", label: "Settings", shortcut: IS_MAC ? "⌘," : undefined, group: "Go to", icon: <IconSettings {...I} />, run: () => uiActions.navigate({ kind: "settings" }) },
-      ...SETTINGS_TABS.map((tab): Entry => ({ id: `settings:${tab}`, label: `${TAB_LABEL[tab]} settings`, group: "Go to", onSearchOnly: true, icon: <IconSettings {...I} />, run: () => uiActions.navigate({ kind: "settings", tab }) })),
-      { id: "check", label: "Network check", group: "Go to", keywords: "internet route exit", onSearchOnly: true, icon: <IconWorld {...I} />, run: uiActions.openNetworkCheck },
-      { id: "operations", label: "Operations", group: "Go to", keywords: "progress log", onSearchOnly: true, icon: <IconActivity {...I} />, run: () => uiActions.showOperations(true) },
+      ...VIEWS.map(({ view, labelKey, icon, keywords }): Entry => ({ id: `view:${view.kind}`, label: t(labelKey), group: "Go to", keywords, icon, run: () => uiActions.navigate(view) })),
+      { id: "settings", label: t("nav.settings"), shortcut: IS_MAC ? "⌘," : "Ctrl+,", group: "Go to", icon: <IconSettings {...I} />, run: () => uiActions.navigate({ kind: "settings" }) },
+      ...SETTINGS_TABS.map((tab): Entry => ({ id: `settings:${tab}`, label: t("palette.settingsSuffix", { tab: t(TAB_LABEL_KEY[tab]) }), group: "Go to", onSearchOnly: true, icon: <IconSettings {...I} />, run: () => uiActions.navigate({ kind: "settings", tab }) })),
+      { id: "check", label: t("palette.networkCheck"), group: "Go to", keywords: "internet route exit network 网络", onSearchOnly: true, icon: <IconWorld {...I} />, run: uiActions.openNetworkCheck },
+      { id: "operations", label: t("nav.operations"), group: "Go to", keywords: "progress log operations", onSearchOnly: true, icon: <IconActivity {...I} />, run: () => uiActions.showOperations(true) },
     ];
-  }, [sessions, workspaces, activity]);
+  }, [sessions, workspaces, activity, locale]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 function Body({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n();
   const entries = useEntries();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -76,6 +85,7 @@ function Body({ onClose }: { onClose: () => void }) {
   const groups = useMemo(() => rankPalette(entries, query), [entries, query]);
   const flat = useMemo(() => groups.flatMap((group) => group.items), [groups]);
   const at = Math.min(active, Math.max(0, flat.length - 1));
+  const groupLabel = (group: string) => group === "Tasks" ? t("palette.group.tasks") : group === "New" ? t("palette.group.new") : t("palette.group.goto");
   useEffect(() => {
     list.current?.querySelector(`[data-index="${at}"]`)?.scrollIntoView({ block: "nearest" });
   }, [at, groups]);
@@ -103,17 +113,17 @@ function Body({ onClose }: { onClose: () => void }) {
         <input
           data-autofocus
           className="min-w-0 flex-1 border-0 bg-transparent font-[inherit] text-[15px] text-fg outline-none placeholder:text-faint"
-          placeholder="Search tasks, or jump to a page"
+          placeholder={t("palette.placeholder")}
           value={query}
           onChange={(event) => { setQuery(event.currentTarget.value); setActive(0); }}
-          role="combobox" aria-expanded aria-controls="palette-list" aria-label="Search tasks and commands"
+          role="combobox" aria-expanded aria-controls="palette-list" aria-label={t("palette.placeholder")}
           aria-activedescendant={flat[at] ? `palette-${at}` : undefined}
         />
       </label>
       <div ref={list} id="palette-list" role="listbox" aria-label="Results" className="max-h-[min(52vh,420px)] overflow-y-auto overscroll-contain p-1.5">
         {groups.map((group) => (
-          <div key={group.group} role="group" aria-label={group.group} className="[&+&]:mt-1">
-            <div className="px-2.5 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-faint uppercase">{group.group}</div>
+          <div key={group.group} role="group" aria-label={groupLabel(group.group)} className="[&+&]:mt-1">
+            <div className="px-2.5 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-faint uppercase">{groupLabel(group.group)}</div>
             {group.items.map((entry) => {
               const i = ++index;
               const selected = i === at;
@@ -133,14 +143,14 @@ function Body({ onClose }: { onClose: () => void }) {
             })}
           </div>
         ))}
-        {flat.length === 0 && <p className="m-0 px-2.5 py-6 text-center text-sm text-faint">Nothing matches “{query.trim()}”.</p>}
+        {flat.length === 0 && <p className="m-0 px-2.5 py-6 text-center text-sm text-faint">{t("palette.noMatches", { query: query.trim() })}</p>}
       </div>
       <div className="flex items-center justify-between gap-4 border-t border-line/70 px-4 py-2 text-[11px] text-faint">
         <span className="flex items-center gap-3">
-          <span><kbd className="mr-1 rounded border border-line bg-surface px-1 py-px font-mono text-[10px] text-muted">↑↓</kbd>Navigate</span>
-          <span><kbd className="mr-1 rounded border border-line bg-surface px-1 py-px font-mono text-[10px] text-muted">↵</kbd>Open</span>
+          <span><kbd className="mr-1 rounded border border-line bg-surface px-1 py-px font-mono text-[10px] text-muted">↑↓</kbd>{t("palette.navigate")}</span>
+          <span><kbd className="mr-1 rounded border border-line bg-surface px-1 py-px font-mono text-[10px] text-muted">↵</kbd>{t("palette.open")}</span>
         </span>
-        <span><kbd className="mr-1 rounded border border-line bg-surface px-1 py-px font-mono text-[10px] text-muted">Esc</kbd>Close</span>
+        <span><kbd className="mr-1 rounded border border-line bg-surface px-1 py-px font-mono text-[10px] text-muted">Esc</kbd>{t("palette.close")}</span>
       </div>
     </div>
   );

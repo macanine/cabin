@@ -21,6 +21,7 @@ import { installTerminalIme } from "../lib/terminalIme";
 import { gridFor, settledSender, type Grid } from "../lib/terminalFit";
 import { blobBase64, PASTE_IMAGE_MAX, pastedImage, typedPath } from "../lib/terminalPaste";
 import { formatBytes } from "../lib/format";
+import { IS_MAC } from "../lib/platform";
 import { uiActions } from "../state/ui";
 import { TerminalReplay, type TerminalEvent } from "../lib/terminalReplay";
 import { captureViewport, restoreViewport } from "../lib/terminalViewport";
@@ -355,7 +356,10 @@ function create(Terminal: typeof GhosttyTerminal, sessionId: string, scheme: Col
       void clipboard
         .read()
         .then((text) => {
-          if (text && generation != null) sendInput(text, generation, epoch);
+          if (text && generation != null) {
+            const payload = term.getMode(2004) ? `\x1b[200~${text}\x1b[201~` : text;
+            sendInput(payload, generation, epoch);
+          }
         })
         .catch(() => undefined);
       return true;
@@ -642,7 +646,7 @@ export function SessionTerminal({
     "--console-ink": palette.foreground,
     "--console-caret": palette.accent,
   } as CSSProperties;
-  const modifier = /Mac/i.test(navigator.platform) ? "⌘" : "Ctrl+";
+  const modifier = IS_MAC ? "⌘" : "Ctrl+";
 
   return (
     <div className="terminal-surface" data-terminal-theme={scheme} style={surfaceStyle}>

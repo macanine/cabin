@@ -44,7 +44,11 @@ impl StorageReport {
                 )
             };
             scan.measure(&webkit_cache, StorageKind::WebkitCache, None);
-            scan.measure(&webkit_data, StorageKind::WebkitData, None);
+            scan.measure(
+                &webkit_data,
+                StorageKind::WebkitData,
+                cfg!(windows).then_some(webkit_cache.as_path()),
+            );
             scan.measure(
                 &caches.join("cabin"),
                 StorageKind::DeveloperCache,

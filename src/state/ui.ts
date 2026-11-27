@@ -4,7 +4,7 @@ import type { TaskListMode } from "../lib/taskList";
 import type { AgentSection } from "../lib/agentsHub";
 
 /** Settings tabs, in display order (views/SettingsView.tsx). */
-export const SETTINGS_TABS = ["general", "network", "tools", "machine", "storage", "permissions"] as const;
+export const SETTINGS_TABS = ["general", "network", "remote", "tools", "machine", "storage", "permissions"] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export type View =

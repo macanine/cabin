@@ -162,7 +162,7 @@ pub fn scan(
 
 /// One path's entry as it is now, or `None` when it does not exist.
 pub fn stat(root: &Path, rel: &str) -> io::Result<Option<Entry>> {
-    let full = root.join(rel);
+    let full = super::join_wire_path(root, rel);
     let meta = match std::fs::symlink_metadata(&full) {
         Ok(meta) => meta,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),

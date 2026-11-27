@@ -18,6 +18,7 @@ import { ModelPicker } from "./ModelPicker";
 import { DEFAULT_CHAT_PERMISSION, PermissionPicker } from "./PermissionPicker";
 import { ComposerMenu } from "./chat/ComposerMenu";
 import { isComposerComposing, useComposerMenu } from "./chat/useComposerMenu";
+import { useI18n } from "../i18n";
 
 /** The project the task runs in: a quiet button with a menu. */
 function WorkspacePicker({ workspaces, value, fixed, onSelect, onCreate }: {
@@ -27,12 +28,13 @@ function WorkspacePicker({ workspaces, value, fixed, onSelect, onCreate }: {
   onSelect: (id: string) => void;
   onCreate: () => void;
 }) {
+  const { t } = useI18n();
   const current = workspaces.find((w) => w.id === value);
   if (fixed) {
     return (
       <span className="inline-flex h-7 max-w-60 min-w-0 items-center gap-1.5 px-2 text-[13px] font-medium text-fg [&>svg]:shrink-0 [&>svg]:text-muted" title={current?.path}>
         <IconFolder size={14} />
-        <span className="truncate">{current?.name ?? "Workspace"}</span>
+        <span className="truncate">{current?.name ?? t("composer.workspace")}</span>
       </span>
     );
   }
@@ -40,16 +42,16 @@ function WorkspacePicker({ workspaces, value, fixed, onSelect, onCreate }: {
     return (
       <button className="press inline-flex h-7 max-w-60 min-w-0 cursor-pointer items-center gap-1.5 rounded-lg border-0 bg-transparent px-2 text-[13px] font-medium text-fg hover:bg-hover data-expanded:bg-hover [&>svg]:shrink-0 [&>svg]:text-muted" onClick={onCreate}>
         <IconFolderPlus size={14} />
-        <span>New workspace…</span>
+        <span>{t("composer.newWorkspace")}</span>
       </button>
     );
   }
   return (
     <Menu position="bottom-start" withinPortal shadow="md" width={240}>
       <Menu.Target>
-        <button className="press inline-flex h-7 max-w-60 min-w-0 cursor-pointer items-center gap-1.5 rounded-lg border-0 bg-transparent px-2 text-[13px] font-medium text-fg hover:bg-hover data-expanded:bg-hover [&>svg]:shrink-0 [&>svg]:text-muted" aria-label="Workspace" title={current?.path}>
+        <button className="press inline-flex h-7 max-w-60 min-w-0 cursor-pointer items-center gap-1.5 rounded-lg border-0 bg-transparent px-2 text-[13px] font-medium text-fg hover:bg-hover data-expanded:bg-hover [&>svg]:shrink-0 [&>svg]:text-muted" aria-label={t("composer.workspace")} title={current?.path}>
           <IconFolder size={14} />
-          <span className="truncate">{current?.name ?? "Choose a workspace"}</span>
+          <span className="truncate">{current?.name ?? t("composer.chooseWorkspace")}</span>
           <IconChevronDown size={13} className="!text-faint" />
         </button>
       </Menu.Target>
@@ -66,7 +68,7 @@ function WorkspacePicker({ workspaces, value, fixed, onSelect, onCreate }: {
           </Menu.Item>
         ))}
         <Menu.Divider />
-        <Menu.Item leftSection={<IconFolderPlus size={14} />} onClick={onCreate}>New workspace…</Menu.Item>
+        <Menu.Item leftSection={<IconFolderPlus size={14} />} onClick={onCreate}>{t("composer.newWorkspace")}</Menu.Item>
       </Menu.Dropdown>
     </Menu>
   );
@@ -113,6 +115,7 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true, onSubm
   autoFocus?: boolean;
   onSubmittingChange?: (submitting: boolean) => void;
 }) {
+  const { t } = useI18n();
   const workspaces = useApp((state) => state.workspaces.filter((w) => !w.archived));
   const agents = useApp((state) => state.agents);
   const defaultAgent = useApp((state) => state.settings?.defaultAgent ?? "claude");
@@ -239,7 +242,8 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true, onSubm
           autosize
           minRows={2}
           maxRows={9}
-          placeholder={complete ? "Describe a task… / skills, @ files" : `Describe a task for ${AGENT_NAMES[agent]}`}
+          classNames={{ input: "composer-textarea" }}
+          placeholder={complete ? t("composer.placeholder") : t("composer.placeholderFor", { agent: AGENT_NAMES[agent] })}
           value={prompt}
           onChange={(event) => { setPrompt(event.currentTarget.value); setCaret(event.currentTarget.selectionStart); }}
           onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
@@ -271,7 +275,7 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true, onSubm
           <AttachmentPicker state={attachments} disabled={busy} />
           <ModelPicker workspaceId={workspaceId} agent={agent} value={model} disabled={!installed(agent) || busy} onSelect={setModel} />
           <PermissionPicker agent={agent} value={permission} disabled={busy} onChange={setPermission} />
-          <Tooltip label="Run this task in a separate Git worktree" openDelay={350}>
+          <Tooltip label={t("composer.worktreeTip")} openDelay={350}>
             <button
               type="button"
               className={`${CHIP} ${isolated ? "!bg-accent-soft !text-accent" : ""}`}
@@ -280,7 +284,7 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true, onSubm
               onClick={() => setIsolated((value) => !value)}
             >
               <IconGitBranch size={14} className="shrink-0" />
-              <span>Worktree</span>
+              <span>{t("composer.worktree")}</span>
             </button>
           </Tooltip>
           <span className="min-w-0 flex-1" />

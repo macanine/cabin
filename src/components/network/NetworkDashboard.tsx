@@ -23,6 +23,7 @@ import { bareName, RoutePipeline } from "./RoutePipeline";
 import { useNetworkLive } from "./useNetworkLive";
 import { WorldMap } from "./WorldMap";
 import { mapRoute, type MapPoint } from "./mapRoute";
+import { useI18n } from "../../i18n";
 
 function placeOf(geo: GeoInfo | null | undefined): PointInfo["place"] {
   if (geo?.latitude == null || geo.longitude == null) return null;
@@ -36,6 +37,7 @@ function point(geo: GeoInfo | null | undefined, kind: MapPoint["kind"], key: str
 }
 
 export function NetworkDashboard() {
+  const { t } = useI18n();
   const status = useApp((state) => state.network);
   const summary = useApp(selectNetworkSummary);
   const machineConnected = useApp((state) => state.machine?.state === "running" && state.machine.connection === "connected");
@@ -176,14 +178,17 @@ export function NetworkDashboard() {
     }
   }
 
+  const holding = status.connectivity === "rechecking";
   const canChangeGate = machineConnected && status.available && (status.running || status.paused) && gateBusy == null;
-  const canVerify = canChangeGate && !status.paused && status.gate !== "checking";
+  const canVerify = canChangeGate && !status.paused && status.gate !== "checking" && !holding;
   const gateChecking = gateBusy === "verify" || gateBusy === "accept" || summary.tone === "busy";
-  const needsGuidance = machineConnected && status.available && (summary.tone === "bad" || status.paused);
+  const needsGuidance = machineConnected && status.available && (summary.tone === "bad" || status.paused || holding);
   const guidance = networkGuidance(status, summary);
   const blockerFix = summary.blocker ? checkFix(summary.blocker) : null;
-  const bannerTone = status.paused ? "warn" : "bad";
-  const detailLine = status.exitPolicyError ?? (summary.tone === "bad" && summary.detail !== guidance.headline ? summary.detail : null);
+  const bannerTone = holding ? "info" : status.paused ? "warn" : "bad";
+  const detailLine = holding
+    ? [summary.detail, status.connectivityError].filter(Boolean).join(" · ")
+    : status.exitPolicyError ?? (summary.tone === "bad" && summary.detail !== guidance.headline ? summary.detail : null);
 
   function jumpTo(target: "route" | "region" | "browser") {
     if (target === "browser") uiActions.openBrowserEnvironment();
@@ -196,12 +201,12 @@ export function NetworkDashboard() {
 
   return (
     <div className="grid gap-5">
-      {/* 1. Connection status — becomes an inline guided recovery banner whenever blocked or paused */}
+      {/* 1. Connection status — becomes an inline guided recovery banner whenever held, blocked, or paused */}
       {needsGuidance ? (
-        <section className={`net-guide-card ${bannerTone}`} role="alert" aria-label="Network status">
+        <section className={`net-guide-card ${bannerTone}`} role={holding ? "status" : "alert"} aria-label="Network status">
           <div className="net-guide-head">
             <span className="net-guide-icon" aria-hidden>
-              {status.paused ? <IconPlayerPause size={16} /> : <IconShieldLock size={16} />}
+              {holding ? <Loader size={14} /> : status.paused ? <IconPlayerPause size={16} /> : <IconShieldLock size={16} />}
             </span>
             <div className="min-w-0 flex-1">
               <strong className="block text-[15px] leading-snug font-semibold text-fg">{guidance.headline}</strong>
@@ -210,31 +215,33 @@ export function NetworkDashboard() {
             <NetworkCheckButton />
           </div>
           {detailLine && <div className="net-guide-detail mono">{detailLine}</div>}
-          <div className="flex flex-wrap items-center gap-2 pt-0.5">
-            {status.paused ? (
-              <Button size="xs" leftSection={<IconPlayerPlay size={14} />} disabled={!canChangeGate} loading={gateBusy === "pause"} onClick={() => void runGate("pause")}>
-                Resume internet
-              </Button>
-            ) : status.exitPolicyError ? (
-              <>
-                <Button size="xs" disabled={!canVerify} loading={gateBusy === "accept"} onClick={() => void runGate("accept")}>
-                  Approve new exit
+          {!holding && (
+            <div className="flex flex-wrap items-center gap-2 pt-0.5">
+              {status.paused ? (
+                <Button size="xs" leftSection={<IconPlayerPlay size={14} />} disabled={!canChangeGate} loading={gateBusy === "pause"} onClick={() => void runGate("pause")}>
+                  {t("network.resumeInternet")}
                 </Button>
-                <Button size="xs" variant="default" disabled={!canVerify} loading={gateBusy === "verify"} onClick={() => void runGate("verify")}>
-                  Check again
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button size="xs" leftSection={<IconRefresh size={14} />} disabled={!canVerify} loading={gateBusy === "verify"} onClick={() => void runGate("verify")}>
-                  Check again
-                </Button>
-                {blockerFix && blockerFix.target !== "route" && (
-                  <Button size="xs" variant="default" onClick={() => jumpTo(blockerFix.target)}>{blockerFix.label}</Button>
-                )}
-              </>
-            )}
-          </div>
+              ) : status.exitPolicyError ? (
+                <>
+                  <Button size="xs" disabled={!canVerify} loading={gateBusy === "accept"} onClick={() => void runGate("accept")}>
+                    {t("network.approveNewExit")}
+                  </Button>
+                  <Button size="xs" variant="default" disabled={!canVerify} loading={gateBusy === "verify"} onClick={() => void runGate("verify")}>
+                    {t("network.checkAgain")}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button size="xs" leftSection={<IconRefresh size={14} />} disabled={!canVerify} loading={gateBusy === "verify"} onClick={() => void runGate("verify")}>
+                    {t("network.checkAgain")}
+                  </Button>
+                  {blockerFix && blockerFix.target !== "route" && (
+                    <Button size="xs" variant="default" onClick={() => jumpTo(blockerFix.target)}>{blockerFix.label}</Button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
           {guidance.tip && <p className="m-0 text-xs leading-relaxed text-faint">{guidance.tip}</p>}
         </section>
       ) : (
@@ -243,17 +250,17 @@ export function NetworkDashboard() {
             {gateChecking ? <Loader size={13} /> : <IconShieldCheck size={16} />}
           </span>
           <div className="net-head-copy" role="status">
-            <strong>{gateChecking ? "Verifying internet access…" : summary.tone === "ok" ? "Internet open" : !machineConnected ? "Machine offline" : "Gateway ready"}</strong>
+            <strong>{gateChecking ? t("network.verifying") : summary.tone === "ok" ? t("network.internetOpen") : !machineConnected ? t("network.machineOffline") : t("network.gatewayReady")}</strong>
             <span className="truncate" title={`${activePath} · ${policyLabel}`}>{activePath} · {policyLabel}</span>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
             {machineConnected && status.available && (
               <>
                 <Button size="xs" variant="default" leftSection={<IconRefresh size={13} />} disabled={!canVerify} loading={gateBusy === "verify"} onClick={() => void runGate("verify")}>
-                  Check
+                  {t("network.checkNow")}
                 </Button>
                 <Button size="xs" variant="subtle" color="gray" disabled={!canChangeGate} loading={gateBusy === "pause"} onClick={() => void runGate("pause")}>
-                  Pause
+                  {t("network.pause")}
                 </Button>
               </>
             )}
@@ -269,11 +276,11 @@ export function NetworkDashboard() {
       )}
 
       {/* 2. Traffic route & IP protection */}
-      <section className="net-section" id="network-route" tabIndex={-1} aria-label="Traffic route">
+      <section className="net-section" id="network-route" tabIndex={-1} aria-label={t("network.trafficRoute")}>
         <header className="net-section-head">
           <div>
-            <h3>Traffic route</h3>
-            <p>How VM traffic reaches the internet, and when Cabin locks access on IP changes.</p>
+            <h3>{t("network.trafficRoute")}</h3>
+            <p>{t("network.trafficRouteSubtitle")}</p>
           </div>
           <div className="flex items-center gap-1.5">
             {draft.enabled && draft.chain.length > 0 && (
@@ -293,16 +300,14 @@ export function NetworkDashboard() {
 
         <div className="net-card">
           <SettingRow
-            label="Route through proxy nodes"
-            hint={draft.enabled
-              ? "VM traffic exits through the proxy chain below instead of going direct."
-              : "Off (recommended): the VM uses your computer’s own connection, including any active VPN."}
+            label={t("network.routeViaProxy")}
+            hint={t("network.routeViaProxyHint")}
           >
             <Switch
               size="sm"
               checked={draft.enabled}
               onChange={(event) => editRoute({ ...draft, enabled: event.currentTarget.checked })}
-              aria-label="Route through proxy nodes"
+              aria-label={t("network.routeViaProxy")}
               disabled={!status.available}
             />
           </SettingRow>
@@ -331,24 +336,27 @@ export function NetworkDashboard() {
             </div>
           ) : (
             <div className="net-direct-strip">
-              <span className="net-direct-node"><IconServer size={14} /> Ubuntu VM</span>
+              <span className="net-direct-node"><IconServer size={14} /> {t("network.directStripVm")}</span>
               <IconArrowRight size={13} className="text-faint" aria-hidden />
-              <span className="net-direct-node"><IconDeviceLaptop size={14} /> This computer’s network</span>
+              <span className="net-direct-node"><IconDeviceLaptop size={14} /> {t("network.directStripHost")}</span>
               <IconArrowRight size={13} className="text-faint" aria-hidden />
-              <span className="net-direct-node"><IconWorld size={14} /> Public internet</span>
+              <span className="net-direct-node"><IconWorld size={14} /> {t("network.directStripWeb")}</span>
             </div>
           )}
 
           <SettingRow
-            label="Exit IP protection"
+            label={t("network.exitPolicy")}
             hint={(draft.exitPolicy ?? "static") === "dynamicResidential"
-              ? "Allows the exit IP to rotate as long as it stays in the approved country and continent."
-              : "Blocks VM internet whenever the public IP changes unexpectedly, until you approve the new exit."}
+              ? t("network.exitPolicyHintDynamic")
+              : t("network.exitPolicyHintStatic")}
           >
             <Select
               size="xs"
-              aria-label="Exit IP protection"
-              data={[{ value: "static", label: "Static IP" }, { value: "dynamicResidential", label: "Dynamic residential IP" }]}
+              aria-label={t("network.exitPolicy")}
+              data={[
+                { value: "static", label: t("network.exitPolicyStatic") },
+                { value: "dynamicResidential", label: t("network.exitPolicyDynamic") },
+              ]}
               value={draft.exitPolicy ?? "static"}
               onChange={(value) => {
                 if (value === "static" || value === "dynamicResidential") editRoute({ ...draft, exitPolicy: value });
@@ -371,11 +379,11 @@ export function NetworkDashboard() {
       </section>
 
       {/* 3. Live observed location & world map */}
-      <section className="net-section" aria-label="Observed exit and map">
+      <section className="net-section" aria-label={t("network.liveLocation")}>
         <header className="net-section-head">
           <div>
-            <h3>Live location</h3>
-            <p>The public exit observed through the VM gateway and your computer’s direct location.</p>
+            <h3>{t("network.liveLocation")}</h3>
+            <p>{t("network.liveLocationSubtitle")}</p>
           </div>
         </header>
         <div className="net-card net-where">
@@ -393,10 +401,10 @@ export function NetworkDashboard() {
               actions={
                 <div className="net-point-switch" role="tablist" aria-label="Inspect route endpoint">
                   <button type="button" role="tab" aria-selected={footerPoint === "exit"} onClick={() => selectPoint("exit")}>
-                    Exit
+                    {t("network.exit")}
                   </button>
                   <button type="button" role="tab" aria-selected={footerPoint === "origin"} onClick={() => selectPoint("origin")}>
-                    This computer
+                    {t("network.thisComputer")}
                   </button>
                 </div>
               }
@@ -406,7 +414,7 @@ export function NetworkDashboard() {
       </section>
 
       <NodeDrawer opened={drawer} onClose={() => setDrawer(false)} catalog={catalog}
-        chain={draft.chain} hostRefreshAllowed={status.gate === "closed"} onAdd={addNode} />
+        chain={draft.chain} hostRefreshAllowed={status.gate === "closed" && !holding} onAdd={addNode} />
     </div>
   );
 }

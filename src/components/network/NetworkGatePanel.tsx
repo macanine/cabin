@@ -13,11 +13,13 @@ import { useApp } from "../../state/store";
 import { uiActions } from "../../state/ui";
 import { RecoveryPanel } from "../Recovery";
 import { DisclosureChevron, Reveal } from "../motion";
+import { useI18n } from "../../i18n";
 
 export function NetworkCheckButton() {
+  const { t } = useI18n();
   return (
     <button type="button" className="press inline-flex cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent py-1 text-sm font-medium text-muted hover:text-fg" aria-haspopup="dialog" onClick={uiActions.openNetworkCheck}>
-      Network check <IconChevronRight size={14} aria-hidden />
+      {t("network.check")} <IconChevronRight size={14} aria-hidden />
     </button>
   );
 }
@@ -116,6 +118,7 @@ export function NetworkGatePanel({ status, onRemediate, history }: {
   onRemediate: CheckAction;
   history: ReactNode;
 }) {
+  const { t } = useI18n();
   const summary = useApp(selectNetworkSummary);
   const machine = useApp((state) => state.machine);
   const [busy, setBusy] = useState<"verify" | "accept" | "pause" | "recover" | null>(null);
@@ -149,8 +152,11 @@ export function NetworkGatePanel({ status, onRemediate, history }: {
   }
 
   const guidance = networkGuidance(status, summary);
+  const holding = status.connectivity === "rechecking";
   const bannerTone = checking ? "info" : status.paused ? "warn" : summary.tone === "ok" ? "ok" : summary.tone === "bad" ? "bad" : "off";
-  const detailLine = status.exitPolicyError ?? (summary.tone === "bad" && summary.detail !== guidance.headline ? summary.detail : null);
+  const detailLine = holding
+    ? [summary.detail, status.connectivityError].filter(Boolean).join(" · ")
+    : status.exitPolicyError ?? (summary.tone === "bad" && summary.detail !== guidance.headline ? summary.detail : null);
 
   return (
     <section className="grid gap-4" aria-label="Network check">
@@ -164,43 +170,43 @@ export function NetworkGatePanel({ status, onRemediate, history }: {
             <p className="m-0 mt-1 text-sm leading-relaxed text-muted">{guidance.explanation}</p>
           </div>
         </div>
-        {detailLine && !checking && (
+        {detailLine && (!checking || holding) && (
           <div className="net-guide-detail mono">{detailLine}</div>
         )}
         {!checking && status.available && (status.running || status.paused) && (
           <div className="flex flex-wrap items-center gap-2 pt-0.5">
             {status.paused ? (
-              <Button size="xs" disabled={!canChange} loading={busy === "pause"} onClick={() => void run("pause")}>Resume internet</Button>
+              <Button size="xs" disabled={!canChange} loading={busy === "pause"} onClick={() => void run("pause")}>{t("network.resumeInternet")}</Button>
             ) : status.exitPolicyError ? (
               <>
-                <Button size="xs" disabled={!canVerify} onClick={() => void run("accept")}>Approve new exit</Button>
-                <Button size="xs" variant="default" onClick={() => onRemediate("route")}>Review route &amp; IP policy</Button>
+                <Button size="xs" disabled={!canVerify} onClick={() => void run("accept")}>{t("network.approveNewExit")}</Button>
+                <Button size="xs" variant="default" onClick={() => onRemediate("route")}>{t("network.reviewRoutePolicy")}</Button>
               </>
             ) : (
               <>
-                {fix && <Button size="xs" onClick={() => onRemediate(fix.target)}>{exitProblem ? "Review route" : fix.label}</Button>}
-                <Button size="xs" variant={fix || summary.tone === "ok" ? "default" : "filled"} disabled={!canVerify} onClick={() => void run("verify")}>Check again</Button>
-                {summary.tone === "ok" && <Button size="xs" variant="subtle" color="gray" disabled={!canChange} loading={busy === "pause"} onClick={() => void run("pause")}>Pause internet</Button>}
+                {fix && <Button size="xs" onClick={() => onRemediate(fix.target)}>{exitProblem ? t("network.reviewRoute") : fix.label}</Button>}
+                <Button size="xs" variant={fix || summary.tone === "ok" ? "default" : "filled"} disabled={!canVerify} onClick={() => void run("verify")}>{t("network.checkAgain")}</Button>
+                {summary.tone === "ok" && <Button size="xs" variant="subtle" color="gray" disabled={!canChange} loading={busy === "pause"} onClick={() => void run("pause")}>{t("network.pauseInternet")}</Button>}
               </>
             )}
           </div>
         )}
-        {guidance.tip && !checking && (
+        {guidance.tip && (!checking || holding) && (
           <p className="m-0 text-xs leading-relaxed text-faint">{guidance.tip}</p>
         )}
       </div>
 
       <details className="group border-t border-line pt-2.5" open={summary.tone === "bad" && !status.exitPolicyError && Boolean(report)}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-md px-0.5 py-1 text-sm font-medium text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
-          Diagnostics and settings <IconChevronRight size={15} className="transition-transform duration-150 group-open:rotate-90" />
+          {t("network.diagnosticsAndSettings")} <IconChevronRight size={15} className="transition-transform duration-150 group-open:rotate-90" />
         </summary>
         <div className="mt-3 grid gap-3">
           {status.error && <RecoveryPanel compact message={status.error} />}
           {report && <NetworkCheckReportView key={report.id} report={report} onFix={onRemediate} />}
           {history}
           {status.available && <div className="flex flex-wrap gap-x-5 gap-y-3 pt-1">
-            {!status.paused && summary.tone !== "ok" && <Switch size="xs" label="Pause internet" checked={status.paused} disabled={!canChange} onChange={() => void run("pause")} />}
-            <Switch size="xs" label="Automatically retry" checked={status.autoRecover} disabled={!canChange} onChange={() => void run("recover")} />
+            {!status.paused && summary.tone !== "ok" && <Switch size="xs" label={t("network.pauseInternet")} checked={status.paused} disabled={!canChange} onChange={() => void run("pause")} />}
+            <Switch size="xs" label={t("network.autoRetry")} checked={status.autoRecover} disabled={!canChange} onChange={() => void run("recover")} />
           </div>}
         </div>
       </details>

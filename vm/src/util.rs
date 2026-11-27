@@ -162,6 +162,7 @@ pub fn atomic_write_bytes(path: &Path, data: &[u8], mode: u32) -> Result<()> {
         file.write_all(data)?;
         file.flush()?;
         file.sync_all()?;
+        drop(file);
         fs::rename(&temp, path)?;
         if let Ok(directory) = File::open(parent) {
             let _ = directory.sync_all();
@@ -193,11 +194,27 @@ pub fn read_text(path: &Path) -> String {
 
 pub fn remove_path(path: &Path) -> std::io::Result<()> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
-            fs::remove_file(path)
+        Ok(metadata) => {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::FileTypeExt;
+                if metadata.permissions().readonly() {
+                    let mut perms = metadata.permissions();
+                    perms.set_readonly(false);
+                    let _ = fs::set_permissions(path, perms);
+                }
+                if metadata.file_type().is_symlink_dir() {
+                    return fs::remove_dir(path);
+                }
+            }
+            if metadata.file_type().is_symlink() || metadata.is_file() {
+                fs::remove_file(path)
+            } else if metadata.is_dir() {
+                fs::remove_dir_all(path)
+            } else {
+                fs::remove_file(path)
+            }
         }
-        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path),
-        Ok(_) => fs::remove_file(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }

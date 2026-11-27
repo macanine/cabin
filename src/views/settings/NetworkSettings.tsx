@@ -13,6 +13,7 @@ import { syncClock } from "../../state/clockSync";
 import { NetworkDashboard } from "../../components/network/NetworkDashboard";
 import { useExitMonitor } from "../../state/networkMonitor";
 import { baseLocale, environmentMatch } from "../../lib/geo";
+import { useI18n } from "../../i18n";
 
 const localeLabel = (locale: string | null | undefined) => locale?.split(".")[0].replace("_", "-") ?? "unknown";
 
@@ -202,6 +203,7 @@ function Region() {
 }
 
 export function NetworkSettings() {
+  const { t } = useI18n();
   const regionReady = useApp((state) => state.guestReady && state.environment != null);
   const focus = useUi((state) => state.networkSettingsFocus);
 
@@ -214,15 +216,15 @@ export function NetworkSettings() {
   }, [focus]);
 
   return (
-    <SettingsPage wide title="Network" subtitle="How the machine reaches the internet, and the region it presents.">
+    <SettingsPage wide title={t("network.title")} subtitle={t("network.subtitle")}>
       <NetworkDashboard />
-      <section id="network-region" className="mt-5 scroll-mt-4 outline-none" tabIndex={-1} aria-label="VM region">
+      <section id="network-region" className="mt-5 scroll-mt-4 outline-none" tabIndex={-1} aria-label={t("network.vmRegion")}>
         {regionReady ? <Region /> : (
           <div className="net-section">
             <header className="net-section-head">
               <div>
-                <h3>VM region</h3>
-                <p>Keeps Ubuntu’s time zone and language aligned with your verified exit location.</p>
+                <h3>{t("network.vmRegion")}</h3>
+                <p>{t("network.vmRegionSubtitle")}</p>
               </div>
             </header>
             <SettingGroup><SettingRow label="Time zone and language" hint="Available once the machine is connected." /></SettingGroup>

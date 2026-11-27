@@ -26,6 +26,7 @@ import { nodeIpc } from "../services/ipc/node";
 import { useApp } from "../state/store";
 import { uiActions } from "../state/ui";
 import { AgentAccount, PROVIDER_NAMES } from "./agents/AgentAccount";
+import { useI18n } from "../i18n";
 
 const AGENT_BLURBS: Record<AgentKind, string> = {
   claude: "Anthropic’s coding agent CLI with Claude.ai subscription or API billing.",
@@ -147,6 +148,7 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
   const agents = useApp((state) => state.agents);
   const setup = useAgentSetup();
   const terminal = useAgentTerminal();
+  const { t } = useI18n();
   const [initial, setInitial] = useState<AgentKind | null>(null);
   if (initial == null && agents.length > 0) setInitial(firstAgent(agents));
   const kind = selected ?? initial ?? AGENT_KINDS[0];
@@ -157,13 +159,13 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
   return (
     <>
       <ViewHeader
-        title="Agents"
+        title={t("agents.title")}
         subtitle={agents.length > 0 ? (
           <>
-            {installed} of {AGENT_KINDS.length} installed
-            {attention > 0 && <span className="text-warn"> · {attention} need{attention === 1 ? "s" : ""} attention</span>}
+            {t("home.agentsSummary", { ready: installed, total: AGENT_KINDS.length })}
+            {attention > 0 && <span className="text-warn"> · {t("home.needAttention", { count: attention })}</span>}
           </>
-        ) : undefined}
+        ) : t("agents.subtitle")}
       >
         <Tooltip label="Refresh agent status" openDelay={300}>
           <ActionIcon size="md" variant="subtle" color="gray" aria-label="Refresh agent status"
@@ -265,6 +267,7 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
   onOpenTerminal: (kind: AgentKind) => void;
   starting: AgentKind | null;
 }) {
+  const { t } = useI18n();
   const state = agentState(status);
   const nodeBlocked = (status?.requiresNode ?? true) && setup.problem != null;
   const canOperate = Boolean(status?.cliChecked && status.installed && status.version);
@@ -332,10 +335,10 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
         <div className="flex shrink-0 items-center gap-1.5">
           {canOperate && state.tone === "warn" ? (
             <Button size="xs" leftSection={<IconTerminal2 size={14} />} loading={starting === kind}
-              disabled={starting != null} onClick={() => onOpenTerminal(kind)}>Sign in</Button>
+              disabled={starting != null} onClick={() => onOpenTerminal(kind)}>{t("agents.signIn")}</Button>
           ) : canOperate ? (
             <Button size="xs" variant="default" leftSection={<IconTerminal2 size={14} />} loading={starting === kind}
-              disabled={starting != null} onClick={() => onOpenTerminal(kind)}>Open terminal</Button>
+              disabled={starting != null} onClick={() => onOpenTerminal(kind)}>{t("agents.openTerminal")}</Button>
           ) : null}
           <Menu position="bottom-end" withinPortal shadow="md" width={196}>
             <Menu.Target>
@@ -346,13 +349,13 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
             <Menu.Dropdown>
               {canOperate && (
                 <Menu.Item leftSection={<IconDownload size={14} />} disabled={setup.installing != null || nodeBlocked}
-                  onClick={() => void setup.install(status)}>Update CLI</Menu.Item>
+                  onClick={() => void setup.install(status)}>{t("agents.updateCli")}</Menu.Item>
               )}
               <Menu.Item leftSection={<IconPlug size={14} />} onClick={() => uiActions.navigate({ kind: "mcp", agent: kind })}>
-                MCP servers
+                {t("agents.mcpServers")}
               </Menu.Item>
               <Menu.Item leftSection={<IconSparkles size={14} />} onClick={() => uiActions.navigate({ kind: "skills", agent: kind })}>
-                Skills
+                {t("agents.skills")}
               </Menu.Item>
             </Menu.Dropdown>
           </Menu>
@@ -363,25 +366,25 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
 
       {hasLimits && limits && <PlanLimits kind={kind} limits={limits} />}
 
-      <section className="ag-block" aria-label="Account">
+      <section className="ag-block" aria-label={t("agents.account")}>
         <div className="ag-block-head">
-          <h3>Account</h3>
+          <h3>{t("agents.account")}</h3>
         </div>
         <div className="ag-surface">
           <AgentAccount kind={kind} status={status} onOpenTerminal={onOpenTerminal} starting={starting} hideLimits={hasLimits} />
         </div>
       </section>
 
-      <section className="ag-block" aria-label="Runtime and extensions">
+      <section className="ag-block" aria-label={t("agents.runtimeAndExtensions")}>
         <div className="ag-block-head">
-          <h3>Runtime &amp; extensions</h3>
+          <h3>{t("agents.runtimeAndExtensions")}</h3>
         </div>
         <div className="ag-links-card">
           {runtime && (
             <div className="ag-link-group">
               <button type="button" className="ag-link-row press" aria-expanded={runtimeOpen} onClick={() => setRuntimeOpen((v) => !v)}>
                 <div className="min-w-0 flex-1">
-                  <strong>Chat runtime</strong>
+                  <strong>{t("agents.chatRuntime")}</strong>
                   <span>{runtimeSummary(runtime) ?? `${runtime.selected} · ${runtime.package}`}</span>
                 </div>
                 <IconChevronRight size={15} className={`text-faint transition-transform duration-150 ${runtimeOpen ? "rotate-90" : ""}`} />
@@ -396,24 +399,24 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
           <button type="button" className="ag-link-row press" onClick={() => uiActions.navigate({ kind: "mcp", agent: kind })}>
             <IconPlug size={16} className="shrink-0 text-muted" />
             <div className="min-w-0 flex-1">
-              <strong>MCP servers</strong>
-              <span>Configure user-level tools for {AGENT_NAMES[kind]}</span>
+              <strong>{t("agents.mcpServers")}</strong>
+              <span>{t("agents.mcpHint", { agent: AGENT_NAMES[kind] })}</span>
             </div>
             <IconChevronRight size={15} className="text-faint" />
           </button>
           <button type="button" className="ag-link-row press" onClick={() => uiActions.navigate({ kind: "skills", agent: kind })}>
             <IconSparkles size={16} className="shrink-0 text-muted" />
             <div className="min-w-0 flex-1">
-              <strong>Skills</strong>
-              <span>Manage shared skills enabled for {AGENT_NAMES[kind]}</span>
+              <strong>{t("agents.skills")}</strong>
+              <span>{t("agents.skillsHint", { agent: AGENT_NAMES[kind] })}</span>
             </div>
             <IconChevronRight size={15} className="text-faint" />
           </button>
           <details className="ag-backups-details">
             <summary className="ag-link-row press">
               <div className="min-w-0 flex-1">
-                <strong>Project skills &amp; backups</strong>
-                <span>Inspect workspace skills and configuration backups</span>
+                <strong>{t("agents.projectSkillsBackups")}</strong>
+                <span>{t("agents.projectSkillsBackupsHint")}</span>
               </div>
               <IconChevronRight size={15} className="ag-backups-chevron text-faint" />
             </summary>

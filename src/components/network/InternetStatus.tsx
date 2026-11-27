@@ -6,9 +6,10 @@ import { useExitMonitor, useGatewayTraffic } from "../../state/networkMonitor";
 import { useApp } from "../../state/store";
 import { uiActions, useUi } from "../../state/ui";
 import { Flag } from "../Flag";
+import { useI18n } from "../../i18n";
 
 const ICON = { ok: IconWorld, warn: IconPlayerPause, bad: IconWorldOff, off: IconWorldOff, busy: IconWorld } as const;
-const TONE = { ok: "text-muted", busy: "text-muted", warn: "text-warn", bad: "text-bad", off: "text-faint" } as const;
+const TONE = { ok: "text-muted", busy: "text-info", warn: "text-warn", bad: "text-bad", off: "text-faint" } as const;
 
 function Rates() {
   const history = useGatewayTraffic();
@@ -23,14 +24,18 @@ function Rates() {
 }
 
 function useInternetDisplay() {
-  const { tone, title } = useApp(selectNetworkSummary);
+  const { t } = useI18n();
+  const { tone, title, detail } = useApp(selectNetworkSummary);
+  const holding = useApp((state) => state.networkLoaded && state.network.connectivity === "rechecking");
   const { value, loading } = useExitMonitor();
   // The Network page already shows the observation in its exit card.
   const showExit = useUi(({ view }) => view.kind !== "settings" || view.tab !== "network");
   const countryCode = showExit ? flag(value?.countryCode) : null;
   const country = showExit ? value?.country || countryCode : null;
-  const label = country ? `${title} · ${country}` : title;
-  return { tone, title, countryCode, country, pending: showExit && loading, label };
+  const displayTitle = holding ? t("network.holding") : tone === "ok" ? t("network.internet") : title;
+  const sub = holding ? detail : country;
+  const label = sub ? `${displayTitle} · ${sub}` : displayTitle;
+  return { tone, title: displayTitle, sub, holding, countryCode, pending: showExit && loading, label };
 }
 
 type InternetDisplay = ReturnType<typeof useInternetDisplay>;
@@ -53,14 +58,14 @@ export function InternetMark() {
 
 export function InternetStatus() {
   const display = useInternetDisplay();
-  const { tone, title, country, label } = display;
+  const { tone, title, sub, label } = display;
   return (
     <div className="grid h-9 min-w-0 grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-2.5 pr-2 pl-[7px]">
       <StatusMark display={display} />
       <button type="button" className="press -ml-1 flex h-7 min-w-0 cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent px-1 py-0 text-left text-sm font-medium hover:bg-hover"
         onClick={uiActions.openNetworkCheck} aria-label={`Network check: ${label}`} aria-haspopup="dialog">
-        <span className={`shrink-0 ${TONE[tone]}`}>{tone === "ok" ? "Internet" : title}</span>
-        {country && <span className="truncate text-muted">· {country}</span>}
+        <span className={`shrink-0 ${TONE[tone]}`}>{title}</span>
+        {sub && <span className="truncate text-muted">· {sub}</span>}
       </button>
       {tone === "ok" && <Rates />}
     </div>

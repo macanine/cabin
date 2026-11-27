@@ -8,7 +8,7 @@ use agent_core::model::{NetworkConnectivity, NetworkTraffic};
 use vm_core::network_probe_targets::{ALTERNATE_HTTPS_URL, HTTPS_URL};
 
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(15);
-pub const RETRY_INTERVAL: Duration = Duration::from_millis(150);
+pub const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const FAILURE_LIMIT: u32 = 3;
 pub(crate) const HOLD_TIMEOUT: Duration = Duration::from_secs(45);

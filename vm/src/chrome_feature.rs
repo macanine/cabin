@@ -177,7 +177,8 @@ pub fn verify_started(cfg: &Config) -> Result<()> {
 }
 
 pub fn can_enable_spice(cfg: &Config) -> bool {
-    !cfg.desktop_spice
+    cfg!(unix)
+        && !cfg.desktop_spice
         && !cfg.device_enabled()
         && desktop::enabled(cfg)
         && cfg.desktop_marker_path().is_file()

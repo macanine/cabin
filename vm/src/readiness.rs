@@ -532,8 +532,10 @@ pub(crate) fn physical_memory_mb() -> Option<u64> {
 /// The argv that enables the Windows Hypervisor Platform from an elevated
 /// PowerShell child. Exit code 3010 means a restart is pending.
 pub fn enable_whpx_argv() -> Vec<String> {
-    let script = "$p = Start-Process dism.exe -Verb RunAs -Wait -PassThru -ArgumentList \
-        '/online','/enable-feature','/featurename:HypervisorPlatform','/all','/norestart'; exit $p.ExitCode";
+    let script = "$ErrorActionPreference = 'Stop'; \
+        $p = Start-Process dism.exe -Verb RunAs -Wait -PassThru -ArgumentList \
+        '/online','/enable-feature','/featurename:HypervisorPlatform','/all','/norestart'; \
+        if ($null -eq $p) { exit 1 }; exit $p.ExitCode";
     [
         "powershell",
         "-NoProfile",
@@ -546,7 +548,10 @@ pub fn enable_whpx_argv() -> Vec<String> {
 }
 
 fn run(argv: &[String]) -> Result<std::process::ExitStatus> {
-    Ok(Command::new(&argv[0]).args(&argv[1..]).status()?)
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]);
+    crate::util::no_window(&mut command);
+    Ok(command.status()?)
 }
 
 /// Read bounded diagnostic tails without following paths supplied by the UI

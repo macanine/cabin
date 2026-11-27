@@ -3,7 +3,7 @@ import {
   IconActivity, IconArchive, IconArchiveOff, IconBell, IconBrandChrome, IconChartBar, IconCheck,
   IconClock, IconCopy, IconDots, IconDownload, IconFolder, IconFolderPlus, IconLayoutSidebarLeftCollapse,
   IconLayoutSidebarLeftExpand, IconListDetails, IconPencil, IconPlayerPlay, IconPlayerStop, IconPlus, IconSearch,
-  IconPlug, IconRobot, IconSettings, IconSparkles, IconTerminal2, IconTrash,
+  IconPlug, IconRobot, IconSettings, IconTerminal2, IconTrash,
   IconRefresh,
 } from "@tabler/icons-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
@@ -34,6 +34,7 @@ import { useClock } from "../lib/clock";
 import { useMinute } from "../lib/useNow";
 import { IS_MAC } from "../lib/platform";
 import { DisclosureChevron, Reveal } from "./motion";
+import { type MessageKey, useI18n } from "../i18n";
 
 const NEW_TASK_KEY = IS_MAC ? "⌘N" : "Ctrl+Shift+N";
 const SEARCH_KEY = IS_MAC ? "⌘K" : "Ctrl+Shift+K";
@@ -89,8 +90,9 @@ export function InlineRename({
 
 /** Collapses or expands the sidebar; lives in the window toolbar. */
 export function SidebarToggle() {
+  const { t } = useI18n();
   const collapsed = useUi((ui) => ui.sidebarCollapsed);
-  const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  const label = collapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar");
   return (
     <Tooltip label={IS_MAC ? label : `${label} (Ctrl+Shift+B)`} position="bottom">
       <ActionIcon variant="subtle" color="gray" size="md" onClick={uiActions.toggleSidebar} aria-label={label}>
@@ -295,9 +297,15 @@ function readCollapsedProjects(): Set<string> {
   }
 }
 
-const LIST_TITLE: Record<TaskListMode, string> = { project: "Projects", session: "Tasks", recent: "Recent", unread: "Inbox" };
+const LIST_TITLE_KEY: Record<TaskListMode, MessageKey> = {
+  project: "nav.projects",
+  session: "nav.tasks",
+  recent: "nav.recent",
+  unread: "nav.inbox",
+};
 
 function TaskList() {
+  const { t } = useI18n();
   const workspaces = useApp((state) => state.workspaces);
   const sessions = useApp((state) => state.sessions);
   const mode = useUi((ui) => ui.taskListMode);
@@ -329,7 +337,7 @@ function TaskList() {
   return (
     <>
       <div className="flex h-8 items-center gap-0.5 pr-2.5 pl-4 text-xs font-medium text-faint">
-        <span className="min-w-0 flex-1">{LIST_TITLE[mode]}</span>
+        <span className="min-w-0 flex-1">{t(LIST_TITLE_KEY[mode])}</span>
         <Menu position="bottom-end" withinPortal shadow="md" width={210}>
           <Menu.Target>
             <ActionIcon size="sm" variant="subtle" color="gray" aria-label="Task list options">
@@ -337,9 +345,9 @@ function TaskList() {
             </ActionIcon>
           </Menu.Target>
           <Menu.Dropdown>
-            <Menu.Item leftSection={<IconFolderPlus size={15} />} onClick={() => setCreating(true)}>New project…</Menu.Item>
+            <Menu.Item leftSection={<IconFolderPlus size={15} />} onClick={() => setCreating(true)}>{t("nav.newProject")}</Menu.Item>
             <Menu.Divider />
-            <Menu.Label>Group by</Menu.Label>
+            <Menu.Label>{t("nav.groupBy")}</Menu.Label>
             {TASK_LIST_MODES.map((item) => (
               <Menu.Item
                 key={item.mode}
@@ -347,7 +355,7 @@ function TaskList() {
                 rightSection={mode === item.mode ? <IconCheck size={14} /> : undefined}
                 onClick={() => uiActions.setTaskListMode(item.mode)}
               >
-                {item.label}
+                {t(LIST_TITLE_KEY[item.mode])}
               </Menu.Item>
             ))}
             <Menu.Divider />
@@ -356,16 +364,16 @@ function TaskList() {
               rightSection={showArchived ? <IconCheck size={14} /> : undefined}
               onClick={() => setShowArchived(!showArchived)}
             >
-              Show archived
+              {t("nav.showArchived")}
             </Menu.Item>
           </Menu.Dropdown>
         </Menu>
       </div>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto px-2 pt-0.5 pb-2.5" aria-label="Tasks">
+      <nav className="min-h-0 flex-1 overflow-y-auto px-2 pt-0.5 pb-2.5" aria-label={t("nav.tasks")}>
         {waiting.length > 0 && (
-          <div className="mb-2 rounded-xl bg-warn/10 p-1" role="group" aria-label="Needs you">
-            <div className="px-2 pt-1 pb-0.5 text-xs font-medium text-warn">Needs you</div>
+          <div className="mb-2 rounded-xl bg-warn/10 p-1" role="group" aria-label={t("nav.needsYou")}>
+            <div className="px-2 pt-1 pb-0.5 text-xs font-medium text-warn">{t("nav.needsYou")}</div>
             {waiting.map((session) => <TaskItem key={session.id} session={session} unread={false} now={now} showProject={projectName(session.workspaceId)} />)}
           </div>
         )}
@@ -393,14 +401,14 @@ function TaskList() {
                     showProject={mode === "project" ? undefined : projectName(session.workspaceId)}
                   />
                 ))}
-                {section.workspace && section.sessions.length === 0 && <div className="py-1 pl-[38px] text-xs text-faint">No tasks yet</div>}
+                {section.workspace && section.sessions.length === 0 && <div className="py-1 pl-[38px] text-xs text-faint">{t("nav.noTasksYet")}</div>}
               </Reveal>
             </div>
           );
         })}
         {empty && (
           <p className="m-0 px-2.5 py-1 text-[13px] text-faint">
-            {mode === "unread" ? "Nothing unread." : "Tasks you start appear here."}
+            {mode === "unread" ? t("nav.nothingUnread") : t("nav.tasksAppearHere")}
           </p>
         )}
       </nav>
@@ -412,6 +420,7 @@ function TaskList() {
 // ------------------------------------------------------------------- bottom
 
 function SettingsMenu() {
+  const { t } = useI18n();
   const machine = useApp((state) => state.machine);
   const { running } = useOperationSummary();
   const { projects } = useMacPermissions();
@@ -419,37 +428,37 @@ function SettingsMenu() {
   return (
     <Menu position="top-end" width={220} withinPortal shadow="md">
       <Menu.Target>
-        <ActionIcon variant="subtle" color={needsAccess ? "yellow" : "gray"} aria-label="Settings and machine" title={needsAccess ? "A local project folder needs attention" : undefined}>
+        <ActionIcon variant="subtle" color={needsAccess ? "yellow" : "gray"} aria-label={t("nav.settings")} title={needsAccess ? "A local project folder needs attention" : undefined}>
           <IconSettings size={17} />
         </ActionIcon>
       </Menu.Target>
       <Menu.Dropdown>
         <Menu.Label>{machineLabel(machine)}</Menu.Label>
         {machine && machine.state === "running" && (
-          <Menu.Item leftSection={<IconPlayerStop size={15} />} disabled={machine.busy != null} onClick={() => attempt(machineIpc.stop(), "Machine stopped")}>
-            Stop machine
+          <Menu.Item leftSection={<IconPlayerStop size={15} />} disabled={machine.busy != null} onClick={() => attempt(machineIpc.stop())}>
+            {t("nav.stopMachine")}
           </Menu.Item>
         )}
         {machine && machine.state === "stopped" && (
-          <Menu.Item leftSection={<IconPlayerPlay size={15} />} disabled={machine.busy != null} onClick={() => attempt(machineIpc.start(), "Machine started")}>
-            Start machine
+          <Menu.Item leftSection={<IconPlayerPlay size={15} />} disabled={machine.busy != null} onClick={() => attempt(machineIpc.start())}>
+            {t("nav.startMachine")}
           </Menu.Item>
         )}
         {machine && machine.state === "notInstalled" && (
           <Menu.Item leftSection={<IconDownload size={15} />} onClick={() => uiActions.navigate({ kind: "install" })}>
-            {machine.busy ? "Install progress" : "Install machine…"}
+            {machine.busy ? t("nav.installProgress") : t("nav.installMachine")}
           </Menu.Item>
         )}
         <Menu.Item leftSection={<IconActivity size={15} />} onClick={() => uiActions.showOperations(true)}>
-          Operations
-          {running > 0 && <span className="float-right ml-3 text-xs text-faint">{running} running</span>}
+          {t("nav.operations")}
+          {running > 0 && <span className="float-right ml-3 text-xs text-faint">{running}</span>}
         </Menu.Item>
         <Menu.Divider />
         <Menu.Item leftSection={<IconFolder size={15} />} rightSection={needsAccess && <span className="dot warn" aria-label="Needs attention" />}
-          onClick={() => uiActions.navigate({ kind: "settings", tab: "permissions" })}>Folder permissions</Menu.Item>
+          onClick={() => uiActions.navigate({ kind: "settings", tab: "permissions" })}>{t("settings.tab.permissions")}</Menu.Item>
         <Menu.Item leftSection={<IconSettings size={15} />} onClick={() => uiActions.navigate({ kind: "settings" })}>
-          Settings
-          {IS_MAC && <span className="float-right ml-3 text-xs text-faint">⌘,</span>}
+          {t("nav.settings")}
+          <span className="float-right ml-3 text-xs text-faint">{IS_MAC ? "⌘," : "Ctrl+,"}</span>
         </Menu.Item>
       </Menu.Dropdown>
     </Menu>
@@ -481,13 +490,12 @@ function AccountBar({ collapsed, today }: { collapsed: boolean; today: string | 
 
 // -------------------------------------------------------------------- shell
 
-type ToolKind = "chrome" | "agents" | "usage" | "mcp" | "skills";
-const TOOLS: { kind: ToolKind; label: string; icon: typeof IconRobot }[] = [
-  { kind: "chrome", label: "Chrome", icon: IconBrandChrome },
-  { kind: "agents", label: "Agents", icon: IconRobot },
-  { kind: "usage", label: "Usage", icon: IconChartBar },
-  { kind: "mcp", label: "MCP", icon: IconPlug },
-  { kind: "skills", label: "Skills", icon: IconSparkles },
+type ToolKind = "chrome" | "agents" | "usage" | "mcp";
+const TOOLS: { kind: ToolKind; labelKey: MessageKey; icon: typeof IconRobot; matches?: (view: string) => boolean }[] = [
+  { kind: "chrome", labelKey: "nav.chrome", icon: IconBrandChrome },
+  { kind: "agents", labelKey: "nav.agents", icon: IconRobot },
+  { kind: "usage", labelKey: "nav.usage", icon: IconChartBar },
+  { kind: "mcp", labelKey: "nav.extensions", icon: IconPlug, matches: (v) => v === "mcp" || v === "skills" },
 ];
 const RAIL_STEP = 40; // collapsed: 38px button + 2px gap
 
@@ -496,23 +504,25 @@ const RAIL_STEP = 40; // collapsed: 38px button + 2px gap
  * column of icons when collapsed). One pill glides to the open one.
  */
 function ToolDock({ collapsed }: { collapsed: boolean }) {
+  const { t } = useI18n();
   const view = useUi((ui) => ui.view.kind);
   const attention = useApp((state) => attentionCount(state.agents));
   const today = todayLabel(useUsage().todayCost);
-  const index = TOOLS.findIndex((tool) => tool.kind === view);
+  const index = TOOLS.findIndex((tool) => tool.matches ? tool.matches(view) : tool.kind === view);
   const at = Math.max(index, 0);
   return (
-    <nav aria-label="Tools" className={`relative mx-2 shrink-0 ${collapsed ? "flex flex-col gap-0.5" : "grid grid-cols-5"}`}>
+    <nav aria-label="Tools" className={`relative mx-2 shrink-0 ${collapsed ? "flex flex-col gap-0.5" : "grid grid-cols-4"}`}>
       <span
         aria-hidden
         className="glass pointer-events-none absolute top-0 left-0 rounded-lg transition-[translate,opacity] duration-[var(--motion-glide)] ease-[var(--ease-spring)]"
         style={{
-          width: collapsed ? "100%" : "20%", height: collapsed ? RAIL_STEP - 2 : "100%",
+          width: collapsed ? "100%" : "25%", height: collapsed ? RAIL_STEP - 2 : "100%",
           translate: collapsed ? `0 ${at * RAIL_STEP}px` : `${at * 100}% 0`, opacity: index < 0 ? 0 : 1,
         }}
       />
-      {TOOLS.map(({ kind, label, icon: Icon }) => {
-        const active = view === kind;
+      {TOOLS.map(({ kind, labelKey, icon: Icon, matches }) => {
+        const label = t(labelKey);
+        const active = matches ? matches(view) : view === kind;
         const alert = kind === "agents" && attention > 0;
         return (
           <button
@@ -538,22 +548,23 @@ function ToolDock({ collapsed }: { collapsed: boolean }) {
 
 /** Start something, or find something: the two things the sidebar opens with. */
 function StartRow({ collapsed }: { collapsed: boolean }) {
+  const { t } = useI18n();
   const active = useUi((ui) => ui.view.kind === "new");
   const icon = "press grid size-9 shrink-0 cursor-pointer place-items-center rounded-[10px] border border-line/70 bg-surface/60 p-0 text-muted hover:border-line hover:bg-surface hover:text-fg";
   const fresh = () => uiActions.navigate({ kind: "new" });
   const search = (
-    <Tooltip label={`Search (${SEARCH_KEY})`} position={collapsed ? "right" : "bottom"}>
-      <button type="button" className={icon} aria-label="Search tasks and pages" onClick={uiActions.openPalette}><IconSearch size={16} stroke={1.8} /></button>
+    <Tooltip label={`${t("nav.search")} (${SEARCH_KEY})`} position={collapsed ? "right" : "bottom"}>
+      <button type="button" className={icon} aria-label={t("nav.search")} onClick={uiActions.openPalette}><IconSearch size={16} stroke={1.8} /></button>
     </Tooltip>
   );
   if (collapsed) {
     return (
       <div className="flex shrink-0 flex-col items-center gap-1.5">
-        <Tooltip label={`New task (${NEW_TASK_KEY})`} position="right">
+        <Tooltip label={`${t("nav.newTask")} (${NEW_TASK_KEY})`} position="right">
           <button
             type="button"
             className={`press grid size-9 cursor-pointer place-items-center rounded-[10px] border p-0 ${active ? "border-line bg-surface text-accent shadow-[0_1px_2px_rgb(0_0_0/0.05)]" : "border-line/70 bg-surface/65 text-fg hover:border-line hover:bg-surface"}`}
-            aria-label="New task"
+            aria-label={t("nav.newTask")}
             aria-current={active ? "page" : undefined}
             onClick={fresh}
           >
@@ -573,7 +584,7 @@ function StartRow({ collapsed }: { collapsed: boolean }) {
         className={`press flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[10px] border px-2 text-left text-md font-medium ${active ? "border-line bg-surface text-fg shadow-[0_1px_2px_rgb(0_0_0/0.05)]" : "border-line/70 bg-surface/65 text-fg hover:border-line hover:bg-surface"}`}
       >
         <span className="grid size-5 shrink-0 place-items-center text-accent"><IconPlus size={16} stroke={2.1} /></span>
-        <span className="min-w-0 flex-1 truncate">New task</span>
+        <span className="min-w-0 flex-1 truncate">{t("nav.newTask")}</span>
         <span className="rounded bg-hover px-1.5 py-px font-mono text-[10.5px] font-normal text-faint">{NEW_TASK_KEY}</span>
       </button>
       {search}

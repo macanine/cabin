@@ -44,6 +44,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> 
             .map_err(|error| Error::path("write", &temp, error))?;
         file.sync_all()
             .map_err(|error| Error::path("sync", &temp, error))?;
+        drop(file);
         fs::rename(&temp, path).map_err(|error| Error::path("replace", path, error))
     })();
     if result.is_err() {
@@ -139,7 +140,15 @@ pub fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     }
     #[cfg(windows)]
     {
-        std::os::windows::fs::symlink_file(target, link)
+        let resolved = link
+            .parent()
+            .map(|parent| parent.join(target))
+            .unwrap_or_else(|| target.to_path_buf());
+        if resolved.is_dir() {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        }
     }
 }
 

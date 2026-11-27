@@ -22,11 +22,11 @@ import { SessionView } from "./views/SessionView";
 import { SettingsView } from "./views/SettingsView";
 import { ChromePage } from "./views/ChromeView";
 import { AgentsView } from "./views/AgentsView";
-import { McpView } from "./views/McpView";
-import { SkillsView } from "./views/SkillsView";
+import { ExtensionsView } from "./views/ExtensionsView";
 import { UsageView } from "./views/UsageView";
 import { TitleBar, TitleBarSlotProvider, useWindowChrome, WindowStrip } from "./components/TitleBar";
 import { toIpcError } from "./services/ipc/common";
+import { useI18n } from "./i18n";
 import "./App.css";
 
 function Main() {
@@ -56,9 +56,9 @@ function View() {
     case "agents":
       return <AgentsView agent={view.agent} section={view.section} />;
     case "mcp":
-      return <McpView key={view.agent ?? "all"} agent={view.agent} />;
+      return <ExtensionsView key={`mcp:${view.agent ?? "all"}`} initialTab="mcp" agent={view.agent} />;
     case "skills":
-      return <SkillsView key={view.agent ?? "all"} agent={view.agent} />;
+      return <ExtensionsView key={`skills:${view.agent ?? "all"}`} initialTab="skills" agent={view.agent} />;
     case "usage":
       return <UsageView />;
     case "new":
@@ -67,6 +67,7 @@ function View() {
 }
 
 export default function App() {
+  const { t } = useI18n();
   const ready = useApp((state) => state.ready);
   const needsInstall = useApp((state) => state.machine?.state === "notInstalled");
   const workspaceReady = useApp((state) => state.guestReady && state.start?.state !== "running" && state.start?.state !== "failed");
@@ -112,6 +113,18 @@ export default function App() {
         event.preventDefault();
         return;
       }
+      if (!IS_MAC && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        if (event.code === "ArrowLeft") uiActions.back();
+        else if (event.code === "ArrowRight") uiActions.forward();
+        else return;
+        event.preventDefault();
+        return;
+      }
+      if (!IS_MAC && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.code === "Comma") {
+        uiActions.navigate({ kind: "settings" });
+        event.preventDefault();
+        return;
+      }
       if (!event.ctrlKey || !event.shiftKey || event.altKey) return;
       if (event.code === "KeyN") uiActions.navigate({ kind: "new" });
       else if (event.code === "KeyB") uiActions.toggleSidebar();
@@ -134,9 +147,9 @@ export default function App() {
           ) : !ready ? (
             <BootPage>
               {error ? (
-                <BootHero tone="bad" progress={1} title="Could not load the app" subtitle={error} />
+                <BootHero tone="bad" progress={1} title={t("boot.loadFailed")} subtitle={error} />
               ) : (
-                <BootHero tone="running" progress={null} title="Opening cabin" />
+                <BootHero tone="running" progress={null} title={t("boot.opening")} />
               )}
             </BootPage>
           ) : showWorkspace || showSettings ? <Main /> : <MachineGate />}

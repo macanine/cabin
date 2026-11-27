@@ -36,6 +36,37 @@ fn compare(a: &[u16], b: &[u16]) -> Option<Ordering> {
     Some(a.iter().map(fold).cmp(b.iter().map(fold)))
 }
 
+/// Windows reserves DOS device names regardless of case or file extension
+/// (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, `con.txt`, etc.).
+fn is_reserved_windows_name(part: &str) -> bool {
+    let stem = part.split('.').next().unwrap_or(part).trim_end();
+    matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
 /// Reject distinct spellings that Windows can resolve to one destination.
 /// Include implicit parents, even if a scan or ignore rule omitted them.
 pub(super) fn check_names<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
@@ -44,6 +75,7 @@ pub(super) fn check_names<'a>(paths: impl IntoIterator<Item = &'a str>) -> Resul
         if path.split('/').any(|part| {
             part.is_empty()
                 || part.ends_with(['.', ' '])
+                || is_reserved_windows_name(part)
                 || part.chars().any(|ch| {
                     ch < ' ' || matches!(ch, '\\' | ':' | '"' | '<' | '>' | '|' | '?' | '*')
                 })
@@ -98,7 +130,7 @@ pub(super) fn check_names<'a>(paths: impl IntoIterator<Item = &'a str>) -> Resul
 /// A missing scan entry is not permission to delete its guest counterpart
 /// or overwrite it from the guest. Probe the actual Windows path first.
 pub(super) fn require_local_absence(root: &Path, path: &str) -> Result<(), String> {
-    match std::fs::symlink_metadata(root.join(path)) {
+    match std::fs::symlink_metadata(agent_core::sync::join_wire_path(root, path)) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Ok(_) => Err(format!(
             "Sync stopped: {path:?} resolves to a local item that was not in the scan. Check its name or ignore rules."
@@ -180,6 +212,11 @@ mod tests {
             "dir\\file",
             "file:stream",
             "../file",
+            "CON",
+            "nul.json",
+            "src/com1.txt",
+            "LPT9",
+            "aux/readme.md",
         ] {
             assert!(check_names([path]).is_err(), "accepted {path}");
         }

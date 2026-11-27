@@ -16,32 +16,64 @@
 }
 
 .composer {
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
   background: var(--surface);
   border-radius: 18px;
-  padding: 12px 14px 10px;
-  box-shadow: var(--shadow-float);
-  transition: border-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out), transform 260ms var(--ease-out);
+  padding: 10px 14px 10px;
+  box-shadow:
+    0 2px 8px -2px rgb(24 18 12 / 0.06),
+    0 1px 2px rgb(24 18 12 / 0.04);
+  transition:
+    border-color 200ms var(--ease-out),
+    box-shadow 240ms var(--ease-out),
+    transform 240ms var(--ease-out);
+}
+
+.composer:has(textarea:focus) {
+  border-color: color-mix(in srgb, var(--text) 14%, var(--border));
+  box-shadow:
+    0 12px 30px -10px rgb(24 18 12 / 0.14),
+    0 4px 12px -4px rgb(24 18 12 / 0.06);
+  transform: translateY(-1.5px);
 }
 
 .composer.submitting {
   transform: translateY(10px);
 }
 
-.composer:has(textarea:focus) {
-  border-color: var(--field-focus-border);
-  box-shadow: var(--shadow-float), 0 0 0 3px var(--accent-soft);
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .composer:has(textarea:focus) {
+    border-color: color-mix(in srgb, var(--text) 16%, var(--border));
+    box-shadow:
+      0 14px 32px -10px rgb(0 0 0 / 0.48),
+      0 4px 12px -4px rgb(0 0 0 / 0.28);
+  }
+}
+:root[data-theme="dark"] .composer:has(textarea:focus) {
+  border-color: color-mix(in srgb, var(--text) 16%, var(--border));
+  box-shadow:
+    0 14px 32px -10px rgb(0 0 0 / 0.48),
+    0 4px 12px -4px rgb(0 0 0 / 0.28);
 }
 
-/* Room for CJK: Japanese and Chinese glyphs fill the whole em box and the
-   IME underlines the text being composed, so lines need more leading than
-   Latin text. (WebKit's caret follows the line box; the accent caret colour
-   keeps it from looking heavy.) */
-.composer textarea {
+.composer .composer-textarea {
+  display: block;
+  width: 100%;
+  min-height: 46px;
+  padding: 2px 2px 4px;
+  margin: 0;
+  border: 0;
+  background: transparent;
   font-size: 15px;
-  line-height: 1.65;
-  padding-block: 6px;
+  line-height: 1.5;
   color: var(--text);
+  caret-color: var(--accent);
+  outline: none;
+  box-shadow: none;
+}
+
+.composer .composer-textarea::placeholder {
+  color: var(--faint);
 }
 
 .worktree-choice {

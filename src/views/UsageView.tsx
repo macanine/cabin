@@ -19,6 +19,7 @@ import {
 import { toIpcError } from "../services/ipc/common";
 import type { AgentKind, UsageLog } from "../services/ipc/generated/core";
 import { usageIpc, type UsageDashboard, type UsageFilter } from "../services/ipc/usage";
+import { useI18n } from "../i18n";
 
 const PAGE_SIZE = 20;
 const RANGE_KEY = "cabin.usageRange";
@@ -60,14 +61,15 @@ const agentName = (agent: string) => (isAgentKind(agent) ? AGENT_NAMES[agent] : 
  * agent & model breakdowns, and tabbed request/model/pricing explorer.
  */
 export function UsageView() {
+  const { t } = useI18n();
   const usage = useUsage();
   const [pricesOpen, setPricesOpen] = useState(false);
   const [dashboard, setDashboard] = useState<UsageDashboard | null>(null);
   return (
     <>
-      <ViewHeader title="Usage" subtitle={usage.syncedAt != null ? `Synced ${formatTime(usage.syncedAt)}` : "Syncing agent records…"}>
+      <ViewHeader title={t("usage.title")} subtitle={usage.syncedAt != null ? `${t("usage.sync")} · ${formatTime(usage.syncedAt)}` : t("usage.subtitle")}>
         <Button size="xs" variant="default" leftSection={<IconCoin size={14} />} onClick={() => setPricesOpen(true)}>
-          Model prices
+          {t("usage.prices")}
         </Button>
       </ViewHeader>
       <MachineGate>

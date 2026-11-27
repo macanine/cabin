@@ -1,4 +1,4 @@
-import { Button, Menu, Tooltip } from "@mantine/core";
+import { Button, Loader, Menu, Tooltip } from "@mantine/core";
 import { IconPlayerPlay, IconPlayerStop, IconSettings, IconRobot, IconServer, IconShieldLock } from "@tabler/icons-react";
 import { useState, type ComponentProps } from "react";
 import { machineIpc } from "../services/ipc/app";
@@ -10,6 +10,7 @@ import { networkGuidance, selectNetworkSummary } from "../lib/networkSummary";
 import { AGENT_KINDS } from "../components/AgentPicker";
 import { Composer } from "../components/Composer";
 import { RecentTasks } from "../components/RecentTasks";
+import { useI18n } from "../i18n";
 
 type Tone = "ok" | "warn" | "bad" | "off";
 const DOT: Record<Tone, string> = { ok: "bg-ok", warn: "bg-warn", bad: "bg-bad", off: "bg-faint" };
@@ -31,6 +32,7 @@ const Fact = ({ tone, label, detail, ...rest }: { tone: Tone; label: string; det
 };
 
 export function NewSessionView({ workspaceId }: { workspaceId?: string }) {
+  const { t } = useI18n();
   const machine = useApp((state) => state.machine);
   const networkStatus = useApp((state) => state.networkLoaded ? state.network : null);
   const network = useApp(selectNetworkSummary);
@@ -41,7 +43,8 @@ export function NewSessionView({ workspaceId }: { workspaceId?: string }) {
   const ready = agents.filter((agent) => agent.installed).length;
   const running = machine?.state === "running";
   const stopped = machine?.state === "stopped";
-  const blockedGuidance = running && network.tone === "bad" ? networkGuidance(networkStatus, network) : null;
+  const holding = running && networkStatus?.connectivity === "rechecking";
+  const blockedGuidance = running && (network.tone === "bad" || holding) ? networkGuidance(networkStatus, network) : null;
   const machineLine = machine
     ? [machine.cpus ? `${machine.cpus} CPU` : null, machine.memoryMb ? `${Math.round(machine.memoryMb / 1024)} GB` : null].filter(Boolean).join(" · ")
     : null;
@@ -50,22 +53,22 @@ export function NewSessionView({ workspaceId }: { workspaceId?: string }) {
     <div className="home-scroll">
       <div className="home-stage">
         <h1 className={`m-0 mb-5 text-center text-[28px] font-semibold tracking-[-0.025em] text-fg transition-opacity duration-200 ${submitting ? "opacity-35" : ""}`}>
-          What should an agent work on?
+          {t("home.title")}
         </h1>
 
         {stopped || machine?.state === "notInstalled" ? (
           <div className="glass flex items-center gap-3 rounded-2xl p-4 text-md">
             <IconServer size={20} className="shrink-0 text-warn" />
-            <span className="min-w-0 flex-1">{stopped ? "The machine is stopped. Resume it to run agents." : "Install the machine first: agents run inside it."}</span>
+            <span className="min-w-0 flex-1">{stopped ? t("home.machineStopped") : t("home.machineNotInstalled")}</span>
             {stopped
-              ? <Button size="xs" leftSection={<IconPlayerPlay size={14} />} onClick={() => attempt(machineIpc.start())}>Resume machine</Button>
-              : <Button size="xs" onClick={() => uiActions.navigate({ kind: "install" })}>Install</Button>}
+              ? <Button size="xs" leftSection={<IconPlayerPlay size={14} />} onClick={() => attempt(machineIpc.start())}>{t("home.resumeMachine")}</Button>
+              : <Button size="xs" onClick={() => uiActions.navigate({ kind: "install" })}>{t("common.install")}</Button>}
           </div>
         ) : noAgents ? (
           <div className="glass flex items-center gap-3 rounded-2xl p-4 text-md">
             <IconRobot size={20} className="shrink-0 text-warn" />
-            <span className="min-w-0 flex-1">Install Claude Code, Codex, OpenCode, Pi or Antigravity to get started.</span>
-            <Button size="xs" onClick={() => uiActions.navigate({ kind: "agents" })}>Install agents</Button>
+            <span className="min-w-0 flex-1">{t("home.noAgents")}</span>
+            <Button size="xs" onClick={() => uiActions.navigate({ kind: "agents" })}>{t("home.installAgents")}</Button>
           </div>
         ) : (
           <Composer key={workspaceId ?? "any"} workspaceId={workspaceId} onSubmittingChange={setSubmitting} />
@@ -75,29 +78,31 @@ export function NewSessionView({ workspaceId }: { workspaceId?: string }) {
             <Menu.Target>
               <Fact
                 tone={machine?.busy ? "warn" : running ? (machine?.connection === "connected" ? "ok" : "warn") : stopped ? "off" : "bad"}
-                label={machine?.busy ? machine.busy : running ? (machine?.connection === "connected" ? "Machine running" : "Connecting…") : stopped ? "Machine stopped" : "Machine not installed"}
+                label={machine?.busy ? machine.busy : running ? (machine?.connection === "connected" ? t("home.machineRunning") : t("home.connecting")) : stopped ? t("home.machineStoppedShort") : t("home.machineNotInstalledShort")}
                 detail={running ? machineLine : null}
               />
             </Menu.Target>
             <Menu.Dropdown>
-              {running && <Menu.Item leftSection={<IconPlayerStop size={14} />} disabled={machine?.busy != null} onClick={() => attempt(machineIpc.stop(), "Machine stopped")}>Stop machine</Menu.Item>}
-              {stopped && <Menu.Item leftSection={<IconPlayerPlay size={14} />} disabled={machine?.busy != null} onClick={() => attempt(machineIpc.start(), "Machine started")}>Resume machine</Menu.Item>}
-              <Menu.Item leftSection={<IconSettings size={14} />} onClick={() => uiActions.navigate({ kind: "settings", tab: "machine" })}>Machine settings</Menu.Item>
+              {running && <Menu.Item leftSection={<IconPlayerStop size={14} />} disabled={machine?.busy != null} onClick={() => attempt(machineIpc.stop())}>{t("nav.stopMachine")}</Menu.Item>}
+              {stopped && <Menu.Item leftSection={<IconPlayerPlay size={14} />} disabled={machine?.busy != null} onClick={() => attempt(machineIpc.start())}>{t("home.resumeMachine")}</Menu.Item>}
+              <Menu.Item leftSection={<IconSettings size={14} />} onClick={() => uiActions.navigate({ kind: "settings", tab: "machine" })}>{t("home.machineSettings")}</Menu.Item>
             </Menu.Dropdown>
           </Menu>
-          <Fact tone={network.tone === "ok" ? "ok" : network.tone === "bad" ? "bad" : "warn"} label={network.title} detail={network.tone === "ok" ? null : network.detail} onClick={uiActions.openNetworkCheck} />
-          <Fact tone={attention > 0 ? "warn" : ready > 0 ? "ok" : "bad"} label={`${ready} of ${AGENT_KINDS.length} agents`} detail={attention > 0 ? `${attention} need attention` : null} onClick={() => uiActions.navigate({ kind: "agents" })} />
+          <Fact tone={network.tone === "ok" ? "ok" : network.tone === "bad" ? "bad" : "warn"} label={holding ? t("network.holding") : network.title} detail={network.tone === "ok" ? null : network.detail} onClick={uiActions.openNetworkCheck} />
+          <Fact tone={attention > 0 ? "warn" : ready > 0 ? "ok" : "bad"} label={t("home.agentsSummary", { ready, total: AGENT_KINDS.length })} detail={attention > 0 ? t("home.needAttention", { count: attention }) : null} onClick={() => uiActions.navigate({ kind: "agents" })} />
         </div>
         {blockedGuidance && (
-          <div className={`mt-4 flex flex-wrap items-center gap-3 rounded-2xl border border-bad/25 bg-bad/[0.05] px-4 py-3 text-sm transition-opacity duration-200 ${submitting ? "opacity-30" : ""}`} role="alert">
-            <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-bad/12 text-bad" aria-hidden>
-              <IconShieldLock size={16} />
+          <div className={`mt-4 flex flex-wrap items-center gap-3 rounded-2xl border px-4 py-3 text-sm transition-opacity duration-200 ${holding ? "border-info/25 bg-info/[0.06]" : "border-bad/25 bg-bad/[0.05]"} ${submitting ? "opacity-30" : ""}`} role={holding ? "status" : "alert"}>
+            <span className={`grid size-7 shrink-0 place-items-center rounded-lg ${holding ? "bg-info/12 text-info" : "bg-bad/12 text-bad"}`} aria-hidden>
+              {holding ? <Loader size={14} /> : <IconShieldLock size={16} />}
             </span>
             <div className="min-w-0 flex-1">
               <strong className="block text-[13px] font-semibold text-fg">{blockedGuidance.headline}</strong>
-              <span className="block text-xs text-muted">{blockedGuidance.explanation}</span>
+              <span className="block text-xs text-muted">
+                {holding ? [network.detail, networkStatus?.connectivityError].filter(Boolean).join(" · ") || blockedGuidance.explanation : blockedGuidance.explanation}
+              </span>
             </div>
-            <Button size="xs" onClick={uiActions.openNetworkCheck}>Resolve</Button>
+            <Button size="xs" variant={holding ? "default" : "filled"} onClick={uiActions.openNetworkCheck}>{holding ? t("common.inspect") : t("common.resolve")}</Button>
           </div>
         )}
         <div className={`transition-opacity duration-200 ${submitting ? "opacity-30" : ""}`}>

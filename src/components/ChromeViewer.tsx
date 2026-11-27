@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { IS_MAC } from "../lib/platform";
 import { chromeIpc, type DisplayProtocol } from "../services/ipc/chrome";
 import { toIpcError } from "../services/ipc/common";
 import { clipboard } from "../services/ipc/dialogs";
@@ -112,7 +113,10 @@ export function ChromeViewer({ protocol, onState, onError }: {
   }, [protocol, onState, paste]);
 
   return <div ref={target} className="chrome-viewer" role="application" aria-label="Chrome desktop" onKeyDownCapture={(event) => {
-    if (!event.metaKey || event.key.toLowerCase() !== "v") return;
+    const pasteKey = IS_MAC
+      ? event.metaKey && !event.ctrlKey && !event.altKey
+      : event.ctrlKey && !event.metaKey && !event.altKey;
+    if (!pasteKey || event.key.toLowerCase() !== "v") return;
     event.preventDefault();
     event.stopPropagation();
     paste();

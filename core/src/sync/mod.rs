@@ -137,20 +137,49 @@ pub struct PackRequest {
     pub paths: Vec<String>,
 }
 
-/// `~/x` and `$HOME/x` → absolute, for paths stored with the user's home.
+/// `~/x`, `~\x`, `$HOME/x`, `%USERPROFILE%\x` → absolute, for paths stored with the user's home.
 pub fn expand_home(path: &str) -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
     if path == "~" {
         return home.unwrap_or_else(|| PathBuf::from(path));
     }
     if let Some(rest) = path
         .strip_prefix("~/")
+        .or_else(|| path.strip_prefix("~\\"))
         .or_else(|| path.strip_prefix("$HOME/"))
+        .or_else(|| path.strip_prefix("%USERPROFILE%\\"))
+        .or_else(|| path.strip_prefix("%USERPROFILE%/"))
         && let Some(home) = home
     {
-        return home.join(rest);
+        return join_wire_path(&home, &rest.replace('\\', "/"));
     }
     PathBuf::from(path)
+}
+
+/// Strip Windows verbatim prefixes (`\\?\C:\...` → `C:\...`, `\\?\UNC\srv\share` → `\\srv\share`).
+/// Safe to call on every OS; leaves non-verbatim paths untouched.
+pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
+}
+
+/// Join a POSIX-style wire relative path (`a/b/c`) onto `root` using native
+/// path separators component-by-component so Windows verbatim paths never fail
+/// with `ERROR_INVALID_NAME` from mixed `/` separators.
+pub fn join_wire_path(root: &Path, rel: &str) -> PathBuf {
+    let mut full = root.to_path_buf();
+    for segment in rel.split('/').filter(|part| !part.is_empty()) {
+        full.push(segment);
+    }
+    full
 }
 
 /// A relative path from the wire is safe: no `..`, not absolute, not empty.

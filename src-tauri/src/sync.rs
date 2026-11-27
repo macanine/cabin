@@ -338,11 +338,13 @@ impl SyncManager {
         watch: bool,
     ) -> Result<SyncView, String> {
         let _transition = self.transitions.locked();
-        let host = agent_core::sync::expand_home(input.host_path.trim())
-            .canonicalize()
-            .map_err(|e| format!("{}: {e}", input.host_path))?;
+        let host = agent_core::sync::strip_verbatim_prefix(
+            &agent_core::sync::expand_home(input.host_path.trim())
+                .canonicalize()
+                .map_err(|e| format!("{}: {e}", input.host_path))?,
+        );
         if !host.is_dir() || host.parent().is_none() {
-            return Err("Choose a folder on this Mac".into());
+            return Err("Choose a folder on this computer".into());
         }
         let guest = input.guest_path.trim().trim_end_matches('/').to_string();
         if guest.is_empty() || guest == "~" || !(guest.starts_with('/') || guest.starts_with("~/"))

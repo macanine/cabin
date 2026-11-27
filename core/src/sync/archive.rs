@@ -42,7 +42,7 @@ pub fn pack(root: &Path, paths: &[String], out: impl Write) -> io::Result<()> {
         let Some(rel_path) = safe_relative(rel) else {
             continue;
         };
-        let full = root.join(rel_path);
+        let full = super::join_wire_path(root, rel);
         let Ok(meta) = fs::symlink_metadata(&full) else {
             continue;
         };
@@ -135,23 +135,59 @@ fn check_parents(root: &Path, rel: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Remove a file or symlink cleanly across Unix and Windows (including read-only
+/// files such as `.git/objects/*` and Windows directory symlinks/junctions).
+fn remove_file_or_link(full: &Path, meta: &fs::Metadata) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if meta.permissions().readonly() {
+            let mut perms = meta.permissions();
+            perms.set_readonly(false);
+            let _ = fs::set_permissions(full, perms);
+        }
+        if meta.file_type().is_symlink_dir() {
+            return fs::remove_dir(full);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = meta;
+    fs::remove_file(full)
+}
+
+/// Clear the Windows read-only attribute on an existing destination file so
+/// `fs::rename` can replace it atomically.
+fn make_writable_if_exists(full: &Path) {
+    #[cfg(windows)]
+    if let Ok(meta) = fs::symlink_metadata(full)
+        && !meta.is_dir()
+        && meta.permissions().readonly()
+    {
+        let mut perms = meta.permissions();
+        perms.set_readonly(false);
+        let _ = fs::set_permissions(full, perms);
+    }
+    #[cfg(not(windows))]
+    let _ = full;
+}
+
 fn remove(root: &Path, rel: &str) -> io::Result<bool> {
     let path = safe_relative(rel).ok_or_else(|| io::Error::other("unsafe path"))?;
     check_parents(root, path)?;
-    let full = root.join(path);
+    let full = super::join_wire_path(root, rel);
     let meta = match fs::symlink_metadata(&full) {
         Ok(meta) => meta,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
-    if meta.is_dir() {
+    if meta.is_dir() && !meta.file_type().is_symlink() {
         // Only an empty folder goes: anything still in it was not ours to remove.
         match fs::remove_dir(&full) {
             Ok(()) => Ok(true),
             Err(_) => Ok(false),
         }
     } else {
-        fs::remove_file(&full).map(|()| true)
+        remove_file_or_link(&full, &meta).map(|()| true)
     }
 }
 
@@ -164,7 +200,7 @@ fn clear_for(full: &Path, want_dir: bool) -> io::Result<()> {
                 fs::remove_dir(full)?;
             }
         }
-        Ok(_) if want_dir => fs::remove_file(full)?,
+        Ok(meta) if want_dir => remove_file_or_link(full, &meta)?,
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
@@ -177,7 +213,7 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
     // Earlier archive entries can replace a directory with a symlink, so a
     // successful check must never be reused for another entry.
     check_parents(root, path)?;
-    let full = root.join(path);
+    let full = super::join_wire_path(root, rel);
     if let Some(parent) = full.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -201,8 +237,8 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
                 .ok_or_else(|| io::Error::other("symlink without a target"))?
                 .into_owned();
             clear_for(&full, false)?;
-            if fs::symlink_metadata(&full).is_ok() {
-                fs::remove_file(&full)?;
+            if let Ok(meta) = fs::symlink_metadata(&full) {
+                remove_file_or_link(&full, &meta)?;
             }
             crate::fsx::symlink(&target, &full)?;
             fs::set_times_nofollow(&full, times)?;
@@ -242,6 +278,7 @@ fn write_entry<R: Read>(root: &Path, rel: &str, entry: &mut tar::Entry<R>) -> io
                 file.set_times(times)?;
                 drop(file);
                 clear_for(&full, false)?;
+                make_writable_if_exists(&full);
                 fs::rename(&tmp, &full)
             })();
             if written.is_err() {

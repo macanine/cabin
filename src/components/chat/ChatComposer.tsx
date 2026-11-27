@@ -139,7 +139,7 @@ export function ChatComposer({
         onSelect={(event) => onCaret(event.currentTarget.selectionStart ?? 0)}
         placeholder={placeholder}
         aria-label="Message"
-        classNames={{ input: "!min-h-9 !border-0 !bg-transparent !px-0.5 !py-0.5 !text-[14.5px] !leading-normal !shadow-none !outline-none" }}
+        classNames={{ input: "!min-h-[34px] !border-0 !bg-transparent !px-0.5 !pt-0.5 !pb-1 !text-[15px] !leading-[1.5] !shadow-none !outline-none" }}
         onCompositionStart={() => { composing.current = true; }}
         onCompositionEnd={() => { composing.current = false; }}
         onPaste={(event) => {

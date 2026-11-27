@@ -260,7 +260,12 @@ pub fn browser_paste(home: &Path, name: &str, text: Option<&str>) -> Result<()> 
             #[cfg(not(unix))]
             let output = {
                 let mut command = std::process::Command::new("powershell");
-                command.args(["-NoProfile", "-Command", "Get-Clipboard"]);
+                command.args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $t = Get-Clipboard -Raw; if ($null -ne $t) { [Console]::Out.Write($t) }",
+                ]);
                 crate::util::no_window(&mut command);
                 command.output()?
             };

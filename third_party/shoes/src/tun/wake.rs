@@ -161,6 +161,17 @@ impl WakeReceiver {
         self.events.clear();
         Ok(self.poller.wait(&mut self.events, delay)? > 0)
     }
+
+    /// Waits only for wake notifications while the relay gate is suspended,
+    /// avoiding a level-triggered busy loop if any stray datagram reaches `device`.
+    pub fn wait_suspended(&mut self, device: &UdpSocket, delay: Option<Duration>) -> io::Result<bool> {
+        if self.device_watched {
+            self.poller.delete(device)?;
+            self.device_watched = false;
+        }
+        self.events.clear();
+        Ok(self.poller.wait(&mut self.events, delay)? > 0)
+    }
 }
 
 #[cfg(test)]

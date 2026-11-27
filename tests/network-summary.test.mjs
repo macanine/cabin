@@ -136,4 +136,9 @@ test("networkGuidance explains static exit IP blocks, pauses, region mismatches,
 
   const open = status({ gate: "open" });
   assert.match(networkGuidance(open, networkSummary(open, true)).headline, /verified/i);
+
+  const held = status({ gate: "open", connectivity: "rechecking", failedChecks: 1, connectivityError: "Route changed" });
+  const heldGuide = networkGuidance(held, networkSummary(held, true));
+  assert.match(heldGuide.headline, /held|accelerating/i);
+  assert.match(heldGuide.explanation, /paused new outbound traffic/i);
 });

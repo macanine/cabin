@@ -440,7 +440,7 @@ fn run_direct_stack_thread(
         }
         if !policy.open {
             drop(policy);
-            if let Err(error) = wake_rx.wait(&tun, None) {
+            if let Err(error) = wake_rx.wait_suspended(&tun, None) {
                 if error.kind() != io::ErrorKind::Interrupted {
                     error!("TUN poll failed while suspended: {error}");
                     break;

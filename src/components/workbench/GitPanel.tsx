@@ -8,6 +8,7 @@ import { toIpcError } from "../../services/ipc/common";
 import { confirmAction } from "../../services/ipc/dialogs";
 import { workbenchIpc, type WorkbenchRoot } from "../../services/ipc/workbench";
 import { changeGroups, splitPath, STATUS_LABEL, statusLetter } from "../../lib/workbench";
+import { IS_MAC } from "../../lib/platform";
 import { uiActions } from "../../state/ui";
 import { Diff } from "../diff/Diff";
 import { Stat } from "../diff/Stat";
@@ -100,7 +101,7 @@ export function GitPanel({ root, git }: { root: WorkbenchRoot; git: GitStatusSta
         <textarea
           value={message}
           onChange={(e) => setMessage(e.currentTarget.value)}
-          placeholder={`Message (${navigator.platform.startsWith("Mac") ? "⌘" : "Ctrl"}↵ to ${commitLabel.toLowerCase()})`}
+          placeholder={`Message (${IS_MAC ? "⌘" : "Ctrl"}↵ to ${commitLabel.toLowerCase()})`}
           rows={message.includes("\n") ? 4 : 2}
           onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && message.trim() && total) { e.preventDefault(); void commit(); } }}
         />

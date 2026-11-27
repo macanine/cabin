@@ -1,4 +1,4 @@
-import { IconAdjustments, IconDeviceDesktop, IconDeviceSdCard, IconShieldLock, IconTool, IconWorld } from "@tabler/icons-react";
+import { IconAdjustments, IconDeviceDesktop, IconDeviceSdCard, IconPlugConnected, IconShieldLock, IconTool, IconWorld } from "@tabler/icons-react";
 import { useMacPermissions } from "../state/macPermissions";
 import { PermissionsSettings } from "./settings/PermissionsSettings";
 import type { ReactNode } from "react";
@@ -10,16 +10,19 @@ import { SETTINGS_TABS, type SettingsTab, uiActions } from "../state/ui";
 import { GeneralSettings } from "./settings/GeneralSettings";
 import { MachineSettings } from "./settings/MachineSettings";
 import { NetworkSettings } from "./settings/NetworkSettings";
+import { RemoteSettings } from "./settings/RemoteSettings";
 import { StorageSettings } from "./settings/StorageSettings";
 import { ToolsSettings } from "./settings/ToolsSettings";
+import { type MessageKey, useI18n } from "../i18n";
 
-const TABS: Record<SettingsTab, { label: string; icon: typeof IconAdjustments; guest: boolean }> = {
-  general: { label: "General", icon: IconAdjustments, guest: true },
-  network: { label: "Network", icon: IconWorld, guest: false },
-  tools: { label: "Tools", icon: IconTool, guest: true },
-  machine: { label: "Machine", icon: IconDeviceDesktop, guest: false },
-  storage: { label: "Storage", icon: IconDeviceSdCard, guest: false },
-  permissions: { label: "Folder permissions", icon: IconShieldLock, guest: false },
+const TABS: Record<SettingsTab, { labelKey: MessageKey; icon: typeof IconAdjustments; guest: boolean }> = {
+  general: { labelKey: "settings.tab.general", icon: IconAdjustments, guest: true },
+  network: { labelKey: "settings.tab.network", icon: IconWorld, guest: false },
+  remote: { labelKey: "settings.tab.remote", icon: IconPlugConnected, guest: false },
+  tools: { labelKey: "settings.tab.tools", icon: IconTool, guest: true },
+  machine: { labelKey: "settings.tab.machine", icon: IconDeviceDesktop, guest: false },
+  storage: { labelKey: "settings.tab.storage", icon: IconDeviceSdCard, guest: false },
+  permissions: { labelKey: "settings.tab.permissions", icon: IconShieldLock, guest: false },
 };
 
 /** Tabs that need the user's attention get a dot; everything else stays quiet. */
@@ -35,6 +38,7 @@ function useAttention(): Partial<Record<SettingsTab, boolean>> {
 }
 
 export function SettingsView({ tab = "general" }: { tab?: SettingsTab }) {
+  const { t } = useI18n();
   const attention = useAttention();
   const { guest } = TABS[tab];
   let content: ReactNode;
@@ -44,6 +48,9 @@ export function SettingsView({ tab = "general" }: { tab?: SettingsTab }) {
       break;
     case "network":
       content = <NetworkSettings />;
+      break;
+    case "remote":
+      content = <RemoteSettings />;
       break;
     case "tools":
       content = <ToolsSettings />;
@@ -61,16 +68,16 @@ export function SettingsView({ tab = "general" }: { tab?: SettingsTab }) {
 
   return (
     <>
-    <ViewHeader title="Settings" />
+    <ViewHeader title={t("settings.title")} />
     <div className="split-page">
-      <nav className="split-list !w-[226px] max-[860px]:!w-auto" aria-label="Settings">
+      <nav className="split-list !w-[226px] max-[860px]:!w-auto" aria-label={t("settings.title")}>
         {SETTINGS_TABS.map((key) => {
-          const { label, icon: Icon } = TABS[key];
+          const { labelKey, icon: Icon } = TABS[key];
           return (
             <button key={key} type="button" className="split-choice press" aria-current={key === tab ? "page" : undefined}
               onClick={() => uiActions.navigate({ kind: "settings", tab: key })}>
               <Icon size={16} stroke={1.7} />
-              <span>{label}</span>
+              <span>{t(labelKey)}</span>
               {attention[key] && <span className="dot warn" aria-label="Needs attention" />}
             </button>
           );

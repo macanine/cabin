@@ -9,10 +9,12 @@ import { AgentSelect } from "../../components/AgentPicker";
 import { SettingsPage } from "../SettingsView";
 import { type QuitPref, readQuitPref, writeQuitPref } from "../../lib/quitPref";
 import { type PerfPref, effectivePerf, readPerf, setPerf } from "../../lib/perfMode";
+import { type LocalePref, useI18n } from "../../i18n";
 
 /** Each field saves on its own (select: on change, text: on blur or Enter);
  * a rejected value goes back to the saved one. */
 export function GeneralSettings() {
+  const { t, pref: localePref, setLocalePref } = useI18n();
   const settings = useApp((state) => state.settings);
   const agents = useApp((state) => state.agents);
   const dataDir = useApp((state) => state.dataDir);
@@ -27,7 +29,7 @@ export function GeneralSettings() {
     if (!settings) return;
     const next = { ...settings, ...patch };
     if (JSON.stringify(next) === JSON.stringify(settings)) return;
-    const saved = await attempt(appIpc.updateSettings(next), "Saved");
+    const saved = await attempt(appIpc.updateSettings(next), t("common.saved"));
     if (saved) patchState((state) => ({ ...state, settings: saved }));
     else setDraft(settings);
   }
@@ -42,40 +44,71 @@ export function GeneralSettings() {
   });
 
   const installed = (kind: AgentKind) => agents.find((agent) => agent.kind === kind)?.installed ?? false;
+  const activeModeLabel = effectivePerf("auto") === "lite" ? t("settings.general.effectsLite") : t("settings.general.effectsFull");
 
   return (
-    <SettingsPage title="General" subtitle="Defaults, effects and the targets the app measures against.">
-      <SettingGroup title="Tasks">
-        <SettingRow label="Default agent" hint="Selected first when you start a new task.">
+    <SettingsPage title={t("settings.tab.general")} subtitle={t("settings.general.subtitle")}>
+      <SettingGroup title={t("settings.general.languageGroup")}>
+        <SettingRow label={t("settings.general.language")} hint={t("settings.general.languageHint")}>
+          <SegmentedControl
+            size="xs"
+            aria-label={t("settings.general.language")}
+            value={localePref}
+            onChange={(value) => setLocalePref(value as LocalePref)}
+            data={[
+              { value: "auto", label: t("settings.general.languageAuto") },
+              { value: "en", label: "English" },
+              { value: "zh-CN", label: "简体中文" },
+            ]}
+          />
+        </SettingRow>
+      </SettingGroup>
+      <SettingGroup title={t("settings.general.tasksGroup")}>
+        <SettingRow label={t("settings.general.defaultAgent")} hint={t("settings.general.defaultAgentHint")}>
           <AgentSelect value={draft.defaultAgent} installed={installed} onChange={(kind) => void save({ defaultAgent: kind })} width={220} />
         </SettingRow>
       </SettingGroup>
-      <SettingGroup title="App">
-        <SettingRow label="When quitting" hint="The close button only hides the window; the app and machine keep running in the menu bar. Quit (⌘Q) uses this choice.">
+      <SettingGroup title={t("settings.general.appGroup")}>
+        <SettingRow label={t("settings.general.whenQuitting")} hint={t("settings.general.whenQuittingHint")}>
           <SegmentedControl
-            size="xs" aria-label="When quitting" value={quit}
+            size="xs" aria-label={t("settings.general.whenQuitting")} value={quit}
             onChange={(value) => { setQuit(value as QuitPref); writeQuitPref(value as QuitPref); }}
-            data={[{ value: "ask", label: "Ask" }, { value: "stop", label: "Stop the machine" }, { value: "background", label: "Keep running" }]}
+            data={[
+              { value: "ask", label: t("settings.general.quitAsk") },
+              { value: "stop", label: t("settings.general.quitStop") },
+              { value: "background", label: t("settings.general.quitBackground") },
+            ]}
           />
         </SettingRow>
-        <SettingRow label="Effects" hint={perf === "auto" ? `Follows the system's reduced motion and transparency settings (now: ${effectivePerf("auto") === "lite" ? "lite" : "full"}).` : perf === "lite" ? "No blur, animation or window transparency; solid surfaces." : "Glass, blur, animation and window transparency."}>
+        <SettingRow
+          label={t("settings.general.effects")}
+          hint={perf === "auto"
+            ? t("settings.general.effectsHintAuto", { mode: activeModeLabel })
+            : perf === "lite"
+              ? t("settings.general.effectsHintLite")
+              : t("settings.general.effectsHintFull")}
+        >
           <SegmentedControl
-            size="xs" aria-label="Effects" value={perf}
+            size="xs" aria-label={t("settings.general.effects")} value={perf}
             onChange={(value) => { setPerfState(value as PerfPref); setPerf(value as PerfPref); }}
-            data={[{ value: "auto", label: "Auto" }, { value: "full", label: "Full effects" }, { value: "lite", label: "Lite" }]}
+            data={[
+              { value: "auto", label: t("common.auto") },
+              { value: "full", label: t("settings.general.effectsFull") },
+              { value: "lite", label: t("settings.general.effectsLite") },
+            ]}
           />
         </SettingRow>
       </SettingGroup>
-      <SettingGroup title="Network targets">
-        <SettingRow label="Latency target" hint="The performance monitor connects here (host:port, plain TCP).">
-          <TextInput size="xs" w={220} aria-label="Latency target" {...text("latencyTarget")} />
+      <SettingGroup title={t("settings.general.targetsGroup")}>
+        <SettingRow label={t("settings.general.latencyTarget")} hint={t("settings.general.latencyTargetHint")}>
+          <TextInput size="xs" w={220} aria-label={t("settings.general.latencyTarget")} {...text("latencyTarget")} />
         </SettingRow>
-        <SettingRow label="Connectivity check" hint="Used by “Check network” and proxy node tests.">
-          <TextInput size="xs" w={220} aria-label="Connectivity check" {...text("checkTarget")} />
+        <SettingRow label={t("settings.general.checkTarget")} hint={t("settings.general.checkTargetHint")}>
+          <TextInput size="xs" w={220} aria-label={t("settings.general.checkTarget")} {...text("checkTarget")} />
         </SettingRow>
       </SettingGroup>
-      <SettingGroup title="Data">
-        <SettingRow label="Data folder" hint="Workspaces, the operation journal, backups and environment.sh live here, inside the machine. Set CABIN_HOME to move it.">
+      <SettingGroup title={t("settings.general.dataGroup")}>
+        <SettingRow label={t("settings.general.dataFolder")} hint={t("settings.general.dataFolderHint")}>
           <code className="selectable block rounded-lg bg-hover px-2.5 py-1.5 font-mono text-xs text-muted [overflow-wrap:anywhere]">{dataDir}</code>
         </SettingRow>
       </SettingGroup>

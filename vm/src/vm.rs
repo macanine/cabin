@@ -191,7 +191,7 @@ pub fn validate_socket_paths(cfg: &Config) -> Result<()> {
     if cfg.isolated() {
         crate::sockets::validate_path(&cfg.net_socket())?;
     }
-    if cfg.desktop_spice {
+    if cfg!(unix) && cfg.desktop_spice {
         crate::sockets::validate_path(&cfg.spice_socket())?;
     }
     Ok(())
@@ -203,7 +203,7 @@ fn prepare_qemu_sockets(cfg: &Config) -> Result<()> {
     for path in [cfg.qmp_socket(), cfg.qga_socket(), cfg.console_socket()] {
         crate::sockets::prepare_listener(&path)?;
     }
-    if cfg.desktop_spice {
+    if cfg!(unix) && cfg.desktop_spice {
         prepare_spice_dir(cfg)?;
     }
     Ok(())
