@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { archiveUrl, majorOf, recommendedRelease, releaseLines } from "../src/lib/nodeVersions.ts";
-import { cellAt, WheelAccumulator, wheelReport } from "../src/lib/terminalInput.ts";
+import { cellAt, WheelAccumulator, wheelReport } from "../src/lib/terminal/protocol.ts";
 
 const release = (version, lts = null, installed = false) => ({
   version, major: Number(version.slice(1).split(".")[0]), lts, date: "2026-11-01", npm: null, security: false, installed,

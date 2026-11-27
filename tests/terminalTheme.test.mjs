@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ANSI, BASE, contrast, terminalColors } from "../src/lib/terminalTheme.ts";
+import {
+  ANSI, BASE, clampTerminalFontSize, contrast, getTerminalFontSize,
+  setTerminalFontSize, stepTerminalFontSize, subscribeTerminalFontSize,
+  TERMINAL_FONT_DEFAULT, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN,
+  terminalColors, toWasmTerminalConfig,
+} from "../src/lib/terminal/theme.ts";
 
 for (const scheme of ["light", "dark"]) {
   test(`${scheme}: body text is comfortably readable (WCAG AAA)`, () => {
@@ -26,4 +31,33 @@ test("CSS tokens override the defaults; blanks are ignored", () => {
   assert.equal(colors.foreground, BASE.dark.foreground);
   assert.equal(colors.cursor, BASE.dark.accent);
   assert.equal(colors.red, ANSI.dark.red);
+});
+
+test("WASM terminal config encodes palette and base colors cleanly", () => {
+  const config = toWasmTerminalConfig(terminalColors("dark"), 5000);
+  assert.equal(config.scrollbackLimit, 5000);
+  assert.equal(config.bgColor, 0x171b21);
+  assert.equal(config.fgColor, 0xe0e8ef);
+  assert.equal(config.palette.length, 16);
+});
+
+test("terminal font size clamps, steps, resets, and notifies subscribers", () => {
+  assert.equal(clampTerminalFontSize(NaN), TERMINAL_FONT_DEFAULT);
+  assert.equal(clampTerminalFontSize(4), TERMINAL_FONT_MIN);
+  assert.equal(clampTerminalFontSize(99), TERMINAL_FONT_MAX);
+
+  let notifications = 0;
+  const off = subscribeTerminalFontSize(() => { notifications += 1; });
+  try {
+    setTerminalFontSize(TERMINAL_FONT_DEFAULT);
+    const before = notifications;
+    assert.equal(stepTerminalFontSize(2), TERMINAL_FONT_DEFAULT + 2);
+    assert.equal(getTerminalFontSize(), TERMINAL_FONT_DEFAULT + 2);
+    assert.equal(notifications, before + 1);
+    assert.equal(stepTerminalFontSize(0), TERMINAL_FONT_DEFAULT);
+    assert.equal(notifications, before + 2);
+  } finally {
+    off();
+    setTerminalFontSize(TERMINAL_FONT_DEFAULT);
+  }
 });

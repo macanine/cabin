@@ -51,7 +51,13 @@
   --console-muted: #4d5b67;
   --console-hover: #e1e7ec;
   --console-live: #25835e;
+  --console-warn: #b4690e;
   --console-error: #b42336;
+  --console-thumb: rgba(34, 45, 57, 0.22);
+  --console-thumb-hover: rgba(34, 45, 57, 0.42);
+  --console-popover: rgba(255, 255, 255, 0.94);
+  --console-shadow: 0 8px 24px rgba(15, 23, 42, 0.12), 0 1px 3px rgba(15, 23, 42, 0.08);
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -62,25 +68,34 @@
 }
 
 .terminal-surface[data-terminal-theme="dark"] {
-  --console-rail: #20252d;
-  --console-rule: #303946;
-  --console-muted: #a6b3c2;
-  --console-hover: #303a46;
+  --console-rail: #1c2128;
+  --console-rule: #2d3540;
+  --console-muted: #9aa7b6;
+  --console-hover: #2b333f;
   --console-live: #76c5a0;
+  --console-warn: #e0a84b;
   --console-error: #ff929e;
+  --console-thumb: rgba(224, 232, 239, 0.18);
+  --console-thumb-hover: rgba(224, 232, 239, 0.36);
+  --console-popover: rgba(29, 34, 42, 0.94);
+  --console-shadow: 0 10px 28px rgba(0, 0, 0, 0.42), 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
 .terminal-frame {
+  position: relative;
+  display: flex;
   flex: 1;
+  min-width: 0;
   min-height: 0;
   cursor: text;
-  padding: 16px 10px 10px 20px;
+  padding: 12px 14px 10px 16px;
 }
 
-/* The host is pooled and moves between slots. Whole-cell fitting leaves the
-   remaining pixels on the right and bottom without changing layout. */
 .terminal-slot {
-  height: 100%;
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
   contain: strict;
 }
@@ -93,45 +108,237 @@
   caret-color: transparent;
 }
 
-.terminal-host canvas { display: block; }
+.terminal-canvas {
+  display: block;
+  user-select: none;
+  -webkit-user-select: none;
+}
 
-.terminal-host textarea.terminal-composing {
-  opacity: 1 !important;
-  z-index: 1 !important;
-  pointer-events: none !important;
+.terminal-ime {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  background: transparent;
+  color: transparent;
+  z-index: -1;
+}
+
+.terminal-ime.terminal-composing {
+  opacity: 1;
+  z-index: 3;
   background: var(--console-bg);
   color: var(--console-ink);
   caret-color: var(--console-caret);
-  outline: none;
+  border-bottom: 1px solid var(--console-caret);
 }
 
+/* Custom interactive scrollbar rail (sits outside the text grid). */
+.terminal-scrollbar {
+  position: relative;
+  flex: none;
+  width: 12px;
+  margin-left: 4px;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.terminal-scrollbar-thumb {
+  position: absolute;
+  left: 3px;
+  right: 2px;
+  border-radius: 999px;
+  background: var(--console-thumb);
+  transition: background-color 120ms ease, left 120ms ease;
+}
+
+.terminal-scrollbar:hover .terminal-scrollbar-thumb,
+.terminal-scrollbar.dragging .terminal-scrollbar-thumb {
+  left: 1px;
+  background: var(--console-thumb-hover);
+}
+
+/* Floating in-terminal search bar. */
+.terminal-search {
+  position: absolute;
+  top: 10px;
+  right: 22px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 5px 4px 9px;
+  border: 1px solid var(--console-rule);
+  border-radius: 9px;
+  background: var(--console-popover);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: var(--console-shadow);
+  color: var(--console-ink);
+  font-size: var(--text-xs);
+}
+
+.terminal-search-icon {
+  flex: none;
+  color: var(--console-muted);
+  margin-right: 4px;
+}
+
+.terminal-search input {
+  all: unset;
+  width: 170px;
+  min-width: 90px;
+  color: var(--console-ink);
+  font-size: 12.5px;
+  line-height: 22px;
+}
+
+.terminal-search input::placeholder {
+  color: var(--console-muted);
+}
+
+.terminal-search-count {
+  padding: 0 6px;
+  color: var(--console-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.terminal-search button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--console-muted);
+  cursor: pointer;
+}
+
+.terminal-search button:hover:not(:disabled) {
+  background: var(--console-hover);
+  color: var(--console-ink);
+}
+
+.terminal-search button.active {
+  background: var(--console-hover);
+  color: var(--console-caret);
+}
+
+.terminal-search button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Floating "Jump to bottom" pill when scrolled up into history. */
+.terminal-jump {
+  position: absolute;
+  right: 24px;
+  bottom: 14px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--console-rule);
+  border-radius: 999px;
+  background: var(--console-popover);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: var(--console-shadow);
+  color: var(--console-ink);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.terminal-jump:hover {
+  border-color: var(--console-caret);
+  transform: translateY(-1px);
+}
+
+.terminal-jump.unread {
+  border-color: var(--console-caret);
+  color: var(--console-caret);
+}
+
+/* Contextual banner (disconnect, exit, errors, agent notices). */
 .terminal-notice,
 .terminal-statusbar {
   display: flex;
   align-items: center;
   flex: none;
   gap: 8px;
-  padding-inline: 16px;
+  padding-inline: 14px;
   border-top: 1px solid var(--console-rule);
   font-size: var(--text-xs);
 }
 
 .terminal-notice {
   flex-wrap: wrap;
+  justify-content: space-between;
   max-height: 35%;
   overflow: auto;
   overflow-wrap: anywhere;
-  padding-block: 8px;
+  padding-block: 7px;
+  background: var(--console-rail);
+  color: var(--console-ink);
 }
 
-.terminal-notice > button { flex-shrink: 0; }
+.terminal-notice[data-tone="warn"] {
+  background: color-mix(in srgb, var(--console-warn) 10%, var(--console-rail));
+}
 
+.terminal-notice[data-tone="error"] {
+  background: color-mix(in srgb, var(--console-error) 10%, var(--console-rail));
+}
+
+.terminal-notice-text {
+  flex: 1;
+  min-width: 160px;
+}
+
+.terminal-notice > button {
+  flex-shrink: 0;
+}
+
+/* Footer status bar. */
 .terminal-statusbar {
-  height: 34px;
+  height: 32px;
   justify-content: space-between;
   background: var(--console-rail);
   color: var(--console-muted);
   user-select: none;
+  -webkit-user-select: none;
+}
+
+.terminal-statusbar-left,
+.terminal-statusbar-right {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.terminal-statusbar-right {
+  flex-shrink: 0;
+  gap: 4px;
 }
 
 .terminal-status {
@@ -140,6 +347,7 @@
   min-width: 0;
   gap: 7px;
   white-space: nowrap;
+  font-weight: 500;
 }
 
 .terminal-status::before {
@@ -152,7 +360,70 @@
 }
 
 .terminal-status[data-tone="live"]::before { background: var(--console-live); }
+.terminal-status[data-tone="warn"]::before { background: var(--console-warn); }
 .terminal-status[data-tone="error"]::before { background: var(--console-error); }
+.terminal-status[data-tone="connecting"]::before {
+  background: var(--console-caret);
+  animation: live-pulse 2s var(--ease-out) infinite;
+}
+
+.terminal-dims {
+  font-family: var(--mono);
+  font-size: 11px;
+  opacity: 0.72;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.terminal-scroll-badge {
+  all: unset;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--console-hover);
+  color: var(--console-ink);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.terminal-scroll-badge:hover {
+  color: var(--console-caret);
+}
+
+.terminal-bar-sep {
+  width: 1px;
+  height: 14px;
+  margin-inline: 2px;
+  background: var(--console-rule);
+}
+
+.terminal-tool-btn,
+.terminal-zoom button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.terminal-tool-btn:hover,
+.terminal-zoom button:hover:not(:disabled) {
+  background: var(--console-hover);
+  color: var(--console-ink);
+}
+
+.terminal-tool-btn.active {
+  background: var(--console-hover);
+  color: var(--console-caret);
+}
 
 .terminal-zoom {
   display: flex;
@@ -161,28 +432,84 @@
   font-variant-numeric: tabular-nums;
 }
 
-.terminal-zoom button {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
+.terminal-zoom button.terminal-zoom-value {
+  width: 40px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.terminal-zoom button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.terminal-tool-btn:focus-visible,
+.terminal-zoom button:focus-visible,
+.terminal-search button:focus-visible,
+.terminal-jump:focus-visible {
+  outline: 2px solid var(--console-caret);
+  outline-offset: -2px;
+}
+
+/* Right-click context menu. */
+.terminal-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 176px;
+  padding: 4px;
+  border: 1px solid var(--console-rule);
+  border-radius: 9px;
+  background: var(--console-popover);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: var(--console-shadow);
+  color: var(--console-ink);
+  font-size: 12.5px;
+}
+
+.terminal-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 5px 9px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: inherit;
   font: inherit;
+  text-align: left;
   cursor: pointer;
 }
 
-.terminal-zoom button.terminal-zoom-value { width: 42px; white-space: nowrap; }
-.terminal-zoom button:disabled { opacity: 0.4; cursor: default; }
-.terminal-zoom button:hover:not(:disabled) { background: var(--console-hover); color: var(--console-ink); }
-.terminal-zoom button:focus-visible { outline: 2px solid var(--console-caret); outline-offset: -2px; }
+.terminal-menu button:hover:not(:disabled) {
+  background: var(--console-hover);
+}
 
-@container (max-width: 420px) {
-  .terminal-frame { padding: 10px 2px 6px 10px; }
-  .terminal-notice, .terminal-statusbar { padding-inline: 8px; }
+.terminal-menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.terminal-menu kbd {
+  color: var(--console-muted);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.terminal-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--console-rule);
+}
+
+@container (max-width: 460px) {
+  .terminal-frame { padding: 8px 6px 6px 10px; }
+  .terminal-notice, .terminal-statusbar { padding-inline: 10px; }
+  .terminal-dims { display: none; }
+  .terminal-search { right: 12px; left: 12px; }
+  .terminal-search input { flex: 1; width: auto; }
 }
 
 /* ----------------------------------------------------- session title */

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TerminalReplay } from "../src/lib/terminalReplay.ts";
+import { TerminalReplay } from "../src/lib/terminal/protocol.ts";
 
 const running = { state: "running", pid: 1 };
 const exited = { state: "exited", code: 0 };
@@ -46,4 +46,25 @@ test("late notifications cannot rewind an exited or replaced shell", () => {
   assert.equal(replay.generation, 2);
   assert.equal(replay.status, running);
   assert.equal(replay.event(output(2, 7, "!")), "!");
+});
+
+test("after disconnect, an intact generation resumes without clearing and a restarted daemon resets cleanly", () => {
+  const replay = new TerminalReplay();
+  replay.snapshot(snapshot(5, 0, "hello "));
+  replay.markDisconnected();
+  // Live events arriving before reconnect snapshot force a snapshot sync.
+  assert.equal(replay.event(output(5, 6, "world")), null);
+  // Same generation survived SSH drop: append only missed delta without resetting screen.
+  assert.deepEqual(replay.snapshot(snapshot(5, 0, "hello world")), { reset: false, data: "world" });
+  assert.equal(replay.event(output(5, 11, "!")), "!");
+
+  // Now simulate a VM/daemon restart where generation starts over at 1 (< 5).
+  replay.markDisconnected();
+  assert.deepEqual(replay.snapshot(snapshot(1, 0, "restarted shell\r\n")), {
+    reset: true,
+    data: "restarted shell\r\n",
+  });
+  assert.equal(replay.generation, 1);
+  assert.equal(replay.status, running);
+  assert.equal(replay.event(output(1, 17, "$ ")), "$ ");
 });

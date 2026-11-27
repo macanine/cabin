@@ -9,10 +9,10 @@ import { syncIpc } from "../services/ipc/sync";
 import { startClockSync } from "./clockSync";
 import { startNetworkMonitor } from "./networkMonitor";
 import { type AppState, applyEvent, fromHostSnapshot, initialState } from "./reducer";
-import type { TerminalEvent } from "../lib/terminalReplay";
+import type { TerminalStreamEvent } from "../lib/terminal/protocol";
 
 type Listener = () => void;
-type TerminalListener = (event: TerminalEvent) => void;
+type TerminalListener = (event: TerminalStreamEvent) => void;
 type ChatListener = (
   event: Extract<AppEvent, {
     type: "chatItem" | "chatPlan" | "chatSubagent" | "chatTask" | "chatState" | "chatModel" | "chatPermission" | "chatUsage" | "chatControls";
@@ -137,7 +137,10 @@ export function connect(): Promise<void> {
         if (event.type === "chatState") noteChatState(event.id, event.state.state);
         return;
       }
-      if (event.type === "snapshot") chatListeners.forEach((set) => set.forEach((listener) => listener(null)));
+      if (event.type === "snapshot") {
+        chatListeners.forEach((set) => set.forEach((listener) => listener(null)));
+        terminalListeners.forEach((set) => set.forEach((listener) => listener({ type: "reconnect" })));
+      }
       if (event.type === "sessionOutput" || event.type === "terminalStatus") {
         terminalListeners.get(event.id)?.forEach((listener) => listener(event));
         if (event.type === "sessionOutput") {
