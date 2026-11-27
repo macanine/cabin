@@ -1,6 +1,6 @@
-import { Button, Menu } from "@mantine/core";
+import { Button, Menu, Tooltip } from "@mantine/core";
 import { IconPlayerPlay, IconPlayerStop, IconSettings, IconRobot, IconServer } from "@tabler/icons-react";
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import { machineIpc } from "../services/ipc/app";
 import { useApp } from "../state/store";
 import { uiActions } from "../state/ui";
@@ -14,20 +14,28 @@ import { RecentTasks } from "../components/RecentTasks";
 type Tone = "ok" | "warn" | "bad" | "off";
 const DOT: Record<Tone, string> = { ok: "bg-ok", warn: "bg-warn", bad: "bg-bad", off: "bg-faint" };
 
-/** One live fact about the setup: a status dot, a label, an optional quiet detail. */
-const Fact = ({ tone, label, detail, ...rest }: { tone: Tone; label: string; detail?: string | null } & ComponentProps<"button">) => (
-    <button type="button" {...rest} className="press inline-flex h-7 min-w-0 shrink cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-xs text-muted hover:text-fg hover:bg-hover data-expanded:bg-hover">
+/** One live fact about the setup: compact centered chip with full detail on hover. */
+const Fact = ({ tone, label, detail, ...rest }: { tone: Tone; label: string; detail?: string | null } & ComponentProps<"button">) => {
+  const button = (
+    <button
+      type="button"
+      {...rest}
+      className="press inline-flex h-7 max-w-[260px] min-w-0 shrink cursor-pointer items-center gap-1.5 rounded-full border border-line/65 bg-surface/65 px-2.5 text-left text-xs text-muted hover:border-line hover:bg-surface hover:text-fg data-expanded:border-line data-expanded:bg-surface"
+    >
       <span className={`size-1.5 shrink-0 rounded-full ${DOT[tone]}`} />
       <span className="shrink-0 font-medium">{label}</span>
       {detail && <span className="min-w-0 truncate text-faint">{detail}</span>}
     </button>
-);
+  );
+  return detail && detail.length > 28 ? <Tooltip label={detail} openDelay={250} multiline maw={340}>{button}</Tooltip> : button;
+};
 
 export function NewSessionView({ workspaceId }: { workspaceId?: string }) {
   const machine = useApp((state) => state.machine);
   const network = useApp(selectNetworkSummary);
   const agents = useApp((state) => state.agents);
   const attention = useApp((state) => attentionCount(state.agents));
+  const [submitting, setSubmitting] = useState(false);
   const noAgents = agents.length > 0 && agents.every((agent) => !agent.installed);
   const ready = agents.filter((agent) => agent.installed).length;
   const running = machine?.state === "running";
@@ -37,9 +45,11 @@ export function NewSessionView({ workspaceId }: { workspaceId?: string }) {
     : null;
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-[clamp(16px,4vw,36px)] pb-12">
-      <div className="mx-auto w-full max-w-[760px]">
-        <h1 className="mt-[clamp(28px,11vh,120px)] mb-5 text-[26px] font-semibold tracking-tight">What should an agent work on?</h1>
+    <div className="home-scroll">
+      <div className="home-stage">
+        <h1 className={`m-0 mb-5 text-center text-[28px] font-semibold tracking-[-0.025em] text-fg transition-opacity duration-200 ${submitting ? "opacity-35" : ""}`}>
+          What should an agent work on?
+        </h1>
 
         {stopped || machine?.state === "notInstalled" ? (
           <div className="glass flex items-center gap-3 rounded-2xl p-4 text-md">
@@ -56,10 +66,10 @@ export function NewSessionView({ workspaceId }: { workspaceId?: string }) {
             <Button size="xs" onClick={() => uiActions.navigate({ kind: "agents" })}>Install agents</Button>
           </div>
         ) : (
-          <Composer key={workspaceId ?? "any"} workspaceId={workspaceId} />
+          <Composer key={workspaceId ?? "any"} workspaceId={workspaceId} onSubmittingChange={setSubmitting} />
         )}
-        <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
-          <Menu position="bottom-start" withinPortal shadow="md" width={220}>
+        <div className={`mt-3.5 flex min-w-0 flex-wrap items-center justify-center gap-1.5 transition-opacity duration-200 ${submitting ? "opacity-35" : ""}`}>
+          <Menu position="bottom" withinPortal shadow="md" width={220}>
             <Menu.Target>
               <Fact
                 tone={machine?.busy ? "warn" : running ? (machine?.connection === "connected" ? "ok" : "warn") : stopped ? "off" : "bad"}
@@ -76,7 +86,9 @@ export function NewSessionView({ workspaceId }: { workspaceId?: string }) {
           <Fact tone={network.tone === "ok" ? "ok" : network.tone === "bad" ? "bad" : "warn"} label={network.title} detail={network.tone === "ok" ? null : network.detail} onClick={uiActions.openNetworkCheck} />
           <Fact tone={attention > 0 ? "warn" : ready > 0 ? "ok" : "bad"} label={`${ready} of ${AGENT_KINDS.length} agents`} detail={attention > 0 ? `${attention} need attention` : null} onClick={() => uiActions.navigate({ kind: "agents" })} />
         </div>
-        <RecentTasks />
+        <div className={`transition-opacity duration-200 ${submitting ? "opacity-30" : ""}`}>
+          <RecentTasks />
+        </div>
       </div>
     </div>
   );

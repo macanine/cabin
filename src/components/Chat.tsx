@@ -1,5 +1,5 @@
 import { IconArrowDown } from "@tabler/icons-react";
-import { useMemo, useRef, useState, useEffect } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, useEffect } from "react";
 import type {
   AgentKind, ChatAttachmentInput, ChatItem, ChatState, PlanReview, PlanRespondOutcome,
 } from "../services/ipc/generated/core";
@@ -15,7 +15,7 @@ import { actionablePlan, hasOpenPlan, mergePlan, planKey, visiblePlans } from ".
 import { liveModel, reasoningOption, sessionOptions } from "../lib/agentControls";
 import { sessionCommandFor, type SessionCommand } from "../lib/sessionCommands";
 import { useApp } from "../state/store";
-import { uiActions } from "../state/ui";
+import { takeComposerHandoff, uiActions } from "../state/ui";
 import { useChatAttachments } from "./ChatAttachments";
 import { PendingRequest } from "./chat/PendingRequest";
 import { SelectionBubble } from "./chat/SelectionBubble";
@@ -83,6 +83,27 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
   const [commandDialog, setCommandDialog] = useState<{ command: SessionCommand; opened: boolean } | null>(null);
   const attachments = useChatAttachments();
   const input = useRef<HTMLTextAreaElement>(null);
+  const dock = useRef<HTMLDivElement>(null);
+
+  // Glide the dock smoothly down from the Home composer's exact position.
+  useLayoutEffect(() => {
+    const el = dock.current;
+    const from = takeComposerHandoff(sessionId);
+    if (!el || !from) return;
+    if (document.documentElement.dataset.perf === "lite" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const to = el.getBoundingClientRect();
+    const dx = from.left - to.left;
+    const dy = from.top - to.top;
+    if (Math.abs(dy) < 12 && Math.abs(dx) < 12) return;
+    const anim = el.animate(
+      [
+        { transform: `translate(${dx}px, ${dy}px)`, opacity: 0.96 },
+        { transform: "translate(0, 0)", opacity: 1 },
+      ],
+      { duration: 420, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+    );
+    return () => anim.cancel();
+  }, [sessionId]);
 
   useEffect(() => {
     setResumedPlan(null); setConflictPlan(null); setSubagentOpen(false); setSubagentSelected(null);
@@ -300,7 +321,7 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
             {idle && !pending && !text && (
               <Suggestions items={controls.suggestions} onPick={(next) => { setText(next); input.current?.focus(); }} />
             )}
-            <div className="chat-dock" data-chat-dock>
+            <div ref={dock} className="chat-dock" data-chat-dock>
               {controls.goal && (
                 <GoalCard goal={controls.goal} onControl={(action) => {
                   void libraryIpc.chatGoalControl(sessionId, action).catch((error) => uiActions.toast(toIpcError(error).message, "error"));

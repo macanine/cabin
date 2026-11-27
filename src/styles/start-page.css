@@ -1,12 +1,31 @@
 /* -------------------------------------------------------- start page */
 
+.home-scroll {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px clamp(16px, 4vw, 36px);
+}
+
+.home-stage {
+  width: 100%;
+  max-width: 720px;
+  margin: auto;
+  padding-bottom: clamp(16px, 6vh, 56px);
+}
+
 .composer {
   border: 1px solid var(--border);
   background: var(--surface);
-  border-radius: 16px;
+  border-radius: 18px;
   padding: 12px 14px 10px;
   box-shadow: var(--shadow-float);
-  transition: border-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out);
+  transition: border-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out), transform 260ms var(--ease-out);
+}
+
+.composer.submitting {
+  transform: translateY(10px);
 }
 
 .composer:has(textarea:focus) {

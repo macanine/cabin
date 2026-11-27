@@ -314,6 +314,27 @@ export function sameView(a: View, b: View): boolean {
 
 const LAST_KEY = "cabin.lastStart";
 
+/** One-shot FLIP geometry for gliding the Home composer smoothly into the Chat dock. */
+interface ComposerHandoff {
+  sessionId: string;
+  top: number;
+  left: number;
+  width: number;
+  at: number;
+}
+let composerHandoff: ComposerHandoff | null = null;
+
+export function setComposerHandoff(sessionId: string, rect: DOMRect) {
+  composerHandoff = { sessionId, top: rect.top, left: rect.left, width: rect.width, at: performance.now() };
+}
+
+export function takeComposerHandoff(sessionId: string): ComposerHandoff | null {
+  const current = composerHandoff;
+  composerHandoff = null;
+  if (!current || current.sessionId !== sessionId || performance.now() - current.at > 1500) return null;
+  return current;
+}
+
 /** The workspace and agent used for the last new session (a convenience). */
 export function lastStart(): { workspaceId?: string; agent?: AgentKind } {
   try {

@@ -13,25 +13,25 @@ export const PROVIDER_NAMES: Record<AgentKind, string> = {
   pi: "Pi providers",
 };
 
-/** The agent's native sign-in, accounts and limits. */
-export function AgentAccount({ kind, status, onOpenTerminal, starting }: {
+/** The agent's native sign-in, accounts and credentials. */
+export function AgentAccount({ kind, status, onOpenTerminal, starting, hideLimits = false }: {
   kind: AgentKind;
   status?: AgentStatus;
   onOpenTerminal: (kind: AgentKind) => void;
   starting: AgentKind | null;
+  hideLimits?: boolean;
 }) {
   const needsSetup = !status || !status.installed || (status.cliChecked && !status.version);
-  // The header offers Sign in when that is what is missing.
   const canOpen = status?.installed && !!status.version && status.claudeLogin?.state !== "unavailable"
-    && (kind === "pi" || kind === "opencode");
+    && (kind === "pi" || kind === "opencode" || (kind === "antigravity" && !status.authenticated));
   return (
-    <section aria-label={`${AGENT_NAMES[kind]} account`} className="grid min-w-0 gap-4 p-5 max-sm:p-4">
+    <section aria-label={`${AGENT_NAMES[kind]} account`} className="grid min-w-0 gap-4">
       {!status ? <Loader size="xs" aria-label="Checking account" />
-        : needsSetup ? <p className="m-0 text-sm text-muted">{status.installed ? "Reinstall" : "Install"} {AGENT_NAMES[kind]} to use this connection.</p>
-        : kind === "claude" ? <ClaudeAccount status={status} />
-        : kind === "codex" ? <div>
-          {!status.authenticated && <p className="mt-0 mb-4 text-sm text-muted">Follow the sign-in prompts in the Codex terminal, or import an existing login.</p>}
-          <CodexAccountsPanel status={status} />
+        : needsSetup ? <p className="m-0 text-sm text-muted">{status.installed ? "Reinstall" : "Install"} {AGENT_NAMES[kind]} to configure its account.</p>
+        : kind === "claude" ? <ClaudeAccount status={status} hideLimits={hideLimits} />
+        : kind === "codex" ? <div className="grid gap-3">
+          {!status.authenticated && <p className="m-0 text-sm text-muted">Follow the sign-in prompts in the Codex terminal, or import an existing login.</p>}
+          <CodexAccountsPanel status={status} hideLimits={hideLimits} />
         </div>
         : <NativeAccount status={status} />}
       {canOpen && <div><Button size="xs" variant="default" leftSection={<IconTerminal2 size={14} />}

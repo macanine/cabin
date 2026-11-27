@@ -13,7 +13,7 @@ import type { PriceSourceStatus, UsageLog } from "../../services/ipc/generated/c
 
 const seconds = (ms: number | null) => (ms === null ? "—" : `${(ms / 1000).toFixed(1)}s`);
 
-/** Daily bars with a readout that follows the pointer. */
+/** Daily activity bars with dashed reference guides and interactive day readout. */
 export function DailyBars({ dashboard, metric, range }: { dashboard: UsageDashboard; metric: UsageMetric; range: UsageRange }) {
   const [hover, setHover] = useState<number | null>(null);
   const bars = useMemo(() => {
@@ -25,26 +25,56 @@ export function DailyBars({ dashboard, metric, range }: { dashboard: UsageDashbo
     return dayBars(items, (item) => metricOf(item, metric), first, localDayKey(Date.now()));
   }, [dashboard.daily, metric, range]);
   const max = Math.max(0, ...bars.map((bar) => bar.value));
-  if (!bars.length || max === 0) return <div className="usage-empty">No activity in this period.</div>;
+  if (!bars.length || max === 0) return <div className="usg-empty">No activity in this period.</div>;
   const shown = hover != null ? bars[hover] : null;
   const total = bars.reduce((sum, bar) => sum + bar.value, 0);
+  const mid = bars.length > 4 ? bars[Math.floor(bars.length / 2)] : null;
   return (
-    <div className="usage-bars-wrap">
-      <div className="usage-readout" aria-live="polite">
+    <div className="usg-chart">
+      <div className="usg-readout" aria-live="polite">
         {shown ? (
-          <><strong>{formatMetric(shown.value, metric)}</strong><span>{shortDay(shown.day)}{shown.item ? ` · ${formatInteger(shown.item.requests)} requests` : " · no activity"}</span></>
+          <>
+            <strong>{formatMetric(shown.value, metric)}</strong>
+            <span className="usg-readout-pill">{shortDay(shown.day)}</span>
+            <span className="usg-readout-note">
+              {shown.item ? `${formatInteger(shown.item.requests)} ${shown.item.requests === 1 ? "request" : "requests"}` : "No activity"}
+            </span>
+          </>
         ) : (
-          <><strong>{formatMetric(total / bars.length, metric)}</strong><span>daily average</span></>
+          <>
+            <strong>{formatMetric(total / bars.length, metric)}</strong>
+            <span className="usg-readout-note">daily average · peak {formatMetric(max, metric)}</span>
+          </>
         )}
       </div>
-      <div className="usage-bars" role="img" aria-label={`Daily ${metric}, ${shortDay(bars[0].day)} to ${shortDay(bars[bars.length - 1].day)}`} onPointerLeave={() => setHover(null)}>
-        {bars.map((bar, index) => (
-          <span key={bar.day} className={`usage-bar${hover === index ? " active" : ""}`} onPointerEnter={() => setHover(index)}>
-            <span style={{ height: `${bar.value ? Math.max(2, (bar.value / max) * 100) : 0}%`, animationDelay: `${Math.min(index * 8, 400)}ms` }} />
-          </span>
-        ))}
+      <div className="usg-plot">
+        <div className="usg-guides" aria-hidden>
+          <span className="usg-guide"><span>{formatMetric(max, metric)}</span></span>
+          <span className="usg-guide"><span>{formatMetric(max / 2, metric)}</span></span>
+          <span className="usg-guide base" />
+        </div>
+        <div
+          className={`usg-bars${hover != null ? " scrubbing" : ""}`}
+          role="img"
+          aria-label={`Daily ${metric}, ${shortDay(bars[0].day)} to ${shortDay(bars[bars.length - 1].day)}`}
+          onPointerLeave={() => setHover(null)}
+        >
+          {bars.map((bar, index) => (
+            <span
+              key={bar.day}
+              className={`usg-bar${hover === index ? " active" : ""}${bar.value === 0 ? " zero" : ""}`}
+              onPointerEnter={() => setHover(index)}
+            >
+              <span style={{ height: `${bar.value ? Math.max(3, (bar.value / max) * 100) : 0}%` }} />
+            </span>
+          ))}
+        </div>
       </div>
-      <div className="usage-axis"><span>{shortDay(bars[0].day)}</span><span>{bars.length > 1 ? shortDay(bars[bars.length - 1].day) : ""}</span></div>
+      <div className="usg-axis">
+        <span>{shortDay(bars[0].day)}</span>
+        {mid && <span>{shortDay(mid.day)}</span>}
+        <span>{bars.length > 1 ? shortDay(bars[bars.length - 1].day) : ""}</span>
+      </div>
     </div>
   );
 }

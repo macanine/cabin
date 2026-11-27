@@ -50,14 +50,6 @@ function ToastCard({ toast, extraCount, onHeight }: { toast: Toast; extraCount: 
       <button type="button" className="toast-close" aria-label="Dismiss" onClick={() => uiActions.dismissToast(toast.id)}>
         <IconX size={12} stroke={2.4} />
       </button>
-      {toast.duration > 0 && !toast.leaving && (
-        <span
-          key={`t${toast.revision}`}
-          className="toast-timer"
-          style={{ animationDuration: `${toast.duration}ms` }}
-          aria-hidden
-        />
-      )}
     </div>
   );
 }
@@ -99,7 +91,7 @@ export function Toasts() {
 
   return (
     <div
-      className={`toasts${stacked ? " stacked" : ""}${expanded ? " expanded" : ""}${paused ? " paused" : ""}`}
+      className={`toasts${stacked ? " stacked" : ""}${expanded ? " expanded" : ""}`}
       style={{ height: stackHeight(sizes, expanded) }}
       aria-live="polite"
       onMouseEnter={() => uiActions.pauseToasts(true)}

@@ -204,11 +204,6 @@
   50% { opacity: 1; }
 }
 
-@keyframes toast-countdown {
-  from { transform: scaleX(1); }
-  to { transform: scaleX(0); }
-}
-
 .toast-icon {
   position: relative;
   z-index: 1;
@@ -316,22 +311,6 @@
 .toast-close:focus-visible { opacity: 1; }
 .toast-close:hover { background: rgba(255, 255, 255, 0.14); color: var(--island-fg); }
 
-/* Whisper-thin countdown bar along the island's bottom edge; freezes on hover. */
-.toast-timer {
-  position: absolute;
-  right: 18px;
-  bottom: 0;
-  left: 18px;
-  height: 2px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--tone) 58%, transparent);
-  transform-origin: left center;
-  pointer-events: none;
-  animation: toast-countdown linear forwards;
-}
-.toasts.paused .toast-timer { animation-play-state: paused; }
-.toasts:not(.expanded) .toast-slot:not(:first-child) .toast-timer { opacity: 0; }
-
 /* The open ring still identifies loading when it is static. */
 .toast-spinner { animation: motion-spin 1.1s linear infinite; }
 .toast-spinner circle {
@@ -352,12 +331,10 @@
   background: #1c1a18;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.32);
 }
-:root[data-perf="lite"] .toast::before,
-:root[data-perf="lite"] .toast-timer { display: none; }
+:root[data-perf="lite"] .toast::before { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .toast, .toast::before, .toast-icon, .toast-badge, .toast-text, .toast-detail, .toast-timer, .toast-spinner { animation: none; }
-  .toast-timer { display: none; }
+  .toast, .toast::before, .toast-icon, .toast-badge, .toast-text, .toast-detail, .toast-spinner { animation: none; }
   .toasts, .toast-slot, .toast, .toast-close { transition: none; }
 }
 

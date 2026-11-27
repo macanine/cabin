@@ -64,14 +64,14 @@ function subscriptionDate(value: string | null): string | null {
   return formatDate(timestamp);
 }
 
-function QuotaPanel({ quota, scope }: { quota: CodexQuota; scope: string }) {
+function QuotaPanel({ quota, scope, hideWindows = false }: { quota: CodexQuota; scope: string; hideWindows?: boolean }) {
   const credits = quota.credits;
   return (
     <div className="codex-quota">
       <Group justify="space-between" align="flex-start">
         <div>
           <Group gap="xs">
-            <Text fw={650}>Limits</Text>
+            <Text fw={650}>{hideWindows ? "Credits & restrictions" : "Limits"}</Text>
             <Badge variant="light" color="orange">
               {planLabel(quota.planType)}
             </Badge>
@@ -99,7 +99,7 @@ function QuotaPanel({ quota, scope }: { quota: CodexQuota; scope: string }) {
             : ""}.
         </Alert>
       )}
-      {quota.windows.length > 0 && (
+      {!hideWindows && quota.windows.length > 0 && (
         <Stack gap="sm" mt="md">
           {quota.windows.map((window) => (
             <AccountLimit key={`${window.kind}-${window.windowMinutes}`} scope={scope} label={window.label} used={window.usedPercent} resetsAt={window.resetsAt} windowMinutes={window.windowMinutes} />
@@ -139,7 +139,7 @@ function resetCardLabel(card: CodexResetCard, index: number): string {
   return `${card.title || `Reset ${index + 1}`} · ${dateTime(card.expiresAt)}`;
 }
 
-export function CodexAccountsPanel({ status }: { status: AgentStatus }) {
+export function CodexAccountsPanel({ status, hideLimits = false }: { status: AgentStatus; hideLimits?: boolean }) {
   const [data, setData] = useState<CodexAccounts | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
@@ -410,7 +410,7 @@ export function CodexAccountsPanel({ status }: { status: AgentStatus }) {
       {data?.quota ? (
         <>
           <Divider my="lg" />
-          <QuotaPanel quota={data.quota} scope={`codex:${data.activeAccountId ?? "default"}`} />
+          <QuotaPanel quota={data.quota} scope={`codex:${data.activeAccountId ?? "default"}`} hideWindows={hideLimits} />
           {availableCards.length > 0 && (
             <div className="codex-reset">
               <Text size="sm" fw={600} mb={6}>

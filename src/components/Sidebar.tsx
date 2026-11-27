@@ -123,7 +123,7 @@ function TaskItem({ session, unread, now, showProject }: { session: Session; unr
   const kind = sessionKindName(session.agent);
   return (
     <div
-      className={`press group relative flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-lg pr-1 pl-2 text-[13px] text-fg ${active ? "bg-sel font-medium" : "hover:bg-hover"}`}
+      className={`press group flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-lg pr-1 pl-2 text-[13px] text-fg ${active ? "bg-sel font-medium" : "hover:bg-hover"}`}
       role="button"
       tabIndex={0}
       aria-current={active ? "page" : undefined}
@@ -136,7 +136,6 @@ function TaskItem({ session, unread, now, showProject }: { session: Session; unr
         }
       }}
     >
-      {active && <span className="pointer-events-none absolute top-1.5 bottom-1.5 left-0 w-[2.5px] rounded-full bg-accent" aria-hidden />}
       <TaskMarker session={session} unread={unread} />
       {renaming ? (
         <InlineRename
@@ -540,7 +539,7 @@ function ToolDock({ collapsed }: { collapsed: boolean }) {
 /** Start something, or find something: the two things the sidebar opens with. */
 function StartRow({ collapsed }: { collapsed: boolean }) {
   const active = useUi((ui) => ui.view.kind === "new");
-  const icon = "press grid size-9 shrink-0 cursor-pointer place-items-center rounded-[10px] border border-line/70 bg-surface/55 p-0 text-muted hover:border-line hover:bg-surface hover:text-fg";
+  const icon = "press grid size-9 shrink-0 cursor-pointer place-items-center rounded-[10px] border border-line/70 bg-surface/60 p-0 text-muted hover:border-line hover:bg-surface hover:text-fg";
   const fresh = () => uiActions.navigate({ kind: "new" });
   const search = (
     <Tooltip label={`Search (${SEARCH_KEY})`} position={collapsed ? "right" : "bottom"}>
@@ -551,7 +550,15 @@ function StartRow({ collapsed }: { collapsed: boolean }) {
     return (
       <div className="flex shrink-0 flex-col items-center gap-1.5">
         <Tooltip label={`New task (${NEW_TASK_KEY})`} position="right">
-          <button type="button" className={`press grid size-9 cursor-pointer place-items-center rounded-[10px] border-0 bg-accent-fill p-0 text-white hover:bg-accent-fill/88 ${active ? "shadow-[0_0_0_2px_var(--accent-soft)]" : ""}`} aria-label="New task" aria-current={active ? "page" : undefined} onClick={fresh}><IconPlus size={17} stroke={2.2} /></button>
+          <button
+            type="button"
+            className={`press grid size-9 cursor-pointer place-items-center rounded-[10px] border p-0 ${active ? "border-line bg-surface text-accent shadow-[0_1px_2px_rgb(0_0_0/0.05)]" : "border-line/70 bg-surface/65 text-fg hover:border-line hover:bg-surface"}`}
+            aria-label="New task"
+            aria-current={active ? "page" : undefined}
+            onClick={fresh}
+          >
+            <IconPlus size={17} stroke={2} />
+          </button>
         </Tooltip>
         {search}
       </div>
@@ -559,11 +566,15 @@ function StartRow({ collapsed }: { collapsed: boolean }) {
   }
   return (
     <div className="mx-2 mb-2 flex shrink-0 items-center gap-1.5">
-      <button type="button" aria-current={active ? "page" : undefined} onClick={fresh}
-        className={`press flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[10px] border-0 bg-accent-fill px-2 text-left text-md font-medium text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.16)] hover:bg-accent-fill/88 ${active ? "ring-2 ring-accent/25" : ""}`}>
-        <span className="grid size-5 shrink-0 place-items-center"><IconPlus size={16} stroke={2.2} /></span>
+      <button
+        type="button"
+        aria-current={active ? "page" : undefined}
+        onClick={fresh}
+        className={`press flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[10px] border px-2 text-left text-md font-medium ${active ? "border-line bg-surface text-fg shadow-[0_1px_2px_rgb(0_0_0/0.05)]" : "border-line/70 bg-surface/65 text-fg hover:border-line hover:bg-surface"}`}
+      >
+        <span className="grid size-5 shrink-0 place-items-center text-accent"><IconPlus size={16} stroke={2.1} /></span>
         <span className="min-w-0 flex-1 truncate">New task</span>
-        <span className="rounded bg-white/14 px-1.5 py-px font-mono text-[10.5px] font-normal text-white/85">{NEW_TASK_KEY}</span>
+        <span className="rounded bg-hover px-1.5 py-px font-mono text-[10.5px] font-normal text-faint">{NEW_TASK_KEY}</span>
       </button>
       {search}
     </div>
