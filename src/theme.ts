@@ -1,6 +1,6 @@
 // Mantine shares the app's type scale, colour palette and short transitions.
 import {
-  Alert, Badge, Combobox, createTheme, Drawer, Menu, Modal, Popover, SegmentedControl, Switch, Tooltip,
+  Alert, Badge, Combobox, createTheme, Drawer, Menu, Modal, Popover, SegmentedControl, Select, Switch, Tooltip,
   type MantineColorsTuple,
 } from "@mantine/core";
 
@@ -79,7 +79,14 @@ export const theme = createTheme({
     }),
     Menu: Menu.extend({ defaultProps: { transitionProps: floating, shadow: "md", offset: 6, radius: "lg" } }),
     Popover: Popover.extend({ defaultProps: { transitionProps: floating, shadow: "md", radius: "lg" } }),
-    Combobox: Combobox.extend({ defaultProps: { transitionProps: floating, shadow: "md", offset: 6 } }),
+    Combobox: Combobox.extend({ defaultProps: { transitionProps: floating, shadow: "md", offset: 6, radius: "md" } }),
+    Select: Select.extend({
+      defaultProps: {
+        checkIconPosition: "right",
+        withCheckIcon: true,
+        scrollAreaProps: { type: "auto", scrollbarSize: 6, offsetScrollbars: false, scrollbars: "y" },
+      },
+    }),
     Tooltip: Tooltip.extend({
       defaultProps: { openDelay: 350, radius: "sm", transitionProps: { transition: "fade", duration: 100 } },
     }),

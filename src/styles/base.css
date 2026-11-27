@@ -69,6 +69,11 @@
   --shadow-float: 0 8px 24px -6px rgb(0 0 0 / 0.34);
   color-scheme: dark;
 }
+
+/* Thin overlay scrollbars that fade in on hover. Kept in @layer base so
+   Mantine ScrollArea viewports (in @layer mantine) keep scrollbar-width: none. */
+* { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+*:hover { scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent; }
 }
 
 /* ------------------------------------------------------- Tailwind theme */
@@ -179,10 +184,6 @@ button { font: inherit; }
 input, textarea { caret-color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 ::selection { background: var(--accent-soft); }
-
-/* Thin overlay scrollbars that fade in on hover. */
-* { scrollbar-width: thin; scrollbar-color: transparent transparent; }
-*:hover { scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent; }
 
 /* A view rises into place when it mounts. */
 .view-enter { animation: page-in var(--motion-page) var(--ease-out) backwards; }

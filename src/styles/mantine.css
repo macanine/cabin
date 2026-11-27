@@ -25,6 +25,46 @@
 }
 .mantine-Menu-dropdown { padding: var(--space-1); }
 
+/* Mantine ScrollArea hides native scrollbars on its viewport and renders its own
+   overlay thumb only on overflow; ensure native tracks never leak through. */
+.mantine-ScrollArea-viewport,
+[data-scrollarea-viewport] {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.mantine-ScrollArea-viewport::-webkit-scrollbar,
+[data-scrollarea-viewport]::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Select / Combobox dropdown: balanced padding, aligned right-side check, clean surface. */
+.mantine-Combobox-dropdown,
+.mantine-Combobox-dropdown[data-composed] {
+  --combobox-padding: 5px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-float);
+}
+.mantine-Combobox-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+.mantine-Combobox-option svg {
+  flex: none;
+  color: var(--accent);
+  opacity: 0.92;
+}
+
 .mantine-Drawer-content {
   &.drawer-left:dir(ltr), &.drawer-right:dir(rtl) { --drawer-x: -18px; }
   &.drawer-right:dir(ltr), &.drawer-left:dir(rtl) { --drawer-x: 18px; }
@@ -57,6 +97,7 @@
 [data-combobox-option][data-combobox-selected]:not([data-combobox-disabled]) {
   background-color: var(--selected);
   color: var(--text);
+  font-weight: 500;
 }
 
 /* Mantine keeps validation colors and lets unstyled fields delegate focus to their wrapper. */
