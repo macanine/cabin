@@ -32,10 +32,15 @@ const TAB_LABEL_KEY: Record<(typeof SETTINGS_TABS)[number], StaticMessageKey> = 
   general: "settings.tab.general",
   network: "settings.tab.network",
   remote: "settings.tab.remote",
+  cli: "settings.tab.cli",
   tools: "settings.tab.tools",
   machine: "settings.tab.machine",
   storage: "settings.tab.storage",
   permissions: "settings.tab.permissions",
+};
+const TAB_KEYWORDS: Partial<Record<(typeof SETTINGS_TABS)[number], string>> = {
+  cli: "cabin cli shell passthrough terminal virtio 命令行 透传",
+  remote: "ssh remote ide vscode cursor 远程",
 };
 
 function useEntries(): Entry[] {
@@ -69,7 +74,7 @@ function useEntries(): Entry[] {
       ]),
       ...VIEWS.map(({ view, labelKey, icon, keywords }): Entry => ({ id: `view:${view.kind}`, label: t(labelKey), group: "Go to", keywords, icon, run: () => uiActions.navigate(view) })),
       { id: "settings", label: t("nav.settings"), shortcut: IS_MAC ? "⌘," : "Ctrl+,", group: "Go to", icon: <IconSettings {...I} />, run: () => uiActions.navigate({ kind: "settings" }) },
-      ...SETTINGS_TABS.map((tab): Entry => ({ id: `settings:${tab}`, label: t("palette.settingsSuffix", { tab: t(TAB_LABEL_KEY[tab]) }), group: "Go to", onSearchOnly: true, icon: <IconSettings {...I} />, run: () => uiActions.navigate({ kind: "settings", tab }) })),
+      ...SETTINGS_TABS.map((tab): Entry => ({ id: `settings:${tab}`, label: t("palette.settingsSuffix", { tab: t(TAB_LABEL_KEY[tab]) }), keywords: TAB_KEYWORDS[tab], group: "Go to", onSearchOnly: true, icon: <IconSettings {...I} />, run: () => uiActions.navigate({ kind: "settings", tab }) })),
       { id: "check", label: t("palette.networkCheck"), group: "Go to", keywords: "internet route exit network 网络", onSearchOnly: true, icon: <IconWorld {...I} />, run: uiActions.openNetworkCheck },
       { id: "operations", label: t("nav.operations"), group: "Go to", keywords: "progress log operations", onSearchOnly: true, icon: <IconActivity {...I} />, run: () => uiActions.showOperations(true) },
     ];

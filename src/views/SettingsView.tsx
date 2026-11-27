@@ -1,4 +1,4 @@
-import { IconAdjustments, IconDeviceDesktop, IconDeviceSdCard, IconPlugConnected, IconShieldLock, IconTool, IconWorld } from "@tabler/icons-react";
+import { IconAdjustments, IconDeviceDesktop, IconDeviceSdCard, IconPlugConnected, IconShieldLock, IconTerminal2, IconTool, IconWorld } from "@tabler/icons-react";
 import { useMacPermissions } from "../state/macPermissions";
 import { PermissionsSettings } from "./settings/PermissionsSettings";
 import type { ReactNode } from "react";
@@ -8,6 +8,7 @@ import { selectNetworkSummary } from "../lib/networkSummary";
 import { useApp } from "../state/store";
 import { SETTINGS_TABS, type SettingsTab, uiActions } from "../state/ui";
 import { GeneralSettings } from "./settings/GeneralSettings";
+import { HostCliSettings } from "./settings/HostCliSettings";
 import { MachineSettings } from "./settings/MachineSettings";
 import { NetworkSettings } from "./settings/NetworkSettings";
 import { RemoteSettings } from "./settings/RemoteSettings";
@@ -19,6 +20,7 @@ const TABS: Record<SettingsTab, { labelKey: StaticMessageKey; icon: typeof IconA
   general: { labelKey: "settings.tab.general", icon: IconAdjustments, guest: true },
   network: { labelKey: "settings.tab.network", icon: IconWorld, guest: false },
   remote: { labelKey: "settings.tab.remote", icon: IconPlugConnected, guest: false },
+  cli: { labelKey: "settings.tab.cli", icon: IconTerminal2, guest: false },
   tools: { labelKey: "settings.tab.tools", icon: IconTool, guest: true },
   machine: { labelKey: "settings.tab.machine", icon: IconDeviceDesktop, guest: false },
   storage: { labelKey: "settings.tab.storage", icon: IconDeviceSdCard, guest: false },
@@ -51,6 +53,9 @@ export function SettingsView({ tab = "general" }: { tab?: SettingsTab }) {
       break;
     case "remote":
       content = <RemoteSettings />;
+      break;
+    case "cli":
+      content = <HostCliSettings />;
       break;
     case "tools":
       content = <ToolsSettings />;
