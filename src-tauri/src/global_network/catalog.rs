@@ -81,15 +81,11 @@ fn resolve(host: &str) -> Result<IpAddr, String> {
             Err(format!("{host} has no IPv4 address"))
         };
     }
-    let addresses: Vec<IpAddr> = (host, 443)
+    (host, 443)
         .to_socket_addrs()
         .map_err(|e| format!("Could not resolve {host}: {e}"))?
         .map(|address| address.ip())
-        .collect();
-    addresses
-        .iter()
-        .find(|ip| ip.is_ipv4())
-        .copied()
+        .find(IpAddr::is_ipv4)
         .ok_or_else(|| format!("{host} has no IPv4 address"))
 }
 
@@ -126,7 +122,10 @@ impl GlobalNetwork {
     /// A manual proxy URL becomes a one-node source of its own.
     pub fn add_manual(&self, url: &str) -> Result<ProxyCatalog, AppError> {
         let text = proxy::manual_subscription(url)?;
-        let node = proxy::subscription::parse_nodes(&text)?.remove(0);
+        let node = proxy::subscription::parse_nodes(&text)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| error("The proxy URL did not produce a node"))?;
         self.with_store(|store| {
             proxy::import(
                 store,
@@ -300,12 +299,9 @@ impl GlobalNetwork {
                 .map_err(|e| error(e.to_string()))?;
         }
         let identity = self.runtime().identity();
-        let node = self.nodes(&[id.to_string()])?.remove(0);
-        let result = proxy::probe_chain_on_interface(
-            &[node],
-            CHECK_TARGET,
-            route.bind_interface.as_deref(),
-        )?;
+        let nodes = self.nodes(&[id.to_string()])?;
+        let result =
+            proxy::probe_chain_on_interface(&nodes, CHECK_TARGET, route.bind_interface.as_deref())?;
         if self.runtime().identity() != identity || self.route()? != route {
             return Err(error("The network changed while the node was being tested"));
         }
@@ -490,26 +486,29 @@ impl GlobalNetwork {
                 .into_iter()
                 .map(|service| {
                     let url = &url;
-                    scope.spawn(move || {
-                        detector(Some(url))
-                            .map_err(|error| error.message)?
-                            .detect_service(service)
-                            .map_err(|failure| failure.to_string())
-                            .map(geo)
-                            .and_then(|geo| {
-                                if public_ipv4(&geo.ip) {
-                                    Ok(geo)
-                                } else {
-                                    Err("The exit sample was not a public IPv4 address".to_string())
-                                }
-                            })
-                    })
+                    std::thread::Builder::new()
+                        .name("network-location-sample".into())
+                        .spawn_scoped(scope, move || {
+                            detector(Some(url))
+                                .map_err(|error| error.message)?
+                                .detect_service(service)
+                                .map_err(|failure| failure.to_string())
+                                .map(geo)
+                                .and_then(|geo| {
+                                    if public_ipv4(&geo.ip) {
+                                        Ok(geo)
+                                    } else {
+                                        Err("The exit sample was not a public IPv4 address".into())
+                                    }
+                                })
+                        })
                 })
                 .collect::<Vec<_>>();
             Ok(handles
                 .into_iter()
-                .map(|handle| {
-                    handle
+                .map(|worker| {
+                    worker
+                        .map_err(|error| format!("Could not start a location sample: {error}"))?
                         .join()
                         .unwrap_or_else(|_| Err("The location sample thread stopped".into()))
                 })
@@ -580,24 +579,40 @@ impl GlobalNetwork {
             let detector = detector(None)?;
             let next = Mutex::new(missing.iter());
             let found = Mutex::new(Vec::new());
-            std::thread::scope(|scope| {
-                for _ in 0..LOCATE_WORKERS.min(missing.len()) {
-                    scope.spawn(|| {
-                        loop {
-                            let Some(host) = next.locked().next().cloned() else {
-                                break;
-                            };
-                            let result = resolve(&host).and_then(|ip| {
-                                detector
-                                    .lookup(ip)
-                                    .map(geo)
-                                    .map_err(|e| format!("Could not locate {ip}: {e}"))
-                            });
-                            found.locked().push((host, result));
-                        }
+            let locate = || {
+                loop {
+                    let Some(host) = next.locked().next().cloned() else {
+                        break;
+                    };
+                    let result = resolve(&host).and_then(|ip| {
+                        detector
+                            .lookup(ip)
+                            .map(geo)
+                            .map_err(|e| format!("Could not locate {ip}: {e}"))
                     });
+                    found.locked().push((host, result));
                 }
+            };
+            let stopped = std::thread::scope(|scope| {
+                let workers: Vec<_> = (1..LOCATE_WORKERS.min(missing.len()))
+                    .filter_map(|_| {
+                        std::thread::Builder::new()
+                            .name("network-node-location".into())
+                            .spawn_scoped(scope, locate)
+                            .ok()
+                    })
+                    .collect();
+                // The caller also drains the queue if worker creation fails.
+                locate();
+                let mut stopped = false;
+                for worker in workers {
+                    stopped |= worker.join().is_err();
+                }
+                stopped
             });
+            if stopped {
+                return Err(error("A node location worker stopped"));
+            }
             let mut places = self.places.locked();
             for (host, result) in found
                 .into_inner()

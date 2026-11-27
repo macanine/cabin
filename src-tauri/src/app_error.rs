@@ -21,6 +21,14 @@ impl AppError {
             details: None,
         }
     }
+
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: "invalid".into(),
+            message: message.into(),
+            details: None,
+        }
+    }
 }
 
 impl From<agent_core::Error> for AppError {

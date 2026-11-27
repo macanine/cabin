@@ -132,15 +132,16 @@ pub fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     }
 }
 
-/// Create a symbolic link at `link` pointing to `target`.
-pub fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+/// Stage a symbolic link, using its final location to identify relative targets.
+pub fn symlink(target: &Path, link: &Path, installed_at: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
+        let _ = installed_at;
         std::os::unix::fs::symlink(target, link)
     }
     #[cfg(windows)]
     {
-        let resolved = link
+        let resolved = installed_at
             .parent()
             .map(|parent| parent.join(target))
             .unwrap_or_else(|| target.to_path_buf());

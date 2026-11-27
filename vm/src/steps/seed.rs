@@ -42,7 +42,7 @@ const SEED_FILES: [&str; 7] = [
     "credentials.json",
 ];
 
-pub fn generate_password() -> String {
+pub fn generate_password() -> Result<String> {
     crate::util::random_password(20)
 }
 
@@ -605,8 +605,9 @@ impl Step for SeedStep {
         let password = match password {
             Some(password) => password,
             None => {
+                let password = generate_password()?;
                 ctx.log("generated a random guest password");
-                generate_password()
+                password
             }
         };
         let password_hash = hash_password(&password)?;

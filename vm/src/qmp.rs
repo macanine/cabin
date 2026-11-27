@@ -88,7 +88,9 @@ impl Wire {
                 .unwrap_or_else(|| error.to_string());
             return message(format!("{} {command} failed: {detail}", self.service));
         }
-        Ok(response.get("return").cloned().unwrap_or(Value::Null))
+        response.get("return").cloned().ok_or_else(|| {
+            crate::Error::Message(format!("invalid {} response to {command}", self.service))
+        })
     }
 }
 
@@ -203,6 +205,30 @@ mod tests {
         let start = Instant::now();
         assert!(client.execute("query-status", None).is_err());
         assert!(start.elapsed() < Duration::from_millis(600));
+        drop(client);
+        server.join().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn matched_qmp_reply_must_have_a_result() {
+        let dir = sockets::test_dir();
+        let path = dir.join("qmp.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut stream = BufReader::new(stream);
+            stream.get_mut().write_all(b"{\"QMP\":{}}\n").unwrap();
+            let mut request = String::new();
+            for reply in ["{\"return\":null,\"id\":1}\n", "{\"id\":2}\n"] {
+                request.clear();
+                assert!(stream.read_line(&mut request).unwrap() > 0);
+                stream.get_mut().write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        let mut client = QmpClient::connect(&path, Duration::from_secs(2)).unwrap();
+        let error = client.execute("quit", None).unwrap_err();
+        assert!(error.to_string().contains("invalid QMP response to quit"));
         drop(client);
         server.join().unwrap();
         std::fs::remove_dir_all(dir).unwrap();

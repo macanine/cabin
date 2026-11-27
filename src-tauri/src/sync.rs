@@ -14,32 +14,38 @@
 
 use agent_core::util::{LockExt, RwLockExt};
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use agent_core::model::{AppEvent, SyncProject, SyncProjectInput, SyncState, SyncStatus, SyncView};
-use agent_core::sync::archive::{self, ApplyHeader, ApplyReport};
-use agent_core::sync::plan::{self, Action, BaseRecord};
+use agent_core::sync::archive::{ApplyChecks, ApplyReport};
+use agent_core::sync::plan::BaseRecord;
 use agent_core::sync::scan::{self, Entry};
-use agent_core::sync::{GitHandling, PackRequest, ScanRequest, SyncMode, SyncRules};
+use agent_core::sync::{SyncMode, SyncRules};
 use agent_core::util::now_millis;
 
 use crate::host_permissions::check_folder;
+
+mod cycle;
+mod pending;
+mod transport;
+use pending::{Destination, Pending};
+use transport::{pull_into, remote_apply, remote_scan, watch_guest};
 
 #[cfg(any(windows, test))]
 mod windows_paths;
 
 type Base = BTreeMap<String, BaseRecord>;
+type Listing = BTreeMap<String, Entry>;
 type Sink = Arc<dyn Fn(AppEvent) + Send + Sync>;
 
 /// A full cycle at least this often, whatever the watchers say.
 const FULL_EVERY: Duration = Duration::from_secs(600);
 const RETRY_EVERY: Duration = Duration::from_secs(30);
+const KICK_QUEUE: usize = 16;
 
 fn project_requires_full_scan(project: &SyncProject) -> bool {
     cfg!(windows) && project.mode == SyncMode::TwoWay
@@ -50,11 +56,87 @@ enum Kick {
     Full,
 }
 
+#[derive(Clone)]
+struct Kicks {
+    sender: mpsc::SyncSender<Kick>,
+    rescan: Arc<AtomicBool>,
+}
+
+impl Kicks {
+    fn send(&self, kick: Kick) -> Result<(), String> {
+        match self.sender.try_send(kick) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.rescan.store(true, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                Err("The project sync worker has stopped".into())
+            }
+        }
+    }
+
+    fn take_rescan(&self) -> bool {
+        self.rescan.swap(false, Ordering::Relaxed)
+    }
+}
+
 struct Session {
     stop: Arc<AtomicBool>,
-    kick: mpsc::Sender<Kick>,
+    kick: Kicks,
     #[cfg(unix)]
-    worker: Option<std::thread::JoinHandle<()>>,
+    worker: std::thread::JoinHandle<()>,
+}
+
+type InitialSync = mpsc::Sender<Result<(), String>>;
+
+#[derive(Default)]
+struct CycleOutcome {
+    conflicts: Vec<String>,
+    transfer_error: Option<String>,
+}
+
+impl CycleOutcome {
+    fn require_transferred(self) -> Result<(), String> {
+        self.transfer_error.map_or(Ok(()), Err)
+    }
+
+    fn require_complete(self) -> Result<(), String> {
+        let has_conflicts = !self.conflicts.is_empty();
+        self.require_transferred()?;
+        if has_conflicts {
+            return Err("Sync left conflicts; both versions were kept".into());
+        }
+        Ok(())
+    }
+}
+
+fn transfer_error(failed: &[(String, String)]) -> Option<String> {
+    let (path, error) = failed.first()?;
+    Some(format!(
+        "{} {} could not be synced (first: {path}: {error})",
+        failed.len(),
+        if failed.len() == 1 { "path" } else { "paths" }
+    ))
+}
+
+fn require_applied(report: ApplyReport) -> Result<(), String> {
+    if let Some(error) = transfer_error(&report.failed) {
+        return Err(error);
+    }
+    if let Some(path) = report.kept_nonempty.first() {
+        return Err(format!("{path} still contains files outside the sync plan"));
+    }
+    if let Some(path) = report.kept_present.first() {
+        return Err(format!("{path} is still present on the source side"));
+    }
+    Ok(())
+}
+
+fn report_initial(initial: &mut Option<InitialSync>, outcome: Result<(), String>) {
+    if let Some(initial) = initial.take() {
+        let _ = initial.send(outcome);
+    }
 }
 
 #[derive(Clone)]
@@ -65,12 +147,24 @@ enum GuestTransport {
         executable: PathBuf,
         dir: PathBuf,
         desktop: bool,
+        cancelled: Arc<AtomicBool>,
     },
+}
+
+impl GuestTransport {
+    fn cancellation(&self) -> Option<&Arc<AtomicBool>> {
+        match self {
+            Self::Ssh(_) => None,
+            #[cfg(unix)]
+            Self::Native { cancelled, .. } => Some(cancelled),
+        }
+    }
 }
 
 pub struct SyncManager {
     dir: PathBuf,
     projects: Mutex<Vec<SyncProject>>,
+    registry_error: Option<String>,
     statuses: Mutex<HashMap<String, SyncStatus>>,
     sessions: Mutex<HashMap<String, Session>>,
     guest: RwLock<Option<GuestTransport>>,
@@ -134,12 +228,27 @@ fn reuse_ssh(mut ssh: Vec<String>, dir: &Path) -> Vec<String> {
 }
 
 fn write_json_atomic(path: &Path, value: &impl serde::Serialize) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(err)?;
+    let bytes = serde_json::to_vec(value).map_err(err)?;
+    agent_core::fsx::atomic_write(path, &bytes, Some(0o600)).map_err(err)
+}
+
+fn read_projects(path: &Path) -> Result<Vec<SyncProject>, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let projects: Vec<SyncProject> = serde_json::from_slice(&bytes).map_err(err)?;
+    let mut ids = std::collections::HashSet::new();
+    for project in &projects {
+        let id = Path::new(&project.id);
+        if !matches!(id.components().next(), Some(std::path::Component::Normal(name)) if name == id.as_os_str())
+            || !ids.insert(&project.id)
+        {
+            return Err("invalid or duplicate project ID".into());
+        }
     }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, serde_json::to_vec(value).map_err(err)?).map_err(err)?;
-    std::fs::rename(&tmp, path).map_err(err)
+    Ok(projects)
 }
 
 fn offline(id: &str) -> SyncStatus {
@@ -162,12 +271,43 @@ fn parent_of(path: &str) -> String {
         .unwrap_or_default()
 }
 
+fn guest_folder(path: &str) -> Result<String, String> {
+    let path = path.trim().trim_end_matches('/');
+    let relative = path.strip_prefix("~/").or_else(|| path.strip_prefix('/'));
+    if !relative.is_some_and(|relative| {
+        !relative.is_empty()
+            && relative.split('/').all(|part| {
+                !part.is_empty() && part != "." && part != ".." && !part.contains(['\0', '\\'])
+            })
+    }) {
+        return Err("Choose a folder in the machine, such as ~/projects/app".into());
+    }
+    Ok(path.to_owned())
+}
+
+fn listing(entries: Vec<Entry>) -> Listing {
+    // The map key owns the path so a scan holds only one string per file.
+    entries
+        .into_iter()
+        .map(|mut entry| (std::mem::take(&mut entry.path), entry))
+        .collect()
+}
+
 impl SyncManager {
     pub fn open(dir: PathBuf) -> Arc<Self> {
-        let projects: Vec<SyncProject> = std::fs::read(dir.join("projects.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let (projects, registry_error) = match read_projects(&dir.join("projects.json")) {
+            Ok(projects) => (projects, None),
+            Err(error) => {
+                let error = format!("Could not read the sync project registry: {error}");
+                cabin_diagnostics::event(
+                    cabin_diagnostics::Level::Error,
+                    "sync",
+                    "project_registry_unreadable",
+                    format_args!("{error}"),
+                );
+                (Vec::new(), Some(error))
+            }
+        };
         let statuses = projects
             .iter()
             .map(|p| {
@@ -181,6 +321,7 @@ impl SyncManager {
         Arc::new(Self {
             dir,
             projects: Mutex::new(projects),
+            registry_error,
             statuses: Mutex::new(statuses),
             sessions: Mutex::new(HashMap::new()),
             guest: RwLock::new(None),
@@ -199,6 +340,7 @@ impl SyncManager {
     // ------------------------------------------------------------ state
 
     pub(crate) fn project(&self, id: &str) -> Result<SyncProject, String> {
+        self.require_registry()?;
         self.projects
             .locked()
             .iter()
@@ -207,7 +349,15 @@ impl SyncManager {
             .ok_or_else(|| "This synced project no longer exists".to_string())
     }
 
+    pub(crate) fn require_registry(&self) -> Result<(), String> {
+        match &self.registry_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
     fn save_projects(&self, projects: &[SyncProject]) -> Result<(), String> {
+        self.require_registry()?;
         write_json_atomic(&self.dir.join("projects.json"), &projects)
     }
 
@@ -254,9 +404,9 @@ impl SyncManager {
     fn set_status(&self, id: &str, change: impl FnOnce(&mut SyncStatus)) {
         let status = {
             let mut statuses = self.statuses.locked();
-            let status = statuses
-                .entry(id.to_string())
-                .or_insert_with(|| offline(id));
+            let Some(status) = statuses.get_mut(id) else {
+                return;
+            };
             change(status);
             status.clone()
         };
@@ -332,6 +482,17 @@ impl SyncManager {
         self.create_project(input, false)
     }
 
+    pub(crate) fn active_native_project(&self) -> Option<String> {
+        #[cfg(unix)]
+        {
+            self.native.read_lock().as_ref().map(|(id, _)| id.clone())
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
     fn create_project(
         self: &Arc<Self>,
         input: SyncProjectInput,
@@ -346,12 +507,11 @@ impl SyncManager {
         if !host.is_dir() || host.parent().is_none() {
             return Err("Choose a folder on this computer".into());
         }
-        let guest = input.guest_path.trim().trim_end_matches('/').to_string();
-        if guest.is_empty() || guest == "~" || !(guest.starts_with('/') || guest.starts_with("~/"))
-        {
-            return Err("Choose a folder in the machine, such as ~/projects/app".into());
-        }
-        let host = host.to_string_lossy().into_owned();
+        let guest = guest_folder(&input.guest_path)?;
+        let host = host
+            .to_str()
+            .ok_or("The project folder name must be valid UTF-8")?
+            .to_owned();
         let project = {
             let mut projects = self.projects.locked();
             // Compared by path component, so Windows backslashes and guest
@@ -388,7 +548,10 @@ impl SyncManager {
             *projects = next;
             project
         };
-        self.set_status(&project.id, |s| *s = offline(&project.id));
+        self.statuses
+            .locked()
+            .insert(project.id.clone(), offline(&project.id));
+        self.set_status(&project.id, |_| {});
         if watch && self.guest().is_some() {
             self.start(&project.id);
         }
@@ -407,6 +570,11 @@ impl SyncManager {
     ) -> Result<SyncView, String> {
         let _transition = self.transitions.locked();
         self.require_no_native(id)?;
+        self.project(id)?;
+        let cycle = self.cycle_lock(id);
+        let _idle = cycle
+            .try_lock()
+            .map_err(|_| "The project is syncing. Retry after the current transfer finishes.")?;
         let project = self.edit_project(id, |p| {
             if let Some(mode) = mode {
                 p.mode = mode;
@@ -436,16 +604,31 @@ impl SyncManager {
     pub fn remove(&self, id: &str) -> Result<(), String> {
         let _transition = self.transitions.locked();
         self.require_no_native(id)?;
+        let project = self.project(id)?;
+        let cycle = self.cycle_lock(&project.id);
+        let _idle = cycle
+            .try_lock()
+            .map_err(|_| "The project is syncing. Retry after the current transfer finishes.")?;
         {
             let mut projects = self.projects.locked();
             let mut next = projects.clone();
-            next.retain(|p| p.id != id);
+            next.retain(|p| p.id != project.id);
             self.save_projects(&next)?;
             *projects = next;
         }
-        self.stop(id);
-        self.statuses.locked().remove(id);
-        let _ = std::fs::remove_dir_all(self.dir.join(id));
+        self.stop(&project.id);
+        self.statuses.locked().remove(&project.id);
+        self.cycles.locked().remove(&project.id);
+        if let Err(error) = std::fs::remove_dir_all(self.dir.join(&project.id))
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Warn,
+                "sync",
+                "project_state_cleanup_failed",
+                format_args!("{error}"),
+            );
+        }
         Ok(())
     }
 
@@ -453,10 +636,7 @@ impl SyncManager {
         self.project(id)?;
         let sessions = self.sessions.locked();
         match sessions.get(id) {
-            Some(session) => {
-                let _ = session.kick.send(Kick::Full);
-                Ok(())
-            }
+            Some(session) => session.kick.send(Kick::Full),
             None => Err("The machine is not connected, or this project is paused".into()),
         }
     }
@@ -466,23 +646,31 @@ impl SyncManager {
         let _transition = self.transitions.locked();
         self.require_no_native(id)?;
         let project = self.project(id)?;
+        guest_folder(&project.guest_path)?;
         let guest = self
             .guest_for(&project.id)
             .ok_or("The machine is not connected")?;
         agent_core::sync::safe_relative(path).ok_or("Not a path in this project")?;
         let host = PathBuf::from(&project.host_path);
+        let scope = vec![parent_of(path)];
+        let pending_path = self.dir.join(&project.id).join("pending.json");
         {
             let lock = self.cycle_lock(id);
             let _guard = lock.locked();
             check_folder(&host, !keep_mac).require(&host).map_err(err)?;
-            let scope = vec![parent_of(path)];
+            let scope_ref = if cfg!(windows) {
+                None
+            } else {
+                Some(scope.as_slice())
+            };
+            let guest_entries =
+                remote_scan(&guest, &project.guest_path, &project.rules, scope_ref)?;
             #[cfg(windows)]
             {
-                let ours = scan::scan(&host, &project.rules, None).map_err(err)?;
-                let theirs = remote_scan(&guest, &project.guest_path, &project.rules, None)?;
+                let ours = scan::scan_metadata(&host, &project.rules, None).map_err(err)?;
                 windows_paths::check_names(
                     ours.iter()
-                        .chain(&theirs)
+                        .chain(&guest_entries)
                         .map(|entry| entry.path.as_str())
                         .chain([path]),
                 )?;
@@ -491,22 +679,55 @@ impl SyncManager {
                     windows_paths::require_local_absence(&host, path)?;
                 }
             }
-            if keep_mac {
-                let (push, delete) = match scan::stat(&host, path).map_err(err)? {
-                    Some(_) => (vec![path.to_string()], vec![]),
-                    None => (vec![], vec![path.to_string()]),
-                };
-                remote_apply(&guest, &project.guest_path, &host, &delete, &push)?;
-            } else {
-                let vm = remote_scan(&guest, &project.guest_path, &project.rules, Some(&scope))?;
-                if vm.iter().any(|e| e.path == path) {
-                    pull(&guest, &project.guest_path, &host, &[], &[path.to_string()])?;
+            let mac = listing(scan::stat(&host, path).map_err(err)?.into_iter().collect());
+            let vm = listing(
+                guest_entries
+                    .into_iter()
+                    .filter(|entry| entry.path == path)
+                    .collect(),
+            );
+            let (source, destination) = if keep_mac { (&mac, &vm) } else { (&vm, &mac) };
+            let paths = [path.to_string()];
+            let (write, delete) = match (source.contains_key(path), destination.contains_key(path))
+            {
+                (true, _) => (paths.as_slice(), [].as_slice()),
+                (false, true) => ([].as_slice(), paths.as_slice()),
+                (false, false) => ([].as_slice(), [].as_slice()),
+            };
+            let checks = ApplyChecks::for_paths(source, destination, write, delete).map_err(err)?;
+            let mut pending = Pending::load(&pending_path)?;
+            pending.prepare(
+                if keep_mac {
+                    Destination::Guest
                 } else {
-                    archive::apply(&host, &[path.to_string()], std::io::empty()).map_err(err)?;
-                }
+                    Destination::Host
+                },
+                source,
+                destination,
+                write.iter().chain(delete),
+            );
+            pending.save(&pending_path)?;
+            if keep_mac {
+                require_applied(remote_apply(
+                    &guest,
+                    &project.guest_path,
+                    &host,
+                    delete,
+                    write,
+                    Some(checks),
+                )?)?;
+            } else {
+                require_applied(pull_into(
+                    &guest,
+                    &project.guest_path,
+                    &host,
+                    delete,
+                    write,
+                    Some(checks),
+                )?)?;
             }
         }
-        self.cycle(&project, Some(vec![parent_of(path)]))
+        self.cycle(&project, Some(scope))?.require_transferred()
     }
 
     // ------------------------------------------------------------ sessions
@@ -538,7 +759,7 @@ impl SyncManager {
         executable: PathBuf,
         dir: PathBuf,
         desktop: bool,
-    ) -> Result<(), String> {
+    ) -> Result<mpsc::Receiver<Result<(), String>>, String> {
         let _transition = self.transitions.locked();
         if self.native.read_lock().is_some() {
             return Err("Another native Cabin CLI session is active".into());
@@ -549,44 +770,63 @@ impl SyncManager {
                 "Enable Two-way sync for this project before starting the Cabin CLI".into(),
             );
         }
-        self.join_session(id)?;
+        if let Err(error) = self.join_session(id) {
+            self.restore_desktop_sync(id);
+            return Err(error);
+        }
         *self.native.write_lock() = Some((
             id.into(),
             GuestTransport::Native {
                 executable,
                 dir,
                 desktop,
+                cancelled: Arc::new(AtomicBool::new(false)),
             },
         ));
         self.set_status(id, |s| {
             s.state = SyncState::Scanning;
             s.error = None;
         });
-        self.start(id);
-        Ok(())
+        let (sender, receiver) = mpsc::channel();
+        if let Err(error) = self.spawn_session(id, Some(sender)) {
+            *self.native.write_lock() = None;
+            self.restore_desktop_sync(id);
+            return Err(error);
+        }
+        Ok(receiver)
     }
 
     #[cfg(unix)]
-    pub(crate) fn finish_native(
-        self: &Arc<Self>,
-        id: &str,
-        reconcile: bool,
-    ) -> Result<SyncStatus, String> {
+    pub(crate) fn finish_native(self: &Arc<Self>, id: &str, reconcile: bool) -> Result<(), String> {
         let _transition = self.transitions.locked();
+        {
+            let native = self.native.read_lock();
+            let Some((_, transport)) = native.as_ref().filter(|(project, _)| project == id) else {
+                return Err("This project has no active Cabin CLI session".into());
+            };
+            if !reconcile && let Some(cancelled) = transport.cancellation() {
+                cancelled.store(true, Ordering::Relaxed);
+            }
+        }
         let mut result = self.join_session(id);
         if reconcile && result.is_ok() {
             result = self
                 .project(id)
-                .and_then(|project| self.first_cycle(&project));
+                .and_then(|project| self.first_cycle(&project))
+                .and_then(CycleOutcome::require_complete);
         }
-        let status = self.status(id);
         *self.native.write_lock() = None;
+        self.restore_desktop_sync(id);
+        result
+    }
+
+    #[cfg(unix)]
+    fn restore_desktop_sync(self: &Arc<Self>, id: &str) {
         if self.guest().is_some() {
             self.start(id);
         } else {
             self.set_status(id, |s| s.state = SyncState::Offline);
         }
-        result.map(|()| status)
     }
 
     #[cfg(unix)]
@@ -595,11 +835,10 @@ impl SyncManager {
         if let Some(session) = session {
             session.stop.store(true, Ordering::Relaxed);
             let _ = session.kick.send(Kick::Full);
-            if let Some(worker) = session.worker {
-                worker
-                    .join()
-                    .map_err(|_| "Sync worker stopped unexpectedly")?;
-            }
+            session
+                .worker
+                .join()
+                .map_err(|_| "Sync worker stopped unexpectedly")?;
         }
         Ok(())
     }
@@ -621,16 +860,13 @@ impl SyncManager {
         }
     }
 
-    pub fn overlaps_host_path(&self, path: &Path) -> bool {
+    pub fn overlaps_host_path(&self, path: &Path) -> Result<bool, String> {
+        self.require_registry()?;
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        self.projects
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .any(|project| {
-                let folder = Path::new(&project.host_path);
-                folder.starts_with(&path) || path.starts_with(folder)
-            })
+        Ok(self.projects.locked().iter().any(|project| {
+            let folder = Path::new(&project.host_path);
+            folder.starts_with(&path) || path.starts_with(folder)
+        }))
     }
 
     /// Hold the project registry and get exclusive access to every project
@@ -641,6 +877,7 @@ impl SyncManager {
         erase: impl FnOnce() -> vm_core::Result<T>,
     ) -> vm_core::Result<T> {
         let _transition = self.transitions.locked();
+        self.require_registry().map_err(vm_core::Error::Message)?;
         #[cfg(unix)]
         if self.native.read_lock().is_some() {
             return vm_core::message("Exit the Cabin CLI session before erasing the machine.");
@@ -686,16 +923,44 @@ impl SyncManager {
             .clone()
     }
 
+    fn require_current_project(&self, project: &SyncProject) -> Result<(), String> {
+        let current = self.project(&project.id)?;
+        if current.paused || current.mode != project.mode || current.rules != project.rules {
+            return Err("The project sync configuration changed".into());
+        }
+        guest_folder(&project.guest_path)?;
+        Ok(())
+    }
+
     fn stop(&self, id: &str) {
         if let Some(session) = self.sessions.locked().remove(id) {
             session.stop.store(true, Ordering::Relaxed);
+            let _ = session.kick.send(Kick::Full);
         }
     }
 
     fn start(self: &Arc<Self>, id: &str) {
+        if let Err(error) = self.spawn_session(id, None) {
+            self.set_status(id, |status| {
+                status.state = SyncState::Error;
+                status.error = Some(error);
+            });
+        }
+    }
+
+    fn spawn_session(
+        self: &Arc<Self>,
+        id: &str,
+        initial: Option<InitialSync>,
+    ) -> Result<(), String> {
         self.stop(id);
+        let guest = self.guest_for(id).ok_or("The machine is not connected")?;
         let stop = Arc::new(AtomicBool::new(false));
-        let (kick, kicks) = mpsc::channel();
+        let (sender, kicks) = mpsc::sync_channel(KICK_QUEUE);
+        let kick = Kicks {
+            sender,
+            rescan: Arc::new(AtomicBool::new(false)),
+        };
         let mut sessions = self.sessions.locked();
         let me = self.clone();
         let worker_id = id.to_string();
@@ -703,8 +968,17 @@ impl SyncManager {
         let worker_kick = kick.clone();
         let worker = std::thread::Builder::new()
             .name(format!("sync-{id}"))
-            .spawn(move || me.run(&worker_id, &worker_stop, worker_kick, kicks))
-            .ok();
+            .spawn(move || {
+                me.run(
+                    &worker_id,
+                    &worker_stop,
+                    &guest,
+                    worker_kick,
+                    kicks,
+                    initial,
+                )
+            })
+            .map_err(|error| format!("Could not start project sync: {error}"))?;
         #[cfg(not(unix))]
         drop(worker);
         sessions.insert(
@@ -716,17 +990,33 @@ impl SyncManager {
                 worker,
             },
         );
+        Ok(())
     }
 
     fn run(
         self: Arc<Self>,
         id: &str,
         stop: &AtomicBool,
-        kick: mpsc::Sender<Kick>,
+        guest: &GuestTransport,
+        kick: Kicks,
         kicks: mpsc::Receiver<Kick>,
+        mut initial: Option<InitialSync>,
     ) {
-        let Ok(project) = self.project(id) else {
-            return;
+        let project = match self.project(id).and_then(|project| {
+            guest_folder(&project.guest_path)?;
+            Ok(project)
+        }) {
+            Ok(project) => project,
+            Err(error) => {
+                report_initial(&mut initial, Err(error.clone()));
+                if !stop.load(Ordering::Relaxed) {
+                    self.set_status(id, |status| {
+                        status.state = SyncState::Error;
+                        status.error = Some(error);
+                    });
+                }
+                return;
+            }
         };
         let host = PathBuf::from(&project.host_path);
         while !stop.load(Ordering::Relaxed) {
@@ -734,6 +1024,7 @@ impl SyncManager {
             else {
                 break;
             };
+            report_initial(&mut initial, Err(error.message.clone()));
             self.set_status(id, |s| {
                 s.state = SyncState::Error;
                 s.error = Some(error.message);
@@ -755,18 +1046,23 @@ impl SyncManager {
         });
         // Watch before the first scan, so nothing changed during it is missed.
         // Dropping `_mac_watcher` at the end of the session ends the forwarder.
-        let _mac_watcher = match agent_core::sync::watch::watch(&host, &project.rules) {
-            Ok(agent_core::sync::watch::Batches { watcher, batches }) => {
+        let _mac_watcher = match agent_core::sync::watch::watch(&host, &project.rules).and_then(
+            |agent_core::sync::watch::Batches { watcher, batches }| {
                 let kick = kick.clone();
-                std::thread::spawn(move || {
-                    for batch in batches {
-                        if kick.send(Kick::Scope(batch)).is_err() {
-                            break;
+                std::thread::Builder::new()
+                    .name("sync-host-watch".into())
+                    .spawn(move || {
+                        for batch in batches {
+                            if kick.send(Kick::Scope(batch)).is_err() {
+                                break;
+                            }
                         }
-                    }
-                });
-                Some(watcher)
-            }
+                    })
+                    .map_err(std::io::Error::other)?;
+                Ok(watcher)
+            },
+        ) {
+            Ok(watcher) => Some(watcher),
             Err(error) => {
                 self.set_status(id, |s| {
                     s.error = Some(format!(
@@ -777,37 +1073,46 @@ impl SyncManager {
             }
         };
         let mut guest_watch = None;
-        if project.mode == SyncMode::TwoWay
-            && let Some(guest) = self.guest_for(id)
-        {
-            match watch_guest(&guest, &project, kick.clone()) {
+        if project.mode == SyncMode::TwoWay && !stop.load(Ordering::Relaxed) {
+            match watch_guest(guest, &project, kick.clone()) {
                 Ok(watch) => guest_watch = Some(watch),
                 Err(_) if matches!(guest, GuestTransport::Ssh(_)) => {}
                 Err(error) => {
+                    let message = format!("Guest watcher could not start: {error}");
+                    report_initial(&mut initial, Err(message.clone()));
                     self.set_status(id, |s| {
                         s.state = SyncState::Error;
-                        s.error = Some(format!("Guest watcher could not start: {error}"));
+                        s.error = Some(message);
                     });
                     return;
                 }
             }
         }
 
-        let mut failed = false;
-        if let Err(error) = self.first_cycle(&project) {
-            failed = true;
-            self.set_status(id, |s| {
-                s.state = SyncState::Error;
-                s.error = Some(error);
-            });
-        }
+        let mut failed = match self.first_cycle_on(&project, guest, Some(stop)) {
+            Ok(outcome) => {
+                let failed = outcome.transfer_error.is_some();
+                report_initial(&mut initial, outcome.require_complete());
+                failed
+            }
+            Err(error) => {
+                report_initial(&mut initial, Err(error.clone()));
+                if !stop.load(Ordering::Relaxed) {
+                    self.set_status(id, |s| {
+                        s.state = SyncState::Error;
+                        s.error = Some(error);
+                    });
+                }
+                true
+            }
+        };
         let mut last_full = Instant::now();
         while !stop.load(Ordering::Relaxed) {
             let next = match kicks.recv_timeout(Duration::from_secs(1)) {
                 Ok(kick) => Some(kick),
                 Err(RecvTimeoutError::Timeout) => {
                     let interval = if failed { RETRY_EVERY } else { FULL_EVERY };
-                    (last_full.elapsed() >= interval).then_some(Kick::Full)
+                    (kick.take_rescan() || last_full.elapsed() >= interval).then_some(Kick::Full)
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
             };
@@ -820,13 +1125,16 @@ impl SyncManager {
                 Kick::Full => None,
                 Kick::Scope(dirs) => Some(dirs),
             };
-            while let Ok(more) = kicks.try_recv() {
+            for _ in 0..KICK_QUEUE {
+                let Ok(more) = kicks.try_recv() else { break };
                 match (&mut scope, more) {
                     (Some(dirs), Kick::Scope(extra)) => dirs.extend(extra),
                     (_, _) => scope = None,
                 }
             }
+            let rescan = kick.take_rescan();
             let scope = scope
+                .filter(|_| !rescan)
                 .map(|dirs| agent_core::sync::watch::collapse(dirs.into_iter().collect()))
                 .filter(|dirs| dirs != &[String::new()]);
             let Ok(project) = self.project(id) else { break };
@@ -834,275 +1142,24 @@ impl SyncManager {
                 last_full = Instant::now();
             }
             let result = if failed {
-                self.first_cycle(&project)
+                self.first_cycle_on(&project, guest, Some(stop))
             } else {
-                self.cycle(&project, scope)
+                self.cycle_on(&project, scope, guest, Some(stop))
             };
-            failed = result.is_err();
-            if let Err(error) = result {
-                self.set_status(id, |s| {
-                    s.state = SyncState::Error;
-                    s.error = Some(error);
-                });
-            }
-        }
-        if let Some(watch) = guest_watch.take() {
-            watch.stop();
-        }
-    }
-
-    /// The first cycle of a session: `.git` once if asked, then everything.
-    fn first_cycle(&self, project: &SyncProject) -> Result<(), String> {
-        if project.rules.git == GitHandling::CopyOnce && !project.git_copied {
-            self.copy_git_once(project)?;
-        }
-        self.cycle(project, None)
-    }
-
-    /// Copy `.git` into the machine unless it already has one. From then on
-    /// each side keeps its own history (see `GitHandling::CopyOnce`).
-    fn copy_git_once(&self, project: &SyncProject) -> Result<(), String> {
-        let lock = self.cycle_lock(&project.id);
-        let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
-        let host = PathBuf::from(&project.host_path);
-        let guest = self
-            .guest_for(&project.id)
-            .ok_or("The machine is not connected")?;
-        check_folder(&host, project.mode == SyncMode::TwoWay)
-            .require(&host)
-            .map_err(err)?;
-        if host.join(".git").is_dir() {
-            let scope = vec![".git".to_string()];
-            let theirs = remote_scan(
-                &guest,
-                &project.guest_path,
-                &SyncRules::git_only(),
-                Some(&scope),
-            )?;
-            if !theirs.iter().any(|e| e.path.starts_with(".git/")) {
-                let ours = agent_core::sync::scan(&host, &SyncRules::git_only(), Some(&scope))
-                    .map_err(err)?;
-                let paths: Vec<String> = ours.into_iter().map(|e| e.path).collect();
-                let report = remote_apply(&guest, &project.guest_path, &host, &[], &paths)?;
-                if let Some((path, error)) = report.failed.first() {
-                    return Err(format!("Could not copy .git ({path}: {error})"));
+            failed = match result {
+                Ok(outcome) => outcome.transfer_error.is_some(),
+                Err(error) => {
+                    if !stop.load(Ordering::Relaxed) {
+                        self.set_status(id, |s| {
+                            s.state = SyncState::Error;
+                            s.error = Some(error);
+                        });
+                    }
+                    true
                 }
-            }
-        }
-        self.edit_project(&project.id, |p| p.git_copied = true)
-            .map(|_| ())
-    }
-
-    /// One reconcile of `scope` (`None`: everything).
-    fn cycle(&self, project: &SyncProject, scope: Option<Vec<String>>) -> Result<(), String> {
-        let lock = self.cycle_lock(&project.id);
-        let _guard = lock.locked();
-        let guest = self
-            .guest_for(&project.id)
-            .ok_or("The machine is not connected")?;
-        let host = PathBuf::from(&project.host_path);
-        check_folder(&host, project.mode == SyncMode::TwoWay)
-            .require(&host)
-            .map_err(err)?;
-        // A scoped scan can miss an alias that differs in a parent directory's
-        // spelling. Windows Two-way needs both full namespaces before writing.
-        let scope = if project_requires_full_scan(project) {
-            None
-        } else {
-            scope
-        };
-        let scope_ref = scope.as_deref();
-        macro_rules! mark {
-            ($label:expr, $started:expr) => {
-                cabin_diagnostics::event(
-                    cabin_diagnostics::Level::Debug,
-                    "sync",
-                    $label,
-                    format_args!("{} ms", $started.elapsed().as_millis()),
-                );
             };
         }
-        self.set_status(&project.id, |s| {
-            if s.state == SyncState::Error {
-                s.error = None;
-            }
-            s.state = if scope.is_none() {
-                SyncState::Scanning
-            } else {
-                SyncState::Syncing
-            };
-        });
-
-        let to_map = |entries: Vec<Entry>| -> BTreeMap<String, Entry> {
-            // The map key owns the path; keeping a second copy inside Entry
-            // would allocate and retain one String per file for every cycle.
-            entries
-                .into_iter()
-                .map(|mut entry| (std::mem::take(&mut entry.path), entry))
-                .collect()
-        };
-        let (mac, vm, base_in, base_out, files) = if project.mode == SyncMode::Safe {
-            let started = Instant::now();
-            let mac =
-                to_map(agent_core::sync::scan(&host, &project.rules, scope_ref).map_err(err)?);
-            mark!("mac_scan", started);
-            let started = Instant::now();
-            let base_all = self.load_base(&project.id)?;
-            mark!("base_load", started);
-            let files = base_all.len() as u64;
-            let (base_in, base_out): (Base, Base) = base_all
-                .into_iter()
-                .partition(|(path, _)| scan::in_scope(path, scope_ref));
-            // Safe mode only pushes Mac changes. If the Mac matches the base,
-            // there is nothing to push and no conflict to discover, so the
-            // guest scan and the base rewrite can be skipped entirely.
-            if !plan::mac_changed(&base_in, &mac) {
-                self.set_status(&project.id, |s| {
-                    s.state = SyncState::Watching;
-                    s.last_sync_at = Some(now_millis());
-                    s.files = files;
-                });
-                return Ok(());
-            }
-            let started = Instant::now();
-            let vm = to_map(remote_scan(
-                &guest,
-                &project.guest_path,
-                &project.rules,
-                scope_ref,
-            )?);
-            mark!("guest_scan", started);
-            (mac, vm, base_in, base_out, files)
-        } else {
-            // Mirror and Two-way need both sides on every cycle. The Mac walk
-            // and the guest walk are independent; run them together.
-            let started = Instant::now();
-            let (mac_entries, vm_entries) = std::thread::scope(|scope| {
-                let vm = std::thread::Builder::new()
-                    .name("sync-guest-scan".into())
-                    .spawn_scoped(scope, || {
-                        remote_scan(&guest, &project.guest_path, &project.rules, scope_ref)
-                    })
-                    .map_err(|error| format!("Could not start the guest scan: {error}"))?;
-                let mac = agent_core::sync::scan(&host, &project.rules, scope_ref).map_err(err);
-                let vm = vm.join().map_err(|_| "Guest scan stopped".to_string())?;
-                Ok::<_, String>((mac?, vm?))
-            })?;
-            mark!("parallel_scans", started);
-            let started = Instant::now();
-            let base_all = self.load_base(&project.id)?;
-            mark!("base_load", started);
-            let files = base_all.len() as u64;
-            let (base_in, base_out): (Base, Base) = base_all
-                .into_iter()
-                .partition(|(path, _)| scan::in_scope(path, scope_ref));
-            (
-                to_map(mac_entries),
-                to_map(vm_entries),
-                base_in,
-                base_out,
-                files,
-            )
-        };
-        // Nothing can be applied if both snapshots still match the base.
-        // Skip both planning and Windows alias sorting on this read-only path.
-        if self.base_path(&project.id).exists() && plan::base_is_current(&base_in, &mac, &vm) {
-            self.set_status(&project.id, |s| {
-                s.state = SyncState::Watching;
-                s.last_sync_at = Some(now_millis());
-                s.files = files;
-            });
-            return Ok(());
-        }
-        #[cfg(windows)]
-        if project.mode == SyncMode::TwoWay {
-            // Baseline-only paths absent on both sides cannot produce actions.
-            // Checking the live namespace lets users fix an old collision by
-            // renaming the offending file without throwing away sync history.
-            windows_paths::check_names(mac.keys().chain(vm.keys()).map(String::as_str))?;
-        }
-        let started = Instant::now();
-        let actions = plan::reconcile(project.mode, &base_in, &mac, &vm);
-        mark!("plan", started);
-
-        let mut push = Vec::new();
-        let mut delete_vm = Vec::new();
-        let mut pull = Vec::new();
-        let mut delete_mac = Vec::new();
-        let mut conflicts = Vec::new();
-        for action in &actions {
-            match action {
-                Action::Push(p) => push.push(p.clone()),
-                Action::DeleteVm(p) => delete_vm.push(p.clone()),
-                Action::Pull(p) => pull.push(p.clone()),
-                Action::DeleteMac(p) => delete_mac.push(p.clone()),
-                Action::Conflict(p) => conflicts.push(p.clone()),
-            }
-        }
-        #[cfg(windows)]
-        if project.mode == SyncMode::TwoWay {
-            // A scan may omit an ignored spelling or a Windows alias. Do not
-            // infer a deletion or allow a new pull to overwrite such a file.
-            for path in delete_vm
-                .iter()
-                .chain(pull.iter().filter(|path| !mac.contains_key(*path)))
-            {
-                windows_paths::require_local_absence(&host, path)?;
-            }
-        }
-        if !push.is_empty() || !delete_vm.is_empty() {
-            self.set_status(&project.id, |s| s.state = SyncState::Syncing);
-        }
-
-        let mut failed: Vec<(String, String)> = Vec::new();
-        let started = Instant::now();
-        if !push.is_empty() || !delete_vm.is_empty() {
-            let report = remote_apply(&guest, &project.guest_path, &host, &delete_vm, &push)?;
-            failed.extend(report.failed);
-        }
-        if !pull.is_empty() || !delete_mac.is_empty() {
-            let report = pull_into(&guest, &project.guest_path, &host, &delete_mac, &pull)?;
-            failed.extend(report.failed);
-        }
-        mark!("apply", started);
-        let failed_paths: std::collections::HashSet<&str> =
-            failed.iter().map(|(p, _)| p.as_str()).collect();
-        let applied: Vec<Action> = actions
-            .iter()
-            .filter(|a| !matches!(a, Action::Conflict(_)) && !failed_paths.contains(a.path()))
-            .cloned()
-            .collect();
-        let started = Instant::now();
-        let mut next = plan::next_base(&base_in, &mac, &vm, &applied);
-        next.extend(base_out);
-        self.save_base(&project.id, &next)?;
-        mark!("base_write", started);
-
-        let pushed = (push.len() + delete_vm.len()) as u64;
-        let pulled = (pull.len() + delete_mac.len()) as u64;
-        self.set_status(&project.id, |s| {
-            s.state = SyncState::Watching;
-            s.last_sync_at = Some(now_millis());
-            s.files = next.len() as u64;
-            s.pushed += pushed;
-            s.pulled += pulled;
-            s.conflicts
-                .retain(|path| !scan::in_scope(path, scope_ref) || conflicts.contains(path));
-            for path in &conflicts {
-                if !s.conflicts.contains(path) {
-                    s.conflicts.push(path.clone());
-                }
-            }
-            s.conflicts.sort();
-            s.error = failed.first().map(|(path, error)| {
-                format!(
-                    "{} {} could not be synced (first: {path}: {error})",
-                    failed.len(),
-                    if failed.len() == 1 { "path" } else { "paths" }
-                )
-            });
-        });
-        Ok(())
+        drop(guest_watch);
     }
 }
 
@@ -1114,925 +1171,5 @@ fn uuid_like() -> String {
     format!("sync-{:x}", nanos ^ (std::process::id() as u128) << 64)
 }
 
-fn remote(guest: &GuestTransport, command: &str, root: &str) -> Command {
-    let mut process = match guest {
-        GuestTransport::Ssh(ssh) => {
-            let mut process = Command::new(&ssh[0]);
-            process.args(&ssh[1..]);
-            process.arg(format!(
-                "\"$HOME/{}\" sync {command} {}",
-                vm_core::agentd::REMOTE_BIN,
-                shell_quote(root)
-            ));
-            process
-        }
-        #[cfg(unix)]
-        GuestTransport::Native {
-            executable,
-            dir,
-            desktop,
-        } => {
-            let mut process = Command::new(executable);
-            process.arg(if *desktop {
-                "--native-sync-worker"
-            } else {
-                "__sync"
-            });
-            process
-                .args([command, root])
-                .env("CABIN_CLI_CHANNEL_DIR", dir);
-            process
-        }
-    };
-    process
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    vm_core::util::no_window(&mut process);
-    process
-}
-
-/// How long one guest sync command may run before it is killed. Large projects
-/// take minutes; a hung ssh or a wedged guest must not hold the cycle forever.
-const REMOTE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-
-/// The child's pipes, handed to the transfer step so it can stream its request
-/// and reply while the process stays killable.
-struct Pipes {
-    stdin: Option<std::process::ChildStdin>,
-    stdout: Option<std::process::ChildStdout>,
-    stderr: Option<std::process::ChildStderr>,
-}
-
-fn with_remote<T>(
-    command: Command,
-    what: &str,
-    transfer: impl FnOnce(&mut Pipes) -> Result<T, String>,
-) -> Result<T, String> {
-    with_remote_timeout(command, what, REMOTE_TIMEOUT, transfer)
-}
-
-fn with_remote_timeout<T>(
-    mut command: Command,
-    what: &str,
-    timeout: Duration,
-    transfer: impl FnOnce(&mut Pipes) -> Result<T, String>,
-) -> Result<T, String> {
-    let mut child = command.spawn().map_err(err)?;
-    let mut pipes = Pipes {
-        stdin: child.stdin.take(),
-        stdout: child.stdout.take(),
-        stderr: child.stderr.take(),
-    };
-    let errors = pipes
-        .stderr
-        .take()
-        .ok_or_else(|| std::io::Error::other("Guest sync has no stderr pipe"))
-        .and_then(|stderr| {
-            std::thread::Builder::new()
-                .name("sync-stderr".into())
-                .spawn(move || read_remote_errors(stderr))
-        });
-    let errors = match errors {
-        Ok(errors) => errors,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("Could not read {what} diagnostics: {error}"));
-        }
-    };
-
-    // The transfer streams over the pipes and can block on a wedged guest, so a
-    // watchdog owns the deadline and the kill; the transfer only reports.
-    let deadline = Instant::now() + timeout;
-    let child = Arc::new(Mutex::new(child));
-    let finished = Arc::new(AtomicBool::new(false));
-    let watchdog = {
-        let child = child.clone();
-        let finished = finished.clone();
-        std::thread::Builder::new()
-            .name("sync-watchdog".into())
-            .spawn(move || {
-                while Instant::now() < deadline {
-                    if finished.load(Ordering::Relaxed) {
-                        return false;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                if finished.load(Ordering::Relaxed) {
-                    return false;
-                }
-                let _ = child.locked().kill();
-                true
-            })
-    };
-    let watchdog = match watchdog {
-        Ok(watchdog) => watchdog,
-        Err(error) => {
-            let _ = child.locked().kill();
-            let _ = child.locked().wait();
-            return Err(format!("Could not start the {what} watchdog: {error}"));
-        }
-    };
-
-    let result = transfer(&mut pipes);
-    // Close stdin so the guest sees end of input, then drain whatever the
-    // transfer did not read so the child cannot block on a full pipe.
-    drop(pipes.stdin.take());
-    let leftover = pipes.stdout.take().map(|mut stdout| {
-        std::thread::spawn(move || {
-            let mut buffer = Vec::new();
-            let _ = stdout.read_to_end(&mut buffer);
-            buffer
-        })
-    });
-    let status = loop {
-        match child.locked().try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if Instant::now() < deadline + Duration::from_secs(5) => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Ok(None) => {
-                let _ = child.locked().kill();
-                break Err(format!(
-                    "{what} did not finish within {timeout:?} and was stopped"
-                ));
-            }
-            Err(error) => break Err(error.to_string()),
-        }
-    };
-    finished.store(true, Ordering::Relaxed);
-    let timed_out = watchdog
-        .join()
-        .map_err(|_| format!("The {what} watchdog stopped"))?;
-    if let Some(leftover) = leftover {
-        let _ = leftover.join();
-    }
-    let (stderr, truncated) = errors
-        .join()
-        .map_err(|_| format!("Reading {what} diagnostics stopped"))?
-        .map_err(err)?;
-    let status = status.map_err(err)?;
-    if timed_out {
-        return Err(format!(
-            "{what} did not finish within {timeout:?} and was stopped"
-        ));
-    }
-    if !status.success() {
-        return Err(remote_error(what, status, &stderr, truncated));
-    }
-    result
-}
-
-fn read_remote_errors(mut stderr: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
-    const LIMIT: usize = 64 * 1024;
-    let mut captured = Vec::new();
-    let mut truncated = false;
-    let mut buf = [0; 8192];
-    loop {
-        match stderr.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                let keep = n.min(LIMIT - captured.len());
-                captured.extend_from_slice(&buf[..keep]);
-                truncated |= keep < n;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        }
-    }
-    Ok((captured, truncated))
-}
-
-fn remote_error(
-    what: &str,
-    status: std::process::ExitStatus,
-    stderr: &[u8],
-    truncated: bool,
-) -> String {
-    let message = String::from_utf8_lossy(stderr);
-    let message = message.trim();
-    let suffix = if truncated { " [truncated]" } else { "" };
-    if message.is_empty() {
-        format!("{what} failed in the machine: {status}{suffix}")
-    } else {
-        format!("{what} failed in the machine: {message}{suffix}")
-    }
-}
-
-fn remote_scan(
-    ssh: &GuestTransport,
-    root: &str,
-    rules: &SyncRules,
-    scope: Option<&[String]>,
-) -> Result<Vec<Entry>, String> {
-    let request = ScanRequest {
-        rules: rules.clone(),
-        scope: scope.map(|s| s.to_vec()),
-    };
-    let request = serde_json::to_string(&request).map_err(err)?;
-    let listing = with_remote(remote(ssh, "scan", root), "Scanning", |pipes| {
-        // The peer can write output before consuming a large request.
-        let mut stdin = pipes.stdin.take().ok_or("SSH has no stdin pipe")?;
-        let stdout = pipes.stdout.take().ok_or("SSH has no stdout pipe")?;
-        let sender = std::thread::Builder::new()
-            .name("sync-scan-request".into())
-            .spawn(move || writeln!(stdin, "{request}"))
-            .map_err(|e| format!("Could not start sending the scan request: {e}"))?;
-        let mut stdout = BufReader::with_capacity(64 * 1024, stdout);
-        let listing = scan::read_binary(&mut stdout);
-        if listing.is_err() {
-            // Drain malformed output so the remote command can report its exit status.
-            let _ = std::io::copy(&mut stdout, &mut std::io::sink());
-        }
-        drop(stdout);
-        sender
-            .join()
-            .map_err(|_| "Sending scan request stopped".to_string())?
-            .map_err(|e| format!("Could not send scan request: {e}"))?;
-        listing.map_err(|e| format!("The machine's file list was unreadable: {e}"))
-    })?;
-    Ok(listing)
-}
-
-/// Delete `delete` in the machine, then write `push` from the Mac there.
-fn remote_apply(
-    ssh: &GuestTransport,
-    root: &str,
-    host: &Path,
-    delete: &[String],
-    push: &[String],
-) -> Result<ApplyReport, String> {
-    with_remote(remote(ssh, "apply", root), "Writing files", |pipes| {
-        let mut send = || -> std::io::Result<()> {
-            let stdin = pipes
-                .stdin
-                .take()
-                .ok_or_else(|| std::io::Error::other("SSH has no stdin pipe"))?;
-            let mut out = std::io::BufWriter::with_capacity(1 << 20, stdin);
-            let header = ApplyHeader {
-                delete: delete.to_vec(),
-            };
-            writeln!(out, "{}", serde_json::to_string(&header)?)?;
-            archive::pack(host, push, &mut out)?;
-            out.flush()
-        };
-        send().map_err(|e| format!("Could not send files: {e}"))?;
-        // The reply only comes after the archive, so read it once the request
-        // is complete.
-        drop(pipes.stdin.take());
-        let mut stdout = pipes.stdout.take().ok_or("SSH has no stdout pipe")?;
-        let mut out = Vec::new();
-        stdout
-            .read_to_end(&mut out)
-            .map_err(|e| format!("Could not read the machine's reply: {e}"))?;
-        serde_json::from_slice(&out).map_err(|e| format!("The machine's reply was unreadable: {e}"))
-    })
-}
-
-/// Read `paths` from the machine and apply them (and `delete`) on the Mac.
-fn pull_into(
-    ssh: &GuestTransport,
-    root: &str,
-    host: &Path,
-    delete: &[String],
-    paths: &[String],
-) -> Result<ApplyReport, String> {
-    let request = serde_json::to_string(&PackRequest {
-        paths: paths.to_vec(),
-    })
-    .map_err(err)?;
-    let report = with_remote(remote(ssh, "pack", root), "Reading files", |pipes| {
-        let mut stdin = pipes.stdin.take().ok_or("SSH has no stdin pipe")?;
-        writeln!(stdin, "{request}").map_err(err)?;
-        drop(stdin);
-        let stdout = pipes.stdout.take().ok_or("SSH has no stdout pipe")?;
-        let mut input = BufReader::with_capacity(1 << 20, stdout);
-        let report = archive::apply(host, delete, &mut input);
-        std::io::copy(&mut input, &mut std::io::sink()).map_err(err)?;
-        report.map_err(err)
-    })?;
-    Ok(report)
-}
-
-fn pull(
-    ssh: &GuestTransport,
-    root: &str,
-    host: &Path,
-    delete: &[String],
-    paths: &[String],
-) -> Result<(), String> {
-    let report = pull_into(ssh, root, host, delete, paths)?;
-    match report.failed.first() {
-        Some((path, error)) => Err(format!("{path}: {error}")),
-        None => Ok(()),
-    }
-}
-
-/// The guest's `sync watch`; its stdin stays open for as long as it runs
-/// (closing it ends the watch in the machine).
-struct GuestWatch {
-    child: Child,
-    stdin: std::process::ChildStdin,
-    native: bool,
-}
-
-impl GuestWatch {
-    fn stop(self) {
-        let Self {
-            mut child,
-            stdin,
-            native,
-        } = self;
-        drop(stdin);
-        if !native {
-            let _ = child.kill();
-        }
-        let _ = child.wait();
-    }
-}
-
-/// Run `sync watch` in the machine; each batch becomes a scoped cycle.
-fn watch_guest(
-    ssh: &GuestTransport,
-    project: &SyncProject,
-    kick: mpsc::Sender<Kick>,
-) -> Result<GuestWatch, String> {
-    let mut child = remote(ssh, "watch", &project.guest_path)
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(err)?;
-    let mut stdin = child.stdin.take().ok_or("no stdin")?;
-    writeln!(
-        stdin,
-        "{}",
-        serde_json::to_string(&project.rules).map_err(err)?
-    )
-    .map_err(err)?;
-    let mut stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
-    let native = !matches!(ssh, GuestTransport::Ssh(_));
-    if native {
-        let mut ready = String::new();
-        if let Err(error) = stdout.read_line(&mut ready).map_err(err).and_then(|_| {
-            if ready.trim() == "[]" {
-                Ok(())
-            } else {
-                Err("watch never reported readiness".into())
-            }
-        }) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-    }
-    std::thread::spawn(move || {
-        for line in stdout.lines() {
-            let Ok(line) = line else { break };
-            let Ok(batch) = serde_json::from_str::<Vec<String>>(&line) else {
-                continue;
-            };
-            if !batch.is_empty() && kick.send(Kick::Scope(batch)).is_err() {
-                break;
-            }
-        }
-    });
-    Ok(GuestWatch {
-        child,
-        stdin,
-        native,
-    })
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn corrupt_base_stops_sync_instead_of_losing_history() {
-        let home = tempfile::tempdir().unwrap();
-        let manager = SyncManager::open(home.path().join("sync"));
-        let path = manager.base_path("project");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"broken base").unwrap();
-        assert!(
-            manager
-                .load_base("project")
-                .unwrap_err()
-                .contains("Could not read the sync base")
-        );
-        assert_eq!(std::fs::read(path).unwrap(), b"broken base");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn short_sync_commands_share_one_ssh_transport() {
-        let dir = tempfile::tempdir().unwrap();
-        let ssh = reuse_ssh(vec!["ssh".into(), "dev@example".into()], dir.path());
-        assert!(ssh.iter().any(|arg| arg == "ControlMaster=auto"));
-        assert!(
-            ssh.iter()
-                .any(|arg| arg.contains("ControlPath=") && arg.contains("cabin-sync-"))
-        );
-        let local = reuse_ssh(vec!["sh".into(), "-c".into(), "true".into()], dir.path());
-        assert_eq!(local, ["sh", "-c", "true"]);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_hung_guest_command_is_stopped_at_the_deadline() {
-        let mut command = Command::new("sh");
-        command
-            .args(["-c", "sleep 30"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let started = Instant::now();
-        let error =
-            with_remote_timeout(command, "Scanning", Duration::from_millis(200), |_| Ok(()))
-                .unwrap_err();
-        assert!(error.contains("did not finish"), "{error}");
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "the deadline is the bound"
-        );
-    }
-
-    fn scan_from_script(script: &str, rules: &SyncRules) -> Result<Vec<Entry>, String> {
-        let ssh = vec!["sh".into(), "-c".into(), script.into()];
-        remote_scan(&GuestTransport::Ssh(ssh), "/unused", rules, None)
-    }
-
-    #[test]
-    fn remote_scan_drains_stderr_while_sending_and_decoding() {
-        // Fill stderr before reading a request larger than a pipe, then return
-        // an empty binary listing. Sequential pipe handling would deadlock.
-        let rules = SyncRules {
-            ignore: vec!["x".repeat(256 * 1024)],
-            ..SyncRules::default()
-        };
-        let script = "dd if=/dev/zero bs=1024 count=256 >&2 2>/dev/null; IFS= read -r request; printf 'VASCAN1\\000\\000\\000\\000\\000'";
-        assert_eq!(
-            scan_from_script(script, &rules).unwrap(),
-            Vec::<Entry>::new()
-        );
-    }
-
-    #[test]
-    fn remote_scan_reports_exit_and_bounds_non_utf8_stderr() {
-        let script = "IFS= read -r request; printf 'failure: \\377' >&2; dd if=/dev/zero bs=1024 count=128 >&2 2>/dev/null; exit 7";
-        let error = scan_from_script(script, &SyncRules::default()).unwrap_err();
-        assert!(
-            error.contains("Scanning failed in the machine: failure: �"),
-            "{error:?}"
-        );
-        assert!(error.contains("[truncated]"));
-        assert!(error.len() < 70 * 1024);
-    }
-
-    #[test]
-    fn remote_upload_drains_diagnostics_before_sending_archive() {
-        let host = tempfile::tempdir().unwrap();
-        std::fs::write(host.path().join("large.txt"), vec![b'x'; 512 * 1024]).unwrap();
-        let script = r#"dd if=/dev/zero bs=1024 count=256 >&2 2>/dev/null; cat >/dev/null; printf '%s' '{"written":1,"deleted":0,"failed":[]}'"#;
-        let ssh = vec!["sh".into(), "-c".into(), script.into()];
-        let report = remote_apply(
-            &GuestTransport::Ssh(ssh),
-            "/unused",
-            host.path(),
-            &[],
-            &["large.txt".into()],
-        )
-        .unwrap();
-        assert_eq!(report.written, 1);
-    }
-
-    #[test]
-    fn remote_download_keeps_the_exit_error_after_large_diagnostics() {
-        let host = tempfile::tempdir().unwrap();
-        let script = "IFS= read -r request; printf 'pack failed: \\377' >&2; dd if=/dev/zero bs=1024 count=256 >&2 2>/dev/null; exit 7";
-        let ssh = vec!["sh".into(), "-c".into(), script.into()];
-        let error = pull_into(
-            &GuestTransport::Ssh(ssh),
-            "/unused",
-            host.path(),
-            &[],
-            &["file.txt".into()],
-        )
-        .unwrap_err();
-        assert!(error.contains("Reading files failed in the machine: pack failed: �"));
-        assert!(error.ends_with("[truncated]"));
-        assert!(error.len() < 70 * 1024);
-    }
-
-    #[test]
-    fn remote_scan_rejects_bad_streams_and_checks_exit_status() {
-        let rules = SyncRules::default();
-        let bad = "IFS= read -r request; printf 'bad data'; dd if=/dev/zero bs=1024 count=128 2>/dev/null";
-        assert!(
-            scan_from_script(bad, &rules)
-                .unwrap_err()
-                .contains("file list was unreadable")
-        );
-        let trailing = "IFS= read -r request; printf 'VASCAN1\\000\\000\\000\\000\\000extra'";
-        assert!(
-            scan_from_script(trailing, &rules)
-                .unwrap_err()
-                .contains("trailing data")
-        );
-        let failed = "IFS= read -r request; printf 'VASCAN1\\000\\000\\000\\000\\000'; printf 'scan failed' >&2; exit 9";
-        assert!(
-            scan_from_script(failed, &rules)
-                .unwrap_err()
-                .contains("scan failed")
-        );
-        let early = "exit 9";
-        assert!(
-            scan_from_script(early, &rules)
-                .unwrap_err()
-                .contains("Scanning failed in the machine")
-        );
-    }
-
-    #[test]
-    fn parents_quotes_and_overlaps() {
-        assert_eq!(parent_of("a/b/c.rs"), "a/b");
-        assert_eq!(parent_of("top"), "");
-        assert_eq!(shell_quote("~/it's here"), r"'~/it'\''s here'");
-    }
-
-    #[test]
-    fn projects_persist_and_reject_overlapping_folders() {
-        let home = tempfile::tempdir().unwrap();
-        let mac = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(mac.path().join("app/inner")).unwrap();
-        let manager = SyncManager::open(home.path().join("sync"));
-        let input = |path: &Path, guest: &str| SyncProjectInput {
-            workspace_id: None,
-            name: "app".into(),
-            host_path: path.display().to_string(),
-            guest_path: guest.into(),
-            mode: SyncMode::Safe,
-            rules: SyncRules::default(),
-        };
-        let view = manager
-            .create(input(&mac.path().join("app"), "~/projects/app"))
-            .unwrap();
-        assert_eq!(view.status.state, SyncState::Offline);
-        assert!(
-            manager
-                .create(input(&mac.path().join("app/inner"), "~/projects/other"))
-                .unwrap_err()
-                .contains("overlaps")
-        );
-        assert!(
-            manager
-                .create(input(mac.path(), "~/projects/app/sub"))
-                .unwrap_err()
-                .contains("overlaps")
-        );
-        assert!(manager.create(input(mac.path(), "relative")).is_err());
-
-        let again = SyncManager::open(home.path().join("sync"));
-        assert_eq!(again.list().len(), 1);
-        let paused = again
-            .update(&view.project.id, Some(SyncMode::TwoWay), None, Some(true))
-            .unwrap();
-        assert_eq!(
-            (paused.project.mode, paused.status.state),
-            (SyncMode::TwoWay, SyncState::Paused)
-        );
-        again.remove(&view.project.id).unwrap();
-        assert!(
-            SyncManager::open(home.path().join("sync"))
-                .list()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn failed_project_save_preserves_live_and_saved_state() {
-        let home = tempfile::tempdir().unwrap();
-        let first = tempfile::tempdir().unwrap();
-        let second = tempfile::tempdir().unwrap();
-        let dir = home.path().join("sync");
-        let manager = SyncManager::open(dir.clone());
-        let input = |host: &Path, name: &str| SyncProjectInput {
-            workspace_id: None,
-            name: name.into(),
-            host_path: host.display().to_string(),
-            guest_path: format!("~/projects/{name}"),
-            mode: SyncMode::Safe,
-            rules: SyncRules::default(),
-        };
-        let id = manager
-            .create(input(first.path(), "first"))
-            .unwrap()
-            .project
-            .id;
-        let base = manager.base_path(&id);
-        std::fs::create_dir_all(base.parent().unwrap()).unwrap();
-        std::fs::write(&base, b"existing sync history").unwrap();
-        std::fs::create_dir(dir.join("projects.tmp")).unwrap();
-
-        assert!(manager.create(input(second.path(), "second")).is_err());
-        assert!(
-            manager
-                .update(&id, Some(SyncMode::TwoWay), None, Some(true))
-                .is_err()
-        );
-        assert!(manager.remove(&id).is_err());
-
-        for list in [manager.list(), SyncManager::open(dir).list()] {
-            let [view] = list.as_slice() else {
-                panic!("expected the original project")
-            };
-            assert_eq!(view.project.id, id);
-            assert_eq!(view.project.mode, SyncMode::Safe);
-            assert!(!view.project.paused);
-            assert_eq!(view.status.state, SyncState::Offline);
-        }
-        assert_eq!(std::fs::read(base).unwrap(), b"existing sync history");
-    }
-
-    #[test]
-    fn reset_refuses_an_active_sync_or_a_mac_folder_inside_the_data_root() {
-        let root = tempfile::tempdir().unwrap();
-        let data = root.path().join("data");
-        let external = root.path().join("external");
-        let nested = data.join("sync/project");
-        for path in [&external, &nested] {
-            std::fs::create_dir_all(path).unwrap();
-            std::fs::write(path.join("keep"), "user files").unwrap();
-        }
-        let sync = SyncManager::open(data.join("sync"));
-        let project = |host: &Path, guest: &str| SyncProjectInput {
-            workspace_id: None,
-            name: guest.into(),
-            host_path: host.display().to_string(),
-            guest_path: format!("~/projects/{guest}"),
-            mode: SyncMode::Safe,
-            rules: SyncRules::default(),
-        };
-        let view = sync.create(project(&external, "external")).unwrap();
-        let lock = sync.cycle_lock(&view.project.id);
-        let active = lock.lock().unwrap();
-        assert!(
-            sync.reset_storage::<()>(|| panic!("reset ran during sync"))
-                .unwrap_err()
-                .to_string()
-                .contains("finishing")
-        );
-        drop(active);
-        sync.create(project(&nested, "nested")).unwrap();
-        assert!(
-            sync.reset_storage::<()>(|| panic!("reset would erase a Mac folder"))
-                .unwrap_err()
-                .to_string()
-                .contains("inside the app data directory")
-        );
-        assert!(nested.join("keep").is_file());
-        assert_eq!(sync.list().len(), 2);
-    }
-
-    /// The real cycle against the real `cabind sync`, with the SSH hop
-    /// replaced by a local shell whose HOME holds the binary.
-    #[cfg(unix)]
-    fn local_guest() -> Option<(tempfile::TempDir, Vec<String>)> {
-        let binary = std::env::var_os("CABIND_TEST_BIN")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/target/debug/cabind")
-            });
-        // It must exist and run on this host (a shared target folder may hold
-        // another platform's build).
-        let runs = Command::new(&binary)
-            .arg("--version")
-            .output()
-            .is_ok_and(|out| out.status.success());
-        if !runs {
-            eprintln!(
-                "skipping: no runnable cabind (cargo build --bin cabind, or set CABIND_TEST_BIN)"
-            );
-            return None;
-        }
-        let home = tempfile::tempdir().unwrap();
-        let bin = home.path().join(vm_core::agentd::REMOTE_BIN);
-        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
-        std::os::unix::fs::symlink(binary.canonicalize().unwrap(), &bin).unwrap();
-        let ssh = vec![
-            "env".into(),
-            format!("HOME={}", home.path().display()),
-            "sh".into(),
-            "-c".into(),
-        ];
-        Some((home, ssh))
-    }
-
-    /// `cabind` runs in the Linux guest; its end-to-end tests need a Unix shell.
-    #[cfg(not(unix))]
-    fn local_guest() -> Option<(tempfile::TempDir, Vec<String>)> {
-        eprintln!("skipping: the end-to-end sync tests need a Unix shell");
-        None
-    }
-
-    fn write(root: &Path, rel: &str, body: &str, secs: u64) {
-        let path = root.join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, body).unwrap();
-        let time = std::time::UNIX_EPOCH + Duration::from_secs(secs);
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(time))
-            .unwrap();
-    }
-
-    fn read(root: &Path, rel: &str) -> Option<String> {
-        std::fs::read_to_string(root.join(rel)).ok()
-    }
-
-    fn setup(
-        mode: SyncMode,
-    ) -> Option<(
-        tempfile::TempDir,
-        tempfile::TempDir,
-        Arc<SyncManager>,
-        SyncProject,
-        PathBuf,
-        PathBuf,
-    )> {
-        let (guest_home, ssh) = local_guest()?;
-        let state = tempfile::tempdir().unwrap();
-        let mac = state.path().join("mac");
-        std::fs::create_dir_all(&mac).unwrap();
-        write(&mac, "src/main.rs", "v1", 1_000);
-        write(&mac, ".gitignore", "target/\n", 1_000);
-        write(&mac, "target/big.o", "build output", 1_000);
-        write(&mac, ".git/HEAD", "ref: refs/heads/main", 1_000);
-        let manager = SyncManager::open(state.path().join("sync"));
-        let view = manager
-            .create(SyncProjectInput {
-                workspace_id: None,
-                name: "app".into(),
-                host_path: mac.display().to_string(),
-                guest_path: "~/projects/app".into(),
-                mode,
-                rules: SyncRules::default(),
-            })
-            .unwrap();
-        *manager.guest.write().unwrap() = Some(GuestTransport::Ssh(ssh));
-        let vm = guest_home.path().join("projects/app");
-        let mac = PathBuf::from(&view.project.host_path);
-        Some((guest_home, state, manager, view.project, mac, vm))
-    }
-
-    #[test]
-    fn safe_mode_end_to_end() {
-        let Some((_g, _s, manager, project, mac, vm)) = setup(SyncMode::Safe) else {
-            return;
-        };
-        manager.first_cycle(&project).unwrap();
-        assert_eq!(read(&vm, "src/main.rs").as_deref(), Some("v1"));
-        assert_eq!(
-            read(&vm, ".git/HEAD").as_deref(),
-            Some("ref: refs/heads/main"),
-            ".git is copied once"
-        );
-        assert!(
-            read(&vm, "target/big.o").is_none(),
-            "gitignored output stays on the Mac"
-        );
-        let project = manager.project(&project.id).unwrap();
-        assert!(project.git_copied);
-
-        // The Mac edits; an agent adds a file in the machine.
-        write(&mac, "src/main.rs", "v2", 2_000);
-        write(&vm, "src/agent.rs", "mine", 2_000);
-        manager.cycle(&project, Some(vec!["src".into()])).unwrap();
-        assert_eq!(read(&vm, "src/main.rs").as_deref(), Some("v2"));
-        assert_eq!(
-            read(&vm, "src/agent.rs").as_deref(),
-            Some("mine"),
-            "machine-only files are kept"
-        );
-        assert!(
-            read(&mac, "src/agent.rs").is_none(),
-            "nothing flows back in Safe mode"
-        );
-
-        // Both edit the same file: a conflict, nothing overwritten.
-        write(&mac, "src/main.rs", "mac v3", 3_000);
-        write(&vm, "src/main.rs", "agent v3", 3_001);
-        manager.cycle(&project, None).unwrap();
-        assert_eq!(read(&vm, "src/main.rs").as_deref(), Some("agent v3"));
-        assert_eq!(manager.status(&project.id).conflicts, ["src/main.rs"]);
-
-        // Keep the Mac's version.
-        manager.resolve(&project.id, "src/main.rs", true).unwrap();
-        assert_eq!(read(&vm, "src/main.rs").as_deref(), Some("mac v3"));
-        assert!(manager.status(&project.id).conflicts.is_empty());
-        manager.cycle(&project, None).unwrap();
-        assert!(
-            manager.status(&project.id).conflicts.is_empty(),
-            "a resolved conflict stays resolved"
-        );
-    }
-
-    #[test]
-    fn mirror_mode_end_to_end() {
-        let Some((_g, _s, manager, project, mac, vm)) = setup(SyncMode::Mirror) else {
-            return;
-        };
-        manager.first_cycle(&project).unwrap();
-        write(&vm, "src/main.rs", "agent edit", 5_000);
-        write(&vm, "stray.txt", "x", 5_000);
-        std::fs::remove_file(mac.join("src/main.rs")).unwrap();
-        write(&mac, "src/lib.rs", "lib", 5_000);
-        manager.cycle(&project, None).unwrap();
-        assert!(read(&vm, "src/main.rs").is_none());
-        assert!(read(&vm, "stray.txt").is_none());
-        assert_eq!(read(&vm, "src/lib.rs").as_deref(), Some("lib"));
-    }
-
-    #[test]
-    fn two_way_mode_end_to_end() {
-        let Some((_g, _s, manager, project, mac, vm)) = setup(SyncMode::TwoWay) else {
-            return;
-        };
-        manager.first_cycle(&project).unwrap();
-        write(&vm, "src/main.rs", "agent v2", 2_000);
-        write(&vm, "src/new/agent.rs", "new", 2_000);
-        write(&mac, "README.md", "readme", 2_000);
-        manager.cycle(&project, None).unwrap();
-        assert_eq!(read(&mac, "src/main.rs").as_deref(), Some("agent v2"));
-        assert_eq!(read(&mac, "src/new/agent.rs").as_deref(), Some("new"));
-        assert_eq!(read(&vm, "README.md").as_deref(), Some("readme"));
-        // A deletion in the machine reaches the Mac; nothing ping-pongs.
-        std::fs::remove_file(vm.join("src/new/agent.rs")).unwrap();
-        manager.cycle(&project, None).unwrap();
-        assert!(read(&mac, "src/new/agent.rs").is_none());
-        let before = manager.status(&project.id);
-        manager.cycle(&project, None).unwrap();
-        let after = manager.status(&project.id);
-        assert_eq!(
-            (before.pushed, before.pulled),
-            (after.pushed, after.pulled),
-            "a settled tree needs nothing"
-        );
-        // The machine's own git history is never overwritten after the copy.
-        write(&vm, ".git/HEAD", "ref: refs/heads/agent", 9_000);
-        manager.cycle(&project, None).unwrap();
-        assert_eq!(
-            read(&mac, ".git/HEAD").as_deref(),
-            Some("ref: refs/heads/main")
-        );
-    }
-
-    fn bench_throughput(mode: SyncMode, label: &str) {
-        let Some((_g, _s, manager, project, mac, _vm)) = setup(mode) else {
-            return;
-        };
-        for dir in 0..200 {
-            for file in 0..100 {
-                write(
-                    &mac,
-                    &format!("src/d{dir}/f{file}.rs"),
-                    "fn main() { println!(\"hello\"); }\n",
-                    1_000,
-                );
-            }
-        }
-        for big in 0..5 {
-            std::fs::write(mac.join(format!("assets-{big}.bin")), vec![7u8; 10 << 20]).unwrap();
-        }
-        let started = Instant::now();
-        manager.first_cycle(&project).unwrap();
-        let first = started.elapsed();
-        let started = Instant::now();
-        manager.cycle(&project, None).unwrap();
-        let noop = started.elapsed();
-        write(&mac, "src/d7/f3.rs", "changed", 9_000);
-        let started = Instant::now();
-        manager
-            .cycle(&project, Some(vec!["src/d7".into()]))
-            .unwrap();
-        let one = started.elapsed();
-        eprintln!(
-            "{label} 20,000 files + 50 MB: first sync {first:?}; full cycle, nothing changed {noop:?}; one edit (scoped) {one:?}"
-        );
-    }
-
-    /// Timings on a real tree (run with --ignored --nocapture).
-    #[test]
-    #[ignore = "benchmark"]
-    fn throughput() {
-        bench_throughput(SyncMode::TwoWay, "two-way");
-    }
-
-    #[test]
-    #[ignore = "benchmark"]
-    fn throughput_safe() {
-        bench_throughput(SyncMode::Safe, "safe");
-    }
-}
+mod tests;

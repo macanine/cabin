@@ -1175,10 +1175,9 @@ pub fn cmd_device(args: &Args) -> Result<i32> {
                         .and_then(Value::as_str)
                         .unwrap_or("");
                     println!(
-                        "  {:<8} state={:<10} fp={}",
+                        "  {:<8} state={:<10} fp={fp:.12}",
                         group,
-                        info.get("state").and_then(Value::as_str).unwrap_or("?"),
-                        &fp[..fp.len().min(12)]
+                        info.get("state").and_then(Value::as_str).unwrap_or("?")
                     );
                 }
             }

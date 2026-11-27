@@ -18,29 +18,39 @@ use super::{Host, start_gateway, unavailable};
 use crate::app_error::AppError;
 use crate::global_network::GlobalNetwork;
 
+struct InstallGateway<'a>(&'a GlobalNetwork);
+
+impl Drop for InstallGateway<'_> {
+    fn drop(&mut self) {
+        self.0.end_install();
+    }
+}
+
 /// First boot needs package downloads before the normal internet gate opens.
 /// Keep that exception tied to the install instead of changing the route.
-fn start_install_gateway(
-    network: &GlobalNetwork,
+fn start_install_gateway<'a>(
+    network: &'a GlobalNetwork,
     cfg: &vm_core::config::Config,
-) -> Result<bool, AppError> {
+) -> Result<Option<InstallGateway<'a>>, AppError> {
     if !cfg.isolated() {
-        return Ok(false);
+        return Ok(None);
     }
     let _transaction = network.transaction.locked();
     if network.is_up() {
         network.switch(&network.route()?)?;
     }
     network.begin_install();
-    if let Err(error) = start_gateway(network, cfg, None) {
-        network.end_install();
-        return Err(error);
-    }
-    Ok(true)
+    let install = InstallGateway(network);
+    start_gateway(network, cfg, None)?;
+    Ok(Some(install))
 }
 
 impl Host {
     // ------------------------------------------------------ machine ops
+
+    pub(crate) fn machine_status(&self) -> MachineStatus {
+        self.status.read_lock().clone()
+    }
 
     /// Test the chosen OS's ARM64 mirrors (its defaults plus any extra URIs).
     pub fn test_mirrors(
@@ -87,9 +97,7 @@ impl Host {
                     }
                 },
             );
-            if install_network {
-                self.network.end_install();
-            }
+            drop(install_network);
             if result.is_ok() && self.start_state() == Some(StartState::Failed) {
                 *self.startup.locked() = None;
             }
@@ -107,8 +115,7 @@ impl Host {
                 message: error.to_string(),
                 details: None,
             })?;
-        serde_json::from_value(serde_json::to_value(plan).unwrap_or_default())
-            .map_err(|error| AppError::internal(error.to_string()))
+        Self::convert(plan)
     }
 
     /// Stop the running install; it rolls back and reports "cancelled".
@@ -143,15 +150,11 @@ impl Host {
             let install_network = start_install_gateway(&self.network, &cfg)
                 .map_err(|error| vm_core::Error::Message(error.message))?;
             let result = self.machine.install_with_progress(&options, move |steps| {
-                if let Ok(steps) =
-                    serde_json::from_value(serde_json::to_value(steps).unwrap_or_default())
-                {
+                if let Ok(steps) = Self::convert(steps) {
                     me.emit(AppEvent::Install { steps });
                 }
             });
-            if install_network {
-                self.network.end_install();
-            }
+            drop(install_network);
             if result.is_err() && !self.machine.info().running {
                 self.network.stop();
             }
@@ -237,11 +240,7 @@ impl Host {
             ));
         }
         self.busy("Stopping the machine", || {
-            self.generation.fetch_add(1, Ordering::SeqCst);
-            self.update(|status| status.connection = GuestConnection::Offline);
-            self.sync.disconnect();
-            self.disconnect();
-            self.fail_pending("The machine is stopping");
+            self.disconnect_for_machine_change("The machine is stopping");
             let info = self.machine.stop()?;
             self.network.stop();
             Ok(info)
@@ -256,8 +255,7 @@ impl Host {
         let current = self.status.read_lock().clone();
         let busy = current.busy.is_some();
         let install = vm_core::chrome_feature::install_log_path(&cfg).map(|path| {
-            let lines = std::fs::read_to_string(&path)
-                .unwrap_or_default()
+            let lines = cabin_diagnostics::tail(&path, 128 * 1024, 0)
                 .lines()
                 .map(str::to_string)
                 .collect::<Vec<_>>();
@@ -277,12 +275,13 @@ impl Host {
             } else {
                 None
             };
+        let field = |key: &str| probe.as_ref().and_then(|probe| probe.get(key));
         Ok(json!({
             "configured": configured,
-            "installed": probe.as_ref().and_then(|p| p.get("chrome_installed")),
-            "running": probe.as_ref().and_then(|p| p.get("chrome_running")),
-            "version": probe.as_ref().and_then(|p| p.get("chrome_version")),
-            "viewerReady": probe.as_ref().and_then(|p| p.get("viewer_ready")),
+            "installed": field("chrome_installed").and_then(Value::as_bool),
+            "running": field("chrome_running").and_then(Value::as_bool),
+            "version": field("chrome_version").and_then(Value::as_str),
+            "viewerReady": field("viewer_ready").and_then(Value::as_bool),
             "displayProtocols": if cfg.desktop_spice { vec!["vnc", "spice"] } else { vec!["vnc"] },
             "canEnableSpice": running && !busy && current.connection == GuestConnection::Connected
                 && vm_core::chrome_feature::can_enable_spice(&cfg),
@@ -344,20 +343,14 @@ impl Host {
     }
 
     pub fn install_chrome(&self) -> Result<(), AppError> {
-        let cfg = self.machine.config().map_err(Self::vm_error)?;
-        let install_network = start_install_gateway(&self.network, &cfg)?;
-        let result = self.busy("Installing Chrome", || {
-            self.disconnect();
-            self.fail_pending("The machine is restarting to install Chrome");
-            if let Ok(cfg) = self.machine.config() {
-                let _ = vm_core::chrome_viewer::stop(&cfg);
-            }
+        self.busy("Installing Chrome", || {
+            let cfg = self.machine.config()?;
+            let _install_network = start_install_gateway(&self.network, &cfg)
+                .map_err(|error| vm_core::Error::Message(error.message))?;
+            self.disconnect_for_machine_change("The machine is restarting to install Chrome");
+            let _ = vm_core::chrome_viewer::stop(&cfg);
             self.machine.install_chrome()
-        });
-        if install_network {
-            self.network.end_install();
-        }
-        result
+        })
     }
 
     pub fn chrome_open(&self, url: &str) -> Result<(), AppError> {
@@ -393,17 +386,41 @@ impl Host {
     }
 
     pub fn chrome_enable_spice(&self) -> Result<(), AppError> {
-        let cfg = self.machine.config().map_err(Self::vm_error)?;
-        if !cfg.desktop_spice && !vm_core::chrome_feature::can_enable_spice(&cfg) {
-            return Err(unavailable(
-                "SPICE requires an installed Sway desktop without the device profile.",
-            ));
-        }
+        let validate = |cfg: &vm_core::Config| {
+            if cfg.desktop_spice || vm_core::chrome_feature::can_enable_spice(cfg) {
+                Ok(())
+            } else {
+                vm_core::message(
+                    "SPICE requires an installed Sway desktop without the device profile.",
+                )
+            }
+        };
+        validate(&self.machine.config().map_err(Self::vm_error)?)
+            .map_err(|error| unavailable(error.to_string()))?;
         self.busy("Enabling SPICE", || {
-            self.disconnect();
-            self.fail_pending("The machine is restarting to enable SPICE");
+            let cfg = self.machine.config()?;
+            validate(&cfg)?;
+            if cfg.desktop_spice {
+                return Ok(());
+            }
+            let message = "The machine is restarting to enable SPICE";
+            {
+                let _transaction = self.network.transaction.locked();
+                if self.network.is_up() {
+                    self.network.invalidate_gate(message);
+                }
+            }
+            self.disconnect_for_machine_change(message);
             self.machine.enable_spice()
         })
+    }
+
+    fn disconnect_for_machine_change(&self, message: &str) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.update(|status| status.connection = GuestConnection::Offline);
+        self.sync.disconnect();
+        self.disconnect();
+        self.fail_pending(message);
     }
 
     pub fn chrome_display(
@@ -456,11 +473,7 @@ impl Host {
     pub fn destroy(&self) -> Result<MachineStatus, AppError> {
         self.busy("Destroying the environment", || {
             let _guard = self.network.transaction.locked();
-            self.generation.fetch_add(1, Ordering::SeqCst);
-            self.update(|status| status.connection = GuestConnection::Offline);
-            self.sync.disconnect();
-            self.disconnect();
-            self.fail_pending("The environment is being destroyed");
+            self.disconnect_for_machine_change("The environment is being destroyed");
             self.network.stop();
             self.network
                 .suspend_store()
@@ -581,8 +594,10 @@ impl Host {
         let install = vm_core::util::read_json(&self.install_result_path()).unwrap_or_default();
         let mut recorded_events = history["lastInstall"].take();
         if let Some(started_at) = install["startedAt"].as_i64()
-            && recorded_events[0]["ts"]
-                .as_i64()
+            && recorded_events
+                .get(0)
+                .and_then(|event| event.get("ts"))
+                .and_then(Value::as_i64)
                 .is_some_and(|ts| ts < started_at)
         {
             recorded_events = serde_json::json!([]);
@@ -719,6 +734,24 @@ mod tests {
         })
         .unwrap();
         assert_eq!(host.snapshot().machine.busy, None);
+    }
+
+    #[test]
+    fn chrome_install_claims_the_machine_before_starting_its_gateway() -> Result<(), AppError> {
+        let home = tempfile::tempdir().unwrap();
+        let machine = Machine::new(home.path(), concat!(env!("CARGO_MANIFEST_DIR"), "/../vm"));
+        let cfg = machine
+            .install_config(&vm_core::machine::InstallOptions::default())
+            .map_err(Host::vm_error)?;
+        assert!(cfg.isolated());
+        cfg.save_instance_meta().map_err(Host::vm_error)?;
+        let host = Host::new(machine, PathBuf::from("/missing/agentd"))?;
+        host.busy("Stopping the machine", || {
+            let error = host.install_chrome().unwrap_err();
+            assert!(error.message.contains("machine operation"));
+            assert!(!host.network.is_up());
+            Ok(())
+        })
     }
 
     #[test]

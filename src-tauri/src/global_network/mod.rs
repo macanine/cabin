@@ -310,12 +310,18 @@ impl GlobalNetwork {
 
     /// The catalog nodes for `ids`, in order.
     fn nodes(&self, ids: &[String]) -> Result<Vec<Node>, AppError> {
-        ids.iter()
-            .map(|id| {
-                self.with_store(|store| proxy::find_node(store, id))
-                    .map_err(|_| error(format!("The node {id} is no longer in any subscription")))
-            })
-            .collect()
+        self.with_store(|store| {
+            ids.iter()
+                .map(|id| {
+                    proxy::find_node(store, id).map_err(|error| match error {
+                        agent_core::Error::NotFound(_) => agent_core::Error::Network(format!(
+                            "The node {id} is no longer in any subscription"
+                        )),
+                        error => error,
+                    })
+                })
+                .collect()
+        })
     }
 
     pub fn upstream(&self, route: &NetworkRoute) -> Result<Upstream, AppError> {
@@ -538,11 +544,7 @@ impl GlobalNetwork {
             gateway_session: runtime.gateway.as_ref().map(|_| runtime.gateway_session),
             paused: grant.paused,
             auto_recover: grant.auto_recover,
-            region_follows_exit: self
-                .with_store(|store| store.setting::<bool>(REGION_FOLLOWS_EXIT))
-                .ok()
-                .flatten()
-                .unwrap_or(true),
+            region_follows_exit: self.region_follows_exit(),
             revision: grant.revision.clone(),
             generation: grant.generation,
             checked_at: grant.checked_at,

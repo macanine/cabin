@@ -113,7 +113,7 @@ pub(crate) fn prepare_listener(path: &Path) -> crate::Result<()> {
 #[cfg(test)]
 pub(crate) fn test_dir() -> std::path::PathBuf {
     let mut random = [0u8; 8];
-    crate::util::random_bytes(&mut random);
+    crate::util::random_bytes(&mut random).expect("generate a temporary socket directory name");
     // The system's TMPDIR on macOS can already take ~60 bytes of sun_path.
     let base = if cfg!(unix) {
         std::path::PathBuf::from("/tmp")

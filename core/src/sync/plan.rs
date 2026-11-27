@@ -1,17 +1,15 @@
 //! Deciding, per path, what a sync cycle does in each mode.
 //!
 //! Each side is compared with the base: the state both sides had right
-//! after the last time this path was in sync. A side whose stamp differs
-//! from its base has changed since. Across sides, files match when kind,
-//! size and whole seconds of mtime agree (transfers carry whole seconds);
-//! within one side the full nanosecond stamp is compared.
+//! after the last time this path was in sync. File identity comes from the
+//! contents both when comparing sides and when comparing with the base.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use super::SyncMode;
-use super::scan::{Entry, EntryKind};
+use super::scan::{Entry, EntryKind, FileDigest};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +18,8 @@ pub struct Stamp {
     pub size: u64,
     pub mtime_ns: i64,
     pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<FileDigest>,
 }
 
 impl From<&Entry> for Stamp {
@@ -29,6 +29,7 @@ impl From<&Entry> for Stamp {
             size: entry.size,
             mtime_ns: entry.mtime_ns,
             target: entry.target.clone(),
+            digest: entry.digest,
         }
     }
 }
@@ -39,6 +40,21 @@ impl Stamp {
             && self.size == entry.size
             && self.mtime_ns == entry.mtime_ns
             && self.target == entry.target
+            && self.digest == entry.digest
+    }
+
+    pub(super) fn matches_content(&self, entry: &Entry) -> bool {
+        same_content(
+            self.kind,
+            self.size,
+            self.target.as_deref(),
+            self.digest.as_ref(),
+            entry,
+        )
+    }
+
+    fn is_legacy_file(&self) -> bool {
+        self.kind == EntryKind::File && self.digest.is_none()
     }
 }
 
@@ -76,14 +92,7 @@ impl Action {
 pub fn changed(base: Option<&Stamp>, now: Option<&Entry>) -> bool {
     match (base, now) {
         (None, None) => false,
-        (Some(base), Some(now)) => {
-            base.kind != now.kind
-                || match now.kind {
-                    EntryKind::Dir => false,
-                    EntryKind::Symlink => base.target != now.target,
-                    EntryKind::File => base.size != now.size || base.mtime_ns != now.mtime_ns,
-                }
-        }
+        (Some(base), Some(now)) => !base.matches_content(now),
         _ => true,
     }
 }
@@ -120,14 +129,21 @@ pub fn base_is_current(
 
 /// The two sides hold the same thing at this path.
 pub fn same(a: &Entry, b: &Entry) -> bool {
-    a.kind == b.kind
-        && match a.kind {
+    same_content(a.kind, a.size, a.target.as_deref(), a.digest.as_ref(), b)
+}
+
+fn same_content(
+    kind: EntryKind,
+    size: u64,
+    target: Option<&str>,
+    digest: Option<&FileDigest>,
+    b: &Entry,
+) -> bool {
+    kind == b.kind
+        && match kind {
             EntryKind::Dir => true,
-            EntryKind::Symlink => a.target == b.target,
-            EntryKind::File => {
-                a.size == b.size
-                    && a.mtime_ns.div_euclid(1_000_000_000) == b.mtime_ns.div_euclid(1_000_000_000)
-            }
+            EntryKind::Symlink => target.is_some() && target == b.target.as_deref(),
+            EntryKind::File => size == b.size && digest.is_some() && digest == b.digest.as_ref(),
         }
 }
 
@@ -193,6 +209,18 @@ pub fn reconcile(
             _ => false,
         };
         if in_sync {
+            continue;
+        }
+        // Old bases could record divergent files as equal. Until both copies
+        // agree by digest, their stamp cannot safely identify the edited side.
+        let unknown_base =
+            b.is_some_and(|base| base.mac.is_legacy_file() || base.vm.is_legacy_file());
+        let unknown_file = [m, v]
+            .into_iter()
+            .flatten()
+            .any(|entry| entry.kind == EntryKind::File && entry.digest.is_none());
+        if unknown_file || (unknown_base && mode != SyncMode::Mirror) {
+            rest.push(Action::Conflict(path.clone()));
             continue;
         }
         let mac_changed = changed(b.map(|b| &b.mac), m);
@@ -303,6 +331,9 @@ mod tests {
     use super::*;
 
     fn file(path: &str, size: u64, secs: i64) -> Entry {
+        let mut digest = [0; 32];
+        digest[..8].copy_from_slice(&size.to_le_bytes());
+        digest[8..16].copy_from_slice(&secs.to_le_bytes());
         Entry {
             path: path.into(),
             kind: EntryKind::File,
@@ -310,6 +341,7 @@ mod tests {
             mtime_ns: secs * 1_000_000_000 + 123,
             mode: 0o644,
             target: None,
+            digest: Some(digest),
         }
     }
 
@@ -379,12 +411,101 @@ mod tests {
     }
 
     #[test]
-    fn identical_files_need_nothing_even_with_different_nanoseconds() {
-        let mac = map(&[file("a", 1, 10)]);
-        let vm = map(&[landed(&file("a", 1, 10))]);
+    fn identical_files_need_nothing_even_with_different_mtimes() {
+        let entry = file("a", 1, 10);
+        let mut copy = landed(&entry);
+        copy.mtime_ns += 60_000_000_000;
+        let mac = map(&[entry]);
+        let vm = map(&[copy]);
         assert!(reconcile(SyncMode::TwoWay, &BTreeMap::new(), &mac, &vm).is_empty());
         let base = next_base(&BTreeMap::new(), &mac, &vm, &[]);
         assert!(base.contains_key("a"));
+    }
+
+    #[test]
+    fn same_length_and_mtime_edits_stay_conflicts_across_cycles() {
+        fn edit(root: &std::path::Path, contents: &[u8]) -> Entry {
+            use std::fs;
+            use std::time::{Duration, UNIX_EPOCH};
+            let path = root.join("a");
+            fs::write(&path, contents).unwrap();
+            fs::set_times(
+                &path,
+                fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+            )
+            .unwrap();
+            super::super::scan::stat(root, "a").unwrap().unwrap()
+        }
+
+        let local = tempfile::tempdir().unwrap();
+        let guest = tempfile::tempdir().unwrap();
+        let mac = map(&[edit(local.path(), b"start")]);
+        let vm = map(&[edit(guest.path(), b"start")]);
+        let empty = BTreeMap::new();
+        let base = next_base(&empty, &mac, &vm, &[]);
+        let vm_edited = edit(guest.path(), b"guest");
+        let vm = map(std::slice::from_ref(&vm_edited));
+        assert_eq!(
+            reconcile(SyncMode::TwoWay, &base, &mac, &vm),
+            [Action::Pull("a".into())]
+        );
+        assert!(reconcile(SyncMode::Safe, &base, &mac, &vm).is_empty());
+
+        let mac_edited = edit(local.path(), b"local");
+        assert_eq!(
+            (mac_edited.size, mac_edited.mtime_ns),
+            (vm_edited.size, vm_edited.mtime_ns)
+        );
+        assert_eq!(
+            mac_edited,
+            super::super::scan(local.path(), &Default::default(), None)
+                .unwrap()
+                .pop()
+                .unwrap()
+        );
+        let mac = map(&[mac_edited]);
+        assert!(mac_changed(&base, &mac));
+        for mode in [SyncMode::Safe, SyncMode::TwoWay] {
+            let actions = reconcile(mode, &base, &mac, &vm);
+            assert_eq!(actions, [Action::Conflict("a".into())]);
+            let next = next_base(&base, &mac, &vm, &actions);
+            assert_eq!(next, base);
+            let later = map(&[edit(local.path(), b"later")]);
+            assert_eq!(reconcile(mode, &next, &later, &vm), actions);
+            assert!(!next_base(&empty, &mac, &vm, &[]).contains_key("a"));
+        }
+        assert_eq!(
+            reconcile(SyncMode::Mirror, &base, &mac, &vm),
+            [Action::Push("a".into())]
+        );
+    }
+
+    #[test]
+    fn legacy_records_upgrade_only_after_byte_equality() {
+        let a = file("a", 1, 10);
+        let mut base = synced(std::slice::from_ref(&a));
+        for record in base.values_mut() {
+            record.mac.digest = None;
+            record.vm.digest = None;
+        }
+        let mac = map(std::slice::from_ref(&a));
+        let vm = map(&[landed(&a)]);
+        assert!(mac_changed(&base, &mac));
+        assert!(!base_is_current(&base, &mac, &vm));
+        let current = next_base(&base, &mac, &vm, &[]);
+        assert!(base_is_current(&current, &mac, &vm));
+
+        let mut guest_edit = a;
+        guest_edit.digest = Some([255; 32]);
+        for guest in [map(&[guest_edit]), BTreeMap::new()] {
+            for mode in [SyncMode::Safe, SyncMode::TwoWay] {
+                assert_eq!(
+                    reconcile(mode, &base, &mac, &guest),
+                    [Action::Conflict("a".into())]
+                );
+                assert_eq!(next_base(&base, &mac, &guest, &[]), base);
+            }
+        }
     }
 
     #[test]
@@ -462,6 +583,7 @@ mod tests {
             mtime_ns: 0,
             mode: 0o755,
             target: None,
+            digest: None,
         };
         let inner = file("d/x", 1, 10);
         let base = synced(&[dir.clone(), inner.clone()]);
@@ -498,6 +620,7 @@ mod tests {
         let mut link = file("link", 0, -2);
         link.kind = EntryKind::Symlink;
         link.target = Some("some/target".into());
+        link.digest = None;
         let mut before_epoch = file("push", 3, -1);
         before_epoch.mtime_ns = -1;
         let mac = map(&[
@@ -548,6 +671,7 @@ mod tests {
         let mut link = file("l", 0, 10);
         link.kind = EntryKind::Symlink;
         link.target = Some("a".into());
+        link.digest = None;
         let base = synced(&[link.clone()]);
         let mut moved = link.clone();
         moved.target = Some("b".into());

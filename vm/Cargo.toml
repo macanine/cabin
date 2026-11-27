@@ -45,3 +45,4 @@ which = "8"
 
 [target.'cfg(windows)'.dependencies]
 uds_windows = "1"
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinHttp", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }

@@ -7,6 +7,8 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use crate::Result;
 use serde_json::Value;
@@ -163,6 +165,105 @@ pub fn deploy(runtime: &Runtime, binary: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Check the current QEMU process and its chardevs without connecting to a lane.
+#[cfg(unix)]
+pub fn native_channel_dir(runtime: &Runtime) -> Result<PathBuf> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let unavailable =
+        || crate::Error::Message("Restart the VM to enable the native CLI channels".into());
+    let dir = crate::vm::cli_dir(&runtime.cfg);
+    let meta = dir.symlink_metadata().map_err(|_| unavailable())?;
+    if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
+        return message("The native CLI channel directory is not private");
+    }
+    for lane in crate::vm::CLI_LANES {
+        if !dir
+            .join(format!("{lane}.sock"))
+            .symlink_metadata()
+            .is_ok_and(|meta| meta.file_type().is_socket())
+        {
+            return Err(unavailable());
+        }
+    }
+    let timeout = Duration::from_secs(1);
+    let deadline = Instant::now() + timeout;
+    let mut qmp = crate::qmp::QmpClient::connect(&runtime.cfg.qmp_socket(), timeout)?;
+    let devices = qmp.execute_until("query-chardev", None, deadline)?;
+    if !has_native_chardevs(&devices, &dir) {
+        return Err(unavailable());
+    }
+    Ok(dir.canonicalize()?)
+}
+
+#[cfg(unix)]
+fn has_native_chardevs(devices: &Value, dir: &Path) -> bool {
+    devices.as_array().is_some_and(|devices| {
+        crate::vm::CLI_LANES.into_iter().all(|lane| {
+            let label = format!("cabin-{lane}");
+            let path = dir.join(format!("{lane}.sock"));
+            let filename = format!("unix:{},server=on", path.display());
+            devices.iter().any(|device| {
+                device["label"].as_str() == Some(&label)
+                    && device["filename"].as_str().is_some_and(|name| {
+                        name.strip_prefix("disconnected:").unwrap_or(name) == filename
+                    })
+            })
+        })
+    })
+}
+
+/// The service can be active before it has opened the virtio device. Verify
+/// the actual process and its descriptor without borrowing any lane.
+#[cfg(unix)]
+const NATIVE_GUEST_CHECK: &str = r#"
+native_device() {
+  target=$(readlink -f "/dev/virtio-ports/org.cabin.$1") || return 1
+  case "$target" in /dev/vport[0-9]*p[0-9]*) ;; *) return 1 ;; esac
+  test -c "$target" && printf '%s\n' "$target"
+}
+native_lane_ready() {
+  target=$(native_device "$1") || return 1
+  unit="cabind-native-$1.service"
+  systemctl --user is-active --quiet "$unit" || return 1
+  pid=$(systemctl --user show --property=MainPID --value "$unit") || return 1
+  case "$pid" in ''|0|*[!0-9]*) return 1 ;; esac
+  test "/proc/$pid/exe" -ef "$binary" || return 1
+  for fd in /proc/"$pid"/fd/*; do
+    if test "$fd" -ef "$target"; then return 0; fi
+  done
+  return 1
+}
+native_ready() {
+  for lane in exec sync watch; do
+    native_lane_ready "$lane" || return 1
+  done
+}
+"#;
+
+#[cfg(unix)]
+pub fn verify_native_guest(runtime: &Runtime) -> Result<()> {
+    run_native_script(runtime, "native_ready", Duration::from_secs(4))
+}
+
+#[cfg(unix)]
+fn run_native_script(runtime: &Runtime, body: &str, timeout: Duration) -> Result<()> {
+    let script = format!("set -eu\nbinary=\"$HOME/{REMOTE_BIN}\"\n{NATIVE_GUEST_CHECK}\n{body}");
+    let (code, output) = runtime.ssh_capture(
+        &format!("sh -c {}", crate::util::shell_quote(&script)),
+        timeout,
+    );
+    if code == 0 {
+        Ok(())
+    } else {
+        let detail = output.trim();
+        if detail.is_empty() {
+            return message("The guest native CLI services have not opened all three channels");
+        }
+        message(format!("Guest native CLI channels (exit {code}): {detail}"))
+    }
+}
+
 /// Bootstrap the unprivileged native lanes on a boot that has the new QEMU
 /// devices. This uses the existing trusted provisioning connection; no CLI
 /// request or project payload is sent through it.
@@ -170,37 +271,30 @@ pub fn deploy(runtime: &Runtime, binary: &Path) -> Result<()> {
 pub fn prepare_native(runtime: &Runtime, restart: bool) -> Result<()> {
     let script = format!(
         r#"
-set -eu
 uid=$(id -u); gid=$(id -g)
 for lane in exec sync watch; do
   device="/dev/virtio-ports/org.cabin.$lane"
-  target=$(readlink -f "$device")
-  case "$target" in /dev/vport[0-9]*p[0-9]*) ;; *) exit 1 ;; esac
-  test -c "$target"
+  target=$(native_device "$lane")
   sudo -n chown "$uid:$gid" "$target"
   sudo -n chmod 0600 "$target"
   unit="cabind-native-$lane.service"
-  if [ '{restart}' = 'true' ] && systemctl --user is-active --quiet "$unit"; then
-    systemctl --user restart "$unit"
-  elif ! systemctl --user is-active --quiet "$unit"; then
+  if [ "$(systemctl --user show --property=LoadState --value "$unit")" = loaded ]; then
+    if [ '{restart}' = 'true' ] || ! native_lane_ready "$lane"; then
+      systemctl --user restart "$unit"
+    fi
+  else
     systemd-run --user --quiet --collect --unit="$unit" --property=Type=exec --property=Restart=on-failure \
-      "$HOME/{REMOTE_BIN}" native-channel "$lane" "$device"
+      "$binary" native-channel "$lane" "$device"
   fi
 done
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if native_ready; then exit 0; fi
+  sleep 0.1
+done
+native_ready
 "#
     );
-    let (code, output) = runtime.ssh_capture(
-        &format!("sh -c {}", crate::util::shell_quote(&script)),
-        Duration::from_secs(20),
-    );
-    if code == 0 {
-        Ok(())
-    } else {
-        message(format!(
-            "Could not prepare cabind native channels: {}",
-            output.trim()
-        ))
-    }
+    run_native_script(runtime, &script, Duration::from_secs(20))
 }
 
 /// Run one guest display operation with a JSON request on stdin.
@@ -233,6 +327,23 @@ pub fn connect_argv(runtime: &Runtime) -> Result<Vec<String>> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qmp_must_report_every_native_socket_for_the_current_vm() {
+        use serde_json::json;
+
+        let dir = Path::new("/state/current/cli");
+        let mut devices = json!([
+            {"label": "cabin-exec", "filename": "disconnected:unix:/state/current/cli/exec.sock,server=on"},
+            {"label": "cabin-sync", "filename": "unix:/state/current/cli/sync.sock,server=on"},
+            {"label": "cabin-watch", "filename": "disconnected:unix:/state/current/cli/watch.sock,server=on"}
+        ]);
+        assert!(has_native_chardevs(&devices, dir));
+        devices[2]["filename"] = json!("unix:/state/old/cli/watch.sock,server=on");
+        assert!(!has_native_chardevs(&devices, dir));
+        devices.as_array_mut().unwrap().pop();
+        assert!(!has_native_chardevs(&devices, dir));
+    }
 
     #[test]
     fn interrupted_deploy_preserves_the_installed_binary_and_removes_staging_file() {

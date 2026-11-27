@@ -12,7 +12,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -29,6 +29,9 @@ use crate::transport::{Readiness, wake_pair};
 const GUEST_SSH: u16 = 22;
 const BUFFER: usize = 256 * 1024;
 const CHUNK: usize = 16 * 1024;
+const MAX_RELAYS: usize = 128;
+const MAX_QUEUED_FRAMES: usize = 256;
+const CONNECT_TIMEOUT: smoltcp::time::Duration = smoltcp::time::Duration::from_secs(30);
 
 /// Frames in from the guest, frames out to the guest.
 struct Link {
@@ -78,6 +81,7 @@ impl Device for Link {
 /// One relayed connection: a Mac-side TCP stream and a stack socket.
 struct Relay {
     handle: SocketHandle,
+    connect_deadline: Instant,
     host: TcpStream,
     /// Bytes from the guest not yet written to the Mac side.
     to_host: Vec<u8>,
@@ -91,7 +95,7 @@ struct Relay {
 /// Handle to the relay thread; stops it when dropped.
 pub struct SshForward {
     local: SocketAddr,
-    frames: Sender<Vec<u8>>,
+    frames: SyncSender<Vec<u8>>,
     wake: UdpSocket,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -123,7 +127,7 @@ impl SshForward {
         let (wake, wake_rx) = wake_pair()?;
         wake.set_nonblocking(true)?;
         wake_rx.set_nonblocking(true)?;
-        let (frames, inbox) = mpsc::channel();
+        let (frames, inbox) = mpsc::sync_channel(MAX_QUEUED_FRAMES);
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let stop = stop.clone();
@@ -147,7 +151,7 @@ impl SshForward {
 
     /// A frame from the guest for the gateway's own TCP endpoint.
     pub fn deliver(&self, frame: Vec<u8>) {
-        if self.frames.send(frame).is_ok() {
+        if self.frames.try_send(frame).is_ok() {
             let _ = self.wake.send(&[1]);
         }
     }
@@ -195,14 +199,19 @@ fn run(
     while !stop.load(Ordering::Relaxed) {
         // Drain wake-ups and queued frames from the guest.
         let mut byte = [0u8; 64];
-        while wake.recv(&mut byte).is_ok() {}
-        while let Ok(frame) = inbox.try_recv() {
-            link.rx.push_back(frame);
+        for _ in 0..MAX_QUEUED_FRAMES {
+            if wake.recv(&mut byte).is_err() {
+                break;
+            }
         }
+        link.rx.extend(inbox.try_iter().take(MAX_QUEUED_FRAMES));
 
         // New Mac-side connections.
-        while let Ok((host, _)) = listener.accept() {
-            if host.set_nonblocking(true).is_err() {
+        for _ in 0..MAX_RELAYS {
+            let Ok((host, _)) = listener.accept() else {
+                break;
+            };
+            if relays.len() >= MAX_RELAYS || host.set_nonblocking(true).is_err() {
                 continue;
             }
             let _ = host.set_nodelay(true);
@@ -227,6 +236,7 @@ fn run(
             }
             relays.push(Relay {
                 handle: sockets.add(socket),
+                connect_deadline: now() + CONNECT_TIMEOUT,
                 host,
                 to_host: Vec::new(),
                 to_guest: Vec::new(),
@@ -246,13 +256,18 @@ fn run(
         }
         iface.poll(now(), &mut link, &mut sockets);
         for frame in link.tx.drain(..) {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
             send(&frame);
         }
 
         // Retire finished relays.
+        let at = now();
         relays.retain(|relay| {
             let socket = sockets.get::<tcp::Socket>(relay.handle);
             let done = relay.failed
+                || (socket.state() == tcp::State::SynSent && at >= relay.connect_deadline)
                 || (!socket.is_open() && relay.to_host.is_empty())
                 || (relay.host_shut && relay.host_eof && !socket.is_active());
             if done {

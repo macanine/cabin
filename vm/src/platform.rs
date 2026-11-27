@@ -332,6 +332,119 @@ pub fn detach_session(command: &mut std::process::Command) {
     let _ = command;
 }
 
+mod command_tree;
+pub use command_tree::CommandTree;
+
+pub mod command_pipe {
+    use std::io::{self, PipeReader, PipeWriter, Read};
+
+    #[cfg(windows)]
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    #[cfg(windows)]
+    use std::ptr::{null, null_mut};
+    #[cfg(windows)]
+    use windows_sys::Win32::System::Pipes::{
+        CreatePipe, PIPE_NOWAIT, PeekNamedPipe, SetNamedPipeHandleState,
+    };
+
+    #[cfg(unix)]
+    use io::pipe;
+
+    #[cfg(windows)]
+    fn pipe() -> io::Result<(PipeReader, PipeWriter)> {
+        let (mut reader, mut writer) = (null_mut(), null_mut());
+        // SAFETY: These are out parameters. Null security attributes make
+        // the new handles non-inheritable until passed to Command.
+        if unsafe { CreatePipe(&mut reader, &mut writer, null(), 64 * 1024) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: CreatePipe returned two new owned handles.
+        Ok(unsafe {
+            (
+                OwnedHandle::from_raw_handle(reader).into(),
+                OwnedHandle::from_raw_handle(writer).into(),
+            )
+        })
+    }
+
+    pub fn input() -> io::Result<(PipeReader, PipeWriter)> {
+        let (reader, writer) = pipe()?;
+        nonblocking(&writer)?;
+        Ok((reader, writer))
+    }
+
+    pub fn output() -> io::Result<(PipeReader, PipeWriter)> {
+        let (reader, writer) = pipe()?;
+        #[cfg(unix)]
+        nonblocking(&reader)?;
+        Ok((reader, writer))
+    }
+
+    #[cfg(unix)]
+    fn nonblocking(pipe: &impl std::os::fd::AsRawFd) -> io::Result<()> {
+        let fd = pipe.as_raw_fd();
+        // SAFETY: pipe owns this open fd and both fcntl calls use integer flags.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn nonblocking(pipe: &PipeWriter) -> io::Result<()> {
+        // SAFETY: Only the host's write handle changes mode. The child's read
+        // handle still blocks normally.
+        if unsafe { SetNamedPipeHandleState(pipe.as_raw_handle(), &PIPE_NOWAIT, null(), null()) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub fn read(pipe: &mut PipeReader, buffer: &mut [u8]) -> io::Result<usize> {
+        pipe.read(buffer)
+    }
+
+    #[cfg(windows)]
+    pub fn read(pipe: &mut PipeReader, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let mut available = 0;
+        // SAFETY: this is the sole read handle, with no concurrent reads. The
+        // pipe stays open through the call and only `available` is written.
+        let ok = unsafe {
+            PeekNamedPipe(
+                pipe.as_raw_handle(),
+                null_mut(),
+                0,
+                null_mut(),
+                &mut available,
+                null_mut(),
+            )
+        };
+        if ok == 0 {
+            let error = io::Error::last_os_error();
+            return if matches!(
+                error.kind(),
+                io::ErrorKind::BrokenPipe | io::ErrorKind::UnexpectedEof
+            ) {
+                Ok(0)
+            } else {
+                Err(error)
+            };
+        }
+        if available == 0 {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        let count = (available as usize).min(buffer.len());
+        pipe.read(&mut buffer[..count])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,8 +14,27 @@ pub const ERR: u8 = 8;
 pub const EXIT: u8 = 9;
 pub const FAILURE: u8 = 10;
 pub const CLOSED: u8 = 11;
+/// Stop a running job. The guest sends EXIT followed by CLOSED after cleanup.
+pub const CANCEL: u8 = 12;
 pub const VERSION: u8 = 1;
 pub const MAX: usize = 64 * 1024;
+
+pub const ALLOWED_FORWARDED_ENV: &[&str] = &[
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "COLORFGBG",
+    "NO_COLOR",
+    "FORCE_COLOR",
+];
+
+const MAX_ENV_VALUE_LEN: usize = 256;
+
+/// Only harmless terminal-presentation variables may cross from host to guest.
+pub fn is_safe_forwarded_env(key: &str, value: &str) -> bool {
+    ALLOWED_FORWARDED_ENV.contains(&key)
+        && value.len() <= MAX_ENV_VALUE_LEN
+        && !value.bytes().any(|b| b == 0)
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request {
@@ -30,6 +49,23 @@ pub enum Job {
         argv: Vec<String>,
         cwd: String,
         tty: Option<Size>,
+        #[serde(default)]
+        env: Vec<(String, String)>,
+    },
+    Shell {
+        argv: Vec<String>,
+        cwd: String,
+        tty: Option<Size>,
+        #[serde(default)]
+        env: Vec<(String, String)>,
+    },
+    Exec {
+        program: String,
+        argv: Vec<String>,
+        cwd: String,
+        tty: Option<Size>,
+        #[serde(default)]
+        env: Vec<(String, String)>,
     },
     Sync {
         operation: String,
@@ -67,7 +103,8 @@ pub fn frame(out: &mut impl Write, kind: u8, bytes: &[u8]) -> io::Result<()> {
 pub fn read_frame(input: &mut impl Read, body: &mut Vec<u8>) -> io::Result<u8> {
     let mut header = [0; 5];
     input.read_exact(&mut header)?;
-    let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+    let [kind, a, b, c, d] = header;
+    let len = u32::from_be_bytes([a, b, c, d]) as usize;
     if len > MAX {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -76,7 +113,7 @@ pub fn read_frame(input: &mut impl Read, body: &mut Vec<u8>) -> io::Result<u8> {
     }
     body.resize(len, 0);
     input.read_exact(body)?;
-    Ok(header[0])
+    Ok(kind)
 }
 
 #[cfg(test)]
@@ -96,5 +133,32 @@ mod tests {
         assert_eq!(body, [17]);
         assert!(frame(&mut buf, OUT, &vec![0; MAX + 1]).is_err());
         assert!(read_frame(&mut &[OUT, 0xff, 0xff, 0xff, 0xff][..], &mut body).is_err());
+    }
+
+    #[test]
+    fn safe_forwarded_env_enforces_allowlist_and_bounds() {
+        assert!(is_safe_forwarded_env("TERM_PROGRAM", "Ghostty"));
+        assert!(is_safe_forwarded_env("NO_COLOR", "1"));
+        assert!(is_safe_forwarded_env("FORCE_COLOR", "1"));
+        assert!(!is_safe_forwarded_env("PATH", "/tmp"));
+        assert!(!is_safe_forwarded_env("LD_PRELOAD", "/tmp/x.so"));
+        assert!(!is_safe_forwarded_env("TERM_PROGRAM", "bad\0val"));
+        assert!(!is_safe_forwarded_env(
+            "TERM_PROGRAM",
+            &"x".repeat(MAX_ENV_VALUE_LEN + 1)
+        ));
+    }
+
+    #[test]
+    fn agent_job_deserializes_without_env_field() {
+        let legacy = r#"{"version":1,"job":{"Agent":{"name":"claude","argv":["--version"],"cwd":"~/p","tty":null}}}"#;
+        let parsed: Request = serde_json::from_str(legacy).unwrap();
+        match parsed.job {
+            Job::Agent { name, env, .. } => {
+                assert_eq!(name, "claude");
+                assert!(env.is_empty());
+            }
+            _ => panic!("expected Agent job"),
+        }
     }
 }

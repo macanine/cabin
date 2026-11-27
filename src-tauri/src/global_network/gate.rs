@@ -23,6 +23,13 @@ impl GlobalNetwork {
 
     pub fn begin_install(&self) {
         let mut runtime = self.runtime();
+        runtime
+            .grant
+            .invalidate("Machine setup requires a fresh network check");
+        runtime.connectivity.clear();
+        runtime.hold_timeout_pending = false;
+        runtime.verified_exit = None;
+        runtime.verified_samples.clear();
         runtime.installing = true;
         runtime.apply_policy();
     }
@@ -112,7 +119,7 @@ impl GlobalNetwork {
         let mut runtime = self.runtime();
         self.refresh_interface_paths(&mut runtime);
         self.expire(&mut runtime);
-        if runtime.sleeping || runtime.active_route.is_none() {
+        if runtime.sleeping || runtime.installing || runtime.active_route.is_none() {
             return None;
         }
         let refresh = preserve_grant && runtime.grant.mode == NetworkGateMode::Open;
@@ -183,14 +190,25 @@ impl GlobalNetwork {
         if attempt.held && public_ip.zip(runtime.verified_exit).is_none() {
             return Err(error("Could not confirm the verified public exit"));
         }
-        if report.can_open
-            && let (Some(route), Some(baseline)) = (runtime.active_route.as_ref(), baseline)
-            && self.exit_baseline(route)?.as_ref() != Some(baseline)
-        {
-            self.save_exit_baseline(route, baseline)?;
-        }
-        if let Some(route) = candidate.filter(|_| report.can_open) {
-            self.save(route)?;
+        if report.can_open {
+            let saved: Result<(), AppError> = (|| {
+                if let (Some(route), Some(baseline)) = (runtime.active_route.as_ref(), baseline)
+                    && self.exit_baseline(route)?.as_ref() != Some(baseline)
+                {
+                    self.save_exit_baseline(route, baseline)?;
+                }
+                if let Some(route) = candidate {
+                    self.save(route)?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = saved {
+                if !attempt.refresh {
+                    runtime.grant.fail(&attempt.token, &error.message);
+                    runtime.apply_policy();
+                }
+                return Err(error);
+            }
         }
         let opened = runtime.grant.finish_observation(&attempt.token, report);
         if opened {
@@ -306,9 +324,7 @@ impl GlobalNetwork {
     /// the machine to the verified exit's zone (on unless turned off).
     pub fn region_follows_exit(&self) -> bool {
         self.with_store(|store| store.setting::<bool>(REGION_FOLLOWS_EXIT))
-            .ok()
-            .flatten()
-            .unwrap_or(true)
+            .is_ok_and(|enabled| enabled.unwrap_or(true))
     }
 
     pub fn set_region_follows_exit(&self, enabled: bool) -> Result<(), AppError> {
@@ -402,6 +418,7 @@ impl GlobalNetwork {
             });
         let due = !exit_blocked
             && !runtime.sleeping
+            && !runtime.installing
             && runtime.connectivity.mode == NetworkConnectivity::Normal
             && runtime.gateway.as_ref().is_some_and(Gateway::connected)
             && runtime.grant.due(now_millis());
@@ -414,6 +431,41 @@ mod tests {
     use super::*;
     use crate::global_network::test_support::*;
     use crate::network_gate::route_revision;
+
+    #[test]
+    fn install_revokes_the_grant_and_rejects_verification_until_setup_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let network = GlobalNetwork::open(dir.path()).unwrap();
+        let route = NetworkRoute::default();
+        let revision = route_revision(&route);
+        network.start(&dir.path().join("gateway.sock"), 0).unwrap();
+        open_gate(&network, &route);
+        let renewal = network.begin_check(revision.clone(), true).unwrap();
+
+        network.begin_install();
+        assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Closed);
+        assert!(network.begin_check(revision.clone(), false).is_none());
+        network.end_install();
+
+        assert!(
+            !network
+                .finish_check(&renewal, passing_report(&revision), None, &[], None, None)
+                .unwrap()
+        );
+        assert_eq!(network.status(true).unwrap().gate, NetworkGateMode::Closed);
+        open_gate(&network, &route);
+    }
+
+    #[test]
+    fn an_unreadable_region_preference_does_not_enable_automatic_changes() -> Result<(), AppError> {
+        let dir = tempfile::tempdir().unwrap();
+        let network = GlobalNetwork::open(dir.path())?;
+        assert!(network.region_follows_exit());
+        network.with_store(|store| store.set_setting(REGION_FOLLOWS_EXIT, &"invalid"))?;
+        assert!(!network.region_follows_exit());
+        assert!(!network.status(false)?.region_follows_exit);
+        Ok(())
+    }
 
     #[test]
     fn a_saved_route_change_revokes_existing_permission() {

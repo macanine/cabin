@@ -188,9 +188,9 @@ impl GuestEgress {
     fn record_ordinary_syn(&mut self, packet: &[u8]) {
         if let Some((flow, tcp)) = outbound_probe_tcp(packet)
             && tcp[13] & 0x12 == 0x02
+            && let Some(seq) = tcp.get(4..).and_then(|bytes| bytes.first_chunk::<4>())
         {
-            self.ordinary_probe_syns
-                .insert(flow, tcp[4..8].try_into().unwrap());
+            self.ordinary_probe_syns.insert(flow, *seq);
         }
     }
 }

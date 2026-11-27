@@ -1,15 +1,17 @@
 //! Listing a synced tree under its rules.
 
+use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 #[cfg(test)]
 use ts_rs::TS;
 
-use super::{IGNORE_FILE, SyncRules, ignored_patterns};
+use super::{IGNORE_FILE, SyncRules, ignored_patterns, is_excluded};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
@@ -19,6 +21,8 @@ pub enum EntryKind {
     Dir,
     Symlink,
 }
+
+pub type FileDigest = [u8; 32];
 
 /// One path in a tree, as much as change detection needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +40,10 @@ pub struct Entry {
     pub mode: u32,
     /// A symlink's target, kept as written.
     pub target: Option<String>,
+    /// SHA-256 of a regular file. Absent in legacy or metadata-only listings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "number[] | null"))]
+    pub digest: Option<FileDigest>,
 }
 
 /// Is `path` inside one of `scope`'s folders, or on the way to one?
@@ -44,19 +52,43 @@ pub fn in_scope(path: &str, scope: Option<&[String]>) -> bool {
     scope.iter().any(|dir| {
         dir.is_empty()
             || path == dir
-            || path.starts_with(&format!("{dir}/"))
-            || dir.starts_with(&format!("{path}/"))
+            || path
+                .strip_prefix(dir)
+                .is_some_and(|rest| rest.starts_with('/'))
+            || dir
+                .strip_prefix(path)
+                .is_some_and(|rest| rest.starts_with('/'))
     })
 }
 
 /// The tree under `root` that the rules include, sorted by path. With a
 /// `scope`, only those folders (and the folders leading to them, so parent
 /// `.gitignore` files still apply) are walked.
-pub fn scan(
+pub fn scan(root: &Path, rules: &SyncRules, scope: Option<&[String]>) -> io::Result<Vec<Entry>> {
+    scan_tree(root, rules, scope, true)
+}
+
+/// A listing for display and path selection, without reading file contents.
+pub fn scan_metadata(
     root: &Path,
     rules: &SyncRules,
     scope: Option<&[String]>,
+) -> io::Result<Vec<Entry>> {
+    scan_tree(root, rules, scope, false)
+}
+
+fn scan_tree(
+    root: &Path,
+    rules: &SyncRules,
+    scope: Option<&[String]>,
+    hash_files: bool,
 ) -> std::io::Result<Vec<Entry>> {
+    if !root.metadata()?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "sync root is not a folder",
+        ));
+    }
     let mut overrides = OverrideBuilder::new(root);
     let mut add = |glob: String| {
         overrides
@@ -75,15 +107,7 @@ pub fn scan(
     {
         add(format!("!{pattern}"))?;
     }
-    for path in rules
-        .excluded
-        .iter()
-        .map(|p| p.trim().trim_matches('/'))
-        .filter(|p| !p.is_empty())
-    {
-        add(format!("!/{path}"))?;
-        add(format!("!/{path}/**"))?;
-    }
+    let excluded = rules.excluded.clone();
     // `.git` is only part of a regular scan when it is synced like the rest.
     if rules.git != super::GitHandling::Sync {
         add("!/.git".into())?;
@@ -106,8 +130,9 @@ pub fn scan(
         .follow_links(false)
         .overrides(overrides)
         .filter_entry(move |entry| {
-            relative(&root_owned, entry.path())
-                .is_none_or(|rel| in_scope(&rel, scope_owned.as_deref()))
+            relative(&root_owned, entry.path()).is_none_or(|rel| {
+                in_scope(&rel, scope_owned.as_deref()) && !is_excluded(&excluded, &rel)
+            })
         });
     walker.add_custom_ignore_filename(IGNORE_FILE);
 
@@ -139,22 +164,14 @@ pub fn scan(
         let Some(path) = relative(root, entry.path()) else {
             continue;
         };
-        let meta = match std::fs::symlink_metadata(entry.path()) {
+        let meta = match fs::symlink_metadata(entry.path()) {
             Ok(meta) => meta,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
         };
-        let file_type = meta.file_type();
-        let kind = if file_type.is_symlink() {
-            EntryKind::Symlink
-        } else if file_type.is_dir() {
-            EntryKind::Dir
-        } else if file_type.is_file() {
-            EntryKind::File
-        } else {
-            continue; // sockets, fifos, devices
-        };
-        entries.push(entry_from(path, kind, &meta, entry.path()));
+        if let Some(found) = entry_from(path, &meta, entry.path(), hash_files)? {
+            entries.push(found);
+        }
     }
     entries.sort_unstable_by(|a, b| a.path.cmp(&b.path));
     Ok(entries)
@@ -162,12 +179,30 @@ pub fn scan(
 
 /// One path's entry as it is now, or `None` when it does not exist.
 pub fn stat(root: &Path, rel: &str) -> io::Result<Option<Entry>> {
+    let path = super::safe_relative(rel).ok_or_else(|| io::Error::other("unsafe path"))?;
+    super::check_parents(root, path)?;
     let full = super::join_wire_path(root, rel);
-    let meta = match std::fs::symlink_metadata(&full) {
+    let meta = match fs::symlink_metadata(&full) {
         Ok(meta) => meta,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(None);
+        }
         Err(error) => return Err(error),
     };
+    entry_from(rel.to_string(), &meta, &full, true)
+}
+
+fn entry_from(
+    path: String,
+    meta: &Metadata,
+    full: &Path,
+    hash_files: bool,
+) -> io::Result<Option<Entry>> {
     let kind = if meta.file_type().is_symlink() {
         EntryKind::Symlink
     } else if meta.is_dir() {
@@ -175,13 +210,25 @@ pub fn stat(root: &Path, rel: &str) -> io::Result<Option<Entry>> {
     } else if meta.is_file() {
         EntryKind::File
     } else {
-        return Ok(None);
+        return Ok(None); // sockets, FIFOs, devices
     };
-    Ok(Some(entry_from(rel.to_string(), kind, &meta, &full)))
-}
-
-fn entry_from(path: String, kind: EntryKind, meta: &std::fs::Metadata, full: &Path) -> Entry {
-    Entry {
+    let target = if kind == EntryKind::Symlink {
+        let target = fs::read_link(full)?;
+        Some(wire_path(&target).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sync link target is not Unicode",
+            )
+        })?)
+    } else {
+        None
+    };
+    let digest = if kind == EntryKind::File && hash_files {
+        Some(hash_file(full, meta)?)
+    } else {
+        None
+    };
+    Ok(Some(Entry {
         path,
         kind,
         size: if kind == EntryKind::File {
@@ -195,14 +242,72 @@ fn entry_from(path: String, kind: EntryKind, meta: &std::fs::Metadata, full: &Pa
             crate::fsx::mtime_nanos_of(meta) as i64
         },
         mode: crate::fsx::mode_of(meta),
-        target: (kind == EntryKind::Symlink)
-            .then(|| {
-                std::fs::read_link(full)
-                    .ok()
-                    .map(|t| t.to_string_lossy().into_owned())
-            })
-            .flatten(),
+        target,
+        digest,
+    }))
+}
+
+/// Open the regular file observed by `symlink_metadata`, without following a
+/// replacement leaf symlink or waiting for a FIFO on Unix.
+pub(super) fn open_regular(path: &Path, listed: &Metadata) -> io::Result<(File, Metadata)> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let opened = file.metadata()?;
+    if !same_file_snapshot(listed, &opened) {
+        return Err(unstable_file(path));
+    }
+    Ok((file, opened))
+}
+
+fn hash_file(path: &Path, listed: &Metadata) -> io::Result<FileDigest> {
+    let (mut file, opened) = open_regular(path, listed)?;
+    let mut hash = Sha256::new();
+    let read = io::copy(&mut (&mut file).take(opened.len()), &mut hash)?;
+    if read != opened.len()
+        || !same_file_snapshot(&opened, &file.metadata()?)
+        || !same_file_snapshot(&opened, &fs::symlink_metadata(path)?)
+    {
+        return Err(unstable_file(path));
+    }
+    Ok(hash.finalize().into())
+}
+
+pub(super) fn unstable_file(path: &Path) -> io::Error {
+    io::Error::other(format!("{} changed while being read", path.display()))
+}
+
+pub(super) fn same_file_snapshot(a: &Metadata, b: &Metadata) -> bool {
+    if !a.is_file() || !b.is_file() || a.len() != b.len() || a.modified().ok() != b.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        a.dev() == b.dev()
+            && a.ino() == b.ino()
+            && a.ctime() == b.ctime()
+            && a.ctime_nsec() == b.ctime_nsec()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        a.creation_time() == b.creation_time() && a.file_attributes() == b.file_attributes()
+    }
+    #[cfg(not(any(unix, windows)))]
+    true
 }
 
 pub(super) fn wire_path(path: &Path) -> Option<String> {
@@ -223,14 +328,31 @@ fn relative(root: &Path, path: &Path) -> Option<String> {
 /// Binary listing used by `cabind sync scan` for large trees. JSON
 /// serialization was a visible part of every Two-way cycle; this form keeps
 /// the same entries with a fixed header and length-prefixed strings.
-pub const BINARY_MAGIC: &[u8; 8] = b"VASCAN1\0";
+pub const BINARY_MAGIC: &[u8; 8] = b"VASCAN2\0";
+const LEGACY_BINARY_MAGIC: &[u8; 8] = b"VASCAN1\0";
 const MAX_BINARY_PATH: u32 = 1 << 20;
 const MAX_BINARY_RECORDS: u32 = 10_000_000;
 
-pub fn read_binary(mut input: impl Read) -> io::Result<Vec<Entry>> {
+pub fn read_binary(input: impl Read) -> io::Result<Vec<Entry>> {
+    read_listing(input, false)
+}
+
+/// Require a digest-capable peer before planning or sending checked writes.
+pub fn read_content_binary(input: impl Read) -> io::Result<Vec<Entry>> {
+    read_listing(input, true)
+}
+
+fn read_listing(mut input: impl Read, require_digests: bool) -> io::Result<Vec<Entry>> {
     let mut magic = [0; 8];
     input.read_exact(&mut magic)?;
-    if &magic != BINARY_MAGIC {
+    let legacy = &magic == LEGACY_BINARY_MAGIC;
+    if legacy && require_digests {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the machine must be updated to sync file contents safely",
+        ));
+    }
+    if !legacy && &magic != BINARY_MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "not a sync scan listing",
@@ -245,10 +367,10 @@ pub fn read_binary(mut input: impl Read) -> io::Result<Vec<Entry>> {
     }
     // The count is supplied by the other process. Allocate as records arrive,
     // rather than trusting a short or corrupt listing to reserve its full size.
-    let mut entries = Vec::new();
+    let mut entries: Vec<Entry> = Vec::new();
     for _ in 0..count {
         let path = read_string(&mut input)?;
-        if super::safe_relative(&path).is_none() || path.contains('\0') {
+        if super::safe_relative(&path).is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid sync entry path",
@@ -271,6 +393,23 @@ pub fn read_binary(mut input: impl Read) -> io::Result<Vec<Entry>> {
         let mtime_ns = read_u64(&mut input)? as i64;
         let mode = read_u32(&mut input)?;
         let target = read_optional_string(&mut input)?;
+        let digest = if !legacy && kind == EntryKind::File {
+            read_digest(&mut input)?
+        } else {
+            None
+        };
+        if require_digests && kind == EntryKind::File && digest.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing sync file digest",
+            ));
+        }
+        if require_digests && entries.last().is_some_and(|previous| previous.path >= path) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sync listing paths are not in order",
+            ));
+        }
         entries.push(Entry {
             path,
             kind,
@@ -278,6 +417,7 @@ pub fn read_binary(mut input: impl Read) -> io::Result<Vec<Entry>> {
             mtime_ns,
             mode,
             target,
+            digest,
         });
     }
     let mut trailing = [0; 1];
@@ -307,8 +447,38 @@ pub fn write_binary(entries: &[Entry], mut out: impl Write) -> io::Result<()> {
         write_u64(&mut out, entry.mtime_ns as u64)?;
         write_u32(&mut out, entry.mode)?;
         write_optional_string(&mut out, entry.target.as_deref())?;
+        if entry.kind == EntryKind::File {
+            write_digest(&mut out, entry.digest.as_ref())?;
+        }
     }
     Ok(())
+}
+
+pub(super) fn read_digest(input: &mut impl Read) -> io::Result<Option<FileDigest>> {
+    let mut present = [0];
+    input.read_exact(&mut present)?;
+    match present[0] {
+        0 => Ok(None),
+        1 => {
+            let mut digest = [0; 32];
+            input.read_exact(&mut digest)?;
+            Ok(Some(digest))
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid sync digest flag",
+        )),
+    }
+}
+
+pub(super) fn write_digest(out: &mut impl Write, digest: Option<&FileDigest>) -> io::Result<()> {
+    match digest {
+        Some(digest) => {
+            out.write_all(&[1])?;
+            out.write_all(digest)
+        }
+        None => out.write_all(&[0]),
+    }
 }
 
 fn read_string(input: &mut impl Read) -> io::Result<String> {
@@ -495,6 +665,7 @@ mod tests {
                 mtime_ns: 1_700_000_000_123_456_789,
                 mode: 0o644,
                 target: None,
+                digest: Some([42; 32]),
             },
             Entry {
                 path: "link".into(),
@@ -503,6 +674,7 @@ mod tests {
                 mtime_ns: 1,
                 mode: 0o777,
                 target: Some("src/main.rs".into()),
+                digest: None,
             },
             Entry {
                 path: "src".into(),
@@ -511,12 +683,18 @@ mod tests {
                 mtime_ns: 0,
                 mode: 0o755,
                 target: None,
+                digest: None,
             },
         ];
         let mut bytes = Vec::new();
         write_binary(&entries, &mut bytes).unwrap();
         assert!(bytes.starts_with(BINARY_MAGIC));
         assert_eq!(read_binary(bytes.as_slice()).unwrap(), entries);
+        let mut ordered = entries;
+        ordered.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+        let mut current = Vec::new();
+        write_binary(&ordered, &mut current).unwrap();
+        assert_eq!(read_content_binary(current.as_slice()).unwrap(), ordered);
         assert!(read_binary(&b"nope"[..]).is_err());
     }
 
@@ -529,6 +707,7 @@ mod tests {
             mtime_ns: -1,
             mode: 0o777,
             target: Some("target".into()),
+            digest: None,
         };
         let mut bytes = Vec::new();
         write_binary(std::slice::from_ref(&entry), &mut bytes).unwrap();
@@ -597,10 +776,30 @@ mod tests {
             mtime_ns: -1,
             mode: 0o644,
             target: None,
+            digest: Some([42; 32]),
         };
         let mut bytes = Vec::new();
         write_binary(std::slice::from_ref(&entry), &mut bytes).unwrap();
         assert_eq!(read_binary(ShortReads(bytes.as_slice())).unwrap(), [entry]);
+    }
+
+    #[test]
+    fn legacy_listings_decode_without_providing_content_identity() {
+        let mut listing = LEGACY_BINARY_MAGIC.to_vec();
+        write_u32(&mut listing, 1).unwrap();
+        write_string(&mut listing, "file").unwrap();
+        listing.push(0);
+        write_u64(&mut listing, 12).unwrap();
+        write_u64(&mut listing, 42).unwrap();
+        write_u32(&mut listing, 0o644).unwrap();
+        write_optional_string(&mut listing, None).unwrap();
+        let entries = read_binary(listing.as_slice()).unwrap();
+        assert_eq!(entries[0].digest, None);
+        assert!(read_content_binary(listing.as_slice()).is_err());
+
+        let mut new = Vec::new();
+        write_binary(&entries, &mut new).unwrap();
+        assert!(read_content_binary(new.as_slice()).is_err());
     }
 
     #[test]
@@ -648,5 +847,21 @@ mod tests {
         assert!(in_scope("src/a/b", Some(&scope)));
         assert!(in_scope("", Some(&[String::new()])));
         assert!(!in_scope("docs/x", Some(&scope)));
+        assert!(entries.last().unwrap().digest.is_some());
+        let metadata = scan_metadata(dir.path(), &SyncRules::default(), Some(&scope)).unwrap();
+        assert_eq!(paths(&metadata), paths(&entries));
+        assert!(metadata.iter().all(|entry| entry.digest.is_none()));
+    }
+
+    #[test]
+    fn excluded_names_are_literal() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("[a]"), "excluded").unwrap();
+        fs::write(dir.path().join("a"), "included").unwrap();
+        let rules = SyncRules {
+            excluded: vec!["[a]".into()],
+            ..SyncRules::default()
+        };
+        assert_eq!(paths(&scan(dir.path(), &rules, None).unwrap()), ["a"]);
     }
 }

@@ -91,14 +91,21 @@ pub fn probe(proxy_url: &str) -> Result<Option<(Ipv4Addr, Option<String>)>, Stri
         return Ok(Some(exit));
     }
     std::thread::scope(|scope| {
-        let reachable = scope.spawn(|| {
+        let check_reachable = || {
             agent
                 .get("https://www.gstatic.com/generate_204")
                 .call()
                 .is_ok_and(|response| response.status() == 204)
-        });
+        };
+        let reachable = std::thread::Builder::new()
+            .name("network-reachability".into())
+            .spawn_scoped(scope, check_reachable);
         let exit = trace_exit(&agent, ALTERNATE_HTTPS_URL);
-        if exit.is_some() || reachable.join().unwrap_or(false) {
+        let reachable = match reachable {
+            Ok(worker) => worker.join().unwrap_or(false),
+            Err(_) => exit.is_none() && check_reachable(),
+        };
+        if exit.is_some() || reachable {
             Ok(exit)
         } else {
             Err("No HTTPS connectivity target responded through the current route".into())
@@ -189,7 +196,9 @@ mod macos {
     }
 
     /// Called from Tauri's main-thread setup, before starting the VM.
-    pub fn install_power_watch(on_change: impl Fn(bool) + Clone + Send + Sync + 'static) {
+    pub fn install_power_watch(
+        on_change: impl Fn(bool) + Clone + Send + Sync + 'static,
+    ) -> std::io::Result<()> {
         let center = NSWorkspace::sharedWorkspace().notificationCenter();
         let observers = [true, false].map(|sleeping| {
             let change = on_change.clone();
@@ -206,6 +215,7 @@ mod macos {
             }
         });
         POWER_WATCH.set(Some(PowerWatch { center, observers }));
+        Ok(())
     }
 
     #[link(name = "Network", kind = "framework")]
@@ -259,6 +269,11 @@ mod macos {
 
 #[cfg(target_os = "macos")]
 pub use macos::{PathWatch, install_power_watch};
+
+#[cfg(windows)]
+mod windows_power;
+#[cfg(windows)]
+pub use windows_power::install_power_watch;
 
 #[cfg(test)]
 mod tests {

@@ -8,9 +8,10 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use super::plan::{BaseRecord, Stamp};
-use super::scan::EntryKind;
+use super::scan::{EntryKind, read_digest, write_digest};
 
-const MAGIC: &[u8; 8] = b"VASYNCB1";
+const MAGIC: &[u8; 8] = b"VASYNCB2";
+const LEGACY_MAGIC: &[u8; 8] = b"VASYNCB1";
 const MAX_PATH: u32 = 1 << 20;
 const MAX_RECORDS: u64 = 10_000_000;
 
@@ -24,7 +25,8 @@ pub fn read(path: &Path) -> io::Result<Option<BTreeMap<String, BaseRecord>>> {
     let mut input = BufReader::with_capacity(1 << 20, file);
     let mut magic = [0; 8];
     input.read_exact(&mut magic)?;
-    if &magic != MAGIC {
+    let legacy = &magic == LEGACY_MAGIC;
+    if !legacy && &magic != MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid sync base header",
@@ -40,22 +42,40 @@ pub fn read(path: &Path) -> io::Result<Option<BTreeMap<String, BaseRecord>>> {
     let mut base = BTreeMap::new();
     for _ in 0..count {
         let path = read_string(&mut input)?;
-        let mac = read_stamp(&mut input)?;
-        let vm = read_stamp(&mut input)?;
-        base.insert(path, BaseRecord { mac, vm });
+        if super::safe_relative(&path).is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid sync base path",
+            ));
+        }
+        let mac = read_stamp(&mut input, legacy)?;
+        let vm = read_stamp(&mut input, legacy)?;
+        if base.insert(path, BaseRecord { mac, vm }).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "duplicate sync base path",
+            ));
+        }
+    }
+    if input.read(&mut [0])? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing data in sync base",
+        ));
     }
     Ok(Some(base))
 }
 
 /// Write a compact base atomically.
 pub fn write(path: &Path, base: &BTreeMap<String, BaseRecord>) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("bin.tmp");
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     {
-        let file = fs::File::create(&tmp)?;
-        let mut out = BufWriter::with_capacity(1 << 20, file);
+        let mut out = BufWriter::with_capacity(1 << 20, tmp.as_file_mut());
         out.write_all(MAGIC)?;
         write_u64(&mut out, base.len() as u64)?;
         for (path, record) in base {
@@ -65,10 +85,10 @@ pub fn write(path: &Path, base: &BTreeMap<String, BaseRecord>) -> io::Result<()>
         }
         out.flush()?;
     }
-    fs::rename(&tmp, path)
+    tmp.persist(path).map(|_| ()).map_err(|error| error.error)
 }
 
-fn read_stamp(input: &mut impl Read) -> io::Result<Stamp> {
+fn read_stamp(input: &mut impl Read, legacy: bool) -> io::Result<Stamp> {
     let mut kind = [0];
     input.read_exact(&mut kind)?;
     let kind = match kind[0] {
@@ -85,11 +105,17 @@ fn read_stamp(input: &mut impl Read) -> io::Result<Stamp> {
     let size = read_u64(input)?;
     let mtime_ns = read_u64(input)? as i64;
     let target = read_optional_string(input)?;
+    let digest = if !legacy && kind == EntryKind::File {
+        read_digest(input)?
+    } else {
+        None
+    };
     Ok(Stamp {
         kind,
         size,
         mtime_ns,
         target,
+        digest,
     })
 }
 
@@ -102,7 +128,11 @@ fn write_stamp(out: &mut impl Write, stamp: &Stamp) -> io::Result<()> {
     out.write_all(&[kind])?;
     write_u64(out, stamp.size)?;
     write_u64(out, stamp.mtime_ns as u64)?;
-    write_optional_string(out, stamp.target.as_deref())
+    write_optional_string(out, stamp.target.as_deref())?;
+    if stamp.kind == EntryKind::File {
+        write_digest(out, stamp.digest.as_ref())?;
+    }
+    Ok(())
 }
 
 fn read_string(input: &mut impl Read) -> io::Result<String> {
@@ -183,7 +213,32 @@ mod tests {
             size,
             mtime_ns: 1_700_000_000_123_456_789,
             target: target.map(str::to_owned),
+            digest: target.is_none().then_some([42; 32]),
         }
+    }
+
+    #[test]
+    fn reads_legacy_bases_and_preserves_unknown_records_on_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("base.bin");
+        let mut bytes = LEGACY_MAGIC.to_vec();
+        write_u64(&mut bytes, 1).unwrap();
+        write_string(&mut bytes, "file").unwrap();
+        for mtime in [42, 43] {
+            bytes.push(0);
+            write_u64(&mut bytes, 5).unwrap();
+            write_u64(&mut bytes, mtime).unwrap();
+            write_optional_string(&mut bytes, None).unwrap();
+        }
+        fs::write(&path, bytes).unwrap();
+        let base = read(&path).unwrap().unwrap();
+        assert_eq!(base["file"].mac.digest, None);
+        assert_eq!(base["file"].vm.digest, None);
+        assert_eq!(base["file"].mac.mtime_ns, 42);
+        assert_eq!(base["file"].vm.mtime_ns, 43);
+        write(&path, &base).unwrap();
+        assert!(fs::read(&path).unwrap().starts_with(MAGIC));
+        assert_eq!(read(&path).unwrap().unwrap(), base);
     }
 
     #[test]

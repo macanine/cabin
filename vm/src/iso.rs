@@ -131,7 +131,7 @@ fn directory_bytes(records: &[Record]) -> Vec<u8> {
 /// identifier for a staged file; the "." / ".." sizes are patched after the
 /// first serialization fixes the directory length.
 fn plan_root<Name>(
-    files: &[(String, Vec<u8>)],
+    files: &[(&str, &[u8])],
     extents: &[u32],
     self_extent: u32,
     name: Name,
@@ -178,23 +178,25 @@ fn path_table_bytes(extent: u32, big_endian: bool) -> Vec<u8> {
 /// Build the CIDATA ISO with the staged files (flat, in given order) and
 /// write it to `output`.
 pub fn build_iso(output: &Path, files: &[(&str, &[u8])]) -> Result<()> {
-    let mut staged: Vec<(String, Vec<u8>)> = files
-        .iter()
-        .map(|(name, data)| ((*name).to_string(), data.to_vec()))
-        .collect();
-    staged.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut staged = files.to_vec();
+    staged.sort_by_key(|(name, _)| *name);
     staged.dedup_by(|a, b| a.0 == b.0);
     if staged.is_empty() {
         return message("the seed ISO needs at least one file");
     }
-    for (name, _) in &staged {
+    for (name, data) in &staged {
+        // A Joliet directory record stores two bytes per name character and
+        // its entire padded length in a single byte.
         if name.is_empty()
-            || name.len() > 120
+            || name.len() > 110
             || !name
                 .bytes()
                 .all(|byte| byte.is_ascii_graphic() && byte != b'/')
         {
             return message(format!("invalid seed file name: {name:?}"));
+        }
+        if u32::try_from(data.len()).is_err() {
+            return message(format!("seed file is too large: {name:?}"));
         }
     }
 
@@ -204,10 +206,12 @@ pub fn build_iso(output: &Path, files: &[(&str, &[u8])]) -> Result<()> {
         .iter()
         .map(|(_, data)| {
             let extent = next_extent;
-            next_extent += blocks_for(data.len()) as u32;
-            extent
+            next_extent = next_extent
+                .checked_add(blocks_for(data.len()) as u32)
+                .ok_or_else(|| crate::Error::Message("the seed ISO is too large".into()))?;
+            Ok(extent)
         })
-        .collect();
+        .collect::<Result<_>>()?;
     let total_blocks = next_extent;
 
     let (iso_directory, iso_root) = plan_root(&staged, &extents, ROOT_EXTENT, |name| {
@@ -219,11 +223,20 @@ pub fn build_iso(output: &Path, files: &[(&str, &[u8])]) -> Result<()> {
         plan_root(&staged, &extents, JOLIET_ROOT_EXTENT, |name| {
             name.bytes().flat_map(|byte| [0u8, byte]).collect()
         });
+    if iso_directory.len() > BLOCK || joliet_directory.len() > BLOCK {
+        return message("the seed ISO directory does not fit in one block");
+    }
 
     let path_table = path_table_bytes(0, false);
     let path_table_size = path_table.len() as u32;
 
-    let mut image: Vec<u8> = Vec::with_capacity(total_blocks as usize * BLOCK);
+    let length = (total_blocks as usize)
+        .checked_mul(BLOCK)
+        .ok_or_else(|| crate::Error::Message("the seed ISO is too large".into()))?;
+    let mut image: Vec<u8> = Vec::new();
+    image.try_reserve_exact(length).map_err(|error| {
+        crate::Error::Message(format!("could not allocate the seed ISO: {error}"))
+    })?;
     image.resize(PVD_EXTENT as usize * BLOCK, 0);
     image.resize((PVD_EXTENT as usize + 1) * BLOCK, 0);
     put_volume_descriptor(
@@ -260,12 +273,12 @@ pub fn build_iso(output: &Path, files: &[(&str, &[u8])]) -> Result<()> {
     for (index, (_, data)) in staged.iter().enumerate() {
         image.resize(extents[index] as usize * BLOCK, 0);
         image.extend_from_slice(data);
-        pad_to_block(&mut image);
+        image.resize(
+            (extents[index] as usize + blocks_for(data.len())) * BLOCK,
+            0,
+        );
     }
 
-    if image.len() != total_blocks as usize * BLOCK {
-        return message("seed ISO layout mismatch");
-    }
     std::fs::write(output, &image)?;
     Ok(())
 }
@@ -358,7 +371,7 @@ type Volume = (String, Vec<(String, Vec<u8>)>);
 /// `joliet` selects the supplementary (UCS-2) tree over the primary one.
 fn read_volume(image: &[u8], descriptor: u32, joliet: bool) -> Option<Volume> {
     let blocks = |extent: u32, length: usize| {
-        let start = extent as usize * BLOCK;
+        let start = (extent as usize).checked_mul(BLOCK)?;
         image.get(start..start.checked_add(length)?)
     };
     let volume = blocks(descriptor, BLOCK)?;
@@ -368,8 +381,11 @@ fn read_volume(image: &[u8], descriptor: u32, joliet: bool) -> Option<Volume> {
     let text = |raw: &[u8]| -> String {
         if joliet {
             let units: Vec<u16> = raw
-                .chunks(2)
-                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .copied()
+                .map(u16::from_be_bytes)
                 .collect();
             String::from_utf16_lossy(&units)
         } else {
@@ -383,9 +399,12 @@ fn read_volume(image: &[u8], descriptor: u32, joliet: bool) -> Option<Volume> {
     let mut files = Vec::new();
     let mut at = 0;
     while at < directory.len() && directory[at] > 0 {
-        let record = directory.get(at..at + directory[at] as usize)?;
+        let record = directory.get(at..at.checked_add(directory[at].into())?)?;
         let raw = record.get(33..33 + *record.get(32)? as usize)?;
         if !matches!(raw, [0] | [1]) && record.get(25)? & 0b10 == 0 {
+            if raw.is_empty() || (joliet && !raw.len().is_multiple_of(2)) {
+                return None;
+            }
             let data = blocks(le32(record, 2)?, le32(record, 10)? as usize)?;
             files.push((text(raw).trim_end_matches(";1").to_string(), data.to_vec()));
         }
@@ -462,6 +481,33 @@ mod tests {
         assert!(build_iso(&output, &[("with/slash", b"x")]).is_err());
         std::fs::write(&output, b"not an iso").unwrap();
         assert!(read_iso(&output).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn validates_joliet_directory_and_keeps_an_empty_final_file() {
+        let dir = scratch("joliet");
+        let output = dir.join("seed.iso");
+        let longest = "z".repeat(110);
+        build_iso(&output, &[("data", b"value"), (&longest, b"")]).unwrap();
+        assert_eq!(
+            read_iso(&output).unwrap().1,
+            [
+                ("data".into(), b"value".to_vec()),
+                (longest.clone(), vec![])
+            ]
+        );
+        let mut image = std::fs::read(&output).unwrap();
+        let first_joliet_file = JOLIET_ROOT_EXTENT as usize * BLOCK + 2 * 34;
+        image[first_joliet_file + 32] -= 1;
+        std::fs::write(&output, image).unwrap();
+        assert!(read_iso(&output).is_err());
+
+        assert!(build_iso(&output, &[(&(longest.clone() + "z"), b"")]).is_err());
+        let names: Vec<String> = (0..8).map(|i| format!("{i}{longest:.109}")).collect();
+        let files: Vec<(&str, &[u8])> =
+            names.iter().map(|name| (name.as_str(), &b""[..])).collect();
+        assert!(build_iso(&output, &files).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 

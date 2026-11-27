@@ -4,6 +4,7 @@
 mod app_error;
 mod global_network;
 mod host;
+mod host_cli;
 mod host_permissions;
 mod lifecycle;
 mod machine_service;
@@ -20,6 +21,10 @@ mod window_chrome;
 
 use std::path::PathBuf;
 
+use host_cli::{
+    host_cli_bind_folder, host_cli_install_launcher, host_cli_repair_channels,
+    host_cli_save_config, host_cli_status, host_cli_unbind_folder, host_cli_uninstall_launcher,
+};
 use host_permissions::{mac_folder_access, mac_open_file_settings, mac_permissions};
 use lifecycle::{app_background, app_quit};
 use machine_service::*;
@@ -73,6 +78,13 @@ macro_rules! with_commands {
             mac_permissions,
             mac_folder_access,
             mac_open_file_settings,
+            host_cli_status,
+            host_cli_save_config,
+            host_cli_install_launcher,
+            host_cli_uninstall_launcher,
+            host_cli_repair_channels,
+            host_cli_bind_folder,
+            host_cli_unbind_folder,
             sync_list,
             sync_preview,
             sync_create,
@@ -136,17 +148,12 @@ fn agentd_binary(resources: Option<PathBuf>) -> PathBuf {
     }
     let core = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/target");
     let guest = vm_core::arch::GuestArch::current().rust_musl_triple();
-    let mut candidates: Vec<PathBuf> = resources
-        .into_iter()
-        .map(|dir| dir.join("cabind"))
-        .collect();
     // A static musl build runs on any Ubuntu release regardless of glibc.
-    candidates.push(core.join(format!("{guest}/release/cabind")));
-    candidates
-        .iter()
-        .find(|path| path.is_file())
-        .cloned()
-        .unwrap_or_else(|| candidates[0].clone())
+    let dev = core.join(format!("{guest}/release/cabind"));
+    match resources.map(|dir| dir.join("cabind")) {
+        Some(bundled) if bundled.is_file() || !dev.is_file() => bundled,
+        _ => dev,
+    }
 }
 
 /// The renderer sends a fixed event identifier, without any exception text,
@@ -210,12 +217,12 @@ pub fn run() {
             let host = host::Host::new(machine, agentd)
                 .map_err(|error| std::io::Error::other(error.message))?;
             app.manage(host.clone());
+            let cli_state = host_cli::HostCliState::open();
+            app.manage(cli_state.clone());
             #[cfg(unix)]
-            match native_cli::start_broker(host.sync.clone()) {
-                Ok(()) =>
-                {
-                    #[cfg(target_os = "macos")]
-                    if let Err(error) = native_cli::maintain_launcher() {
+            match native_cli::start_broker(&host, cli_state.clone()) {
+                Ok(()) => {
+                    if let Err(error) = host_cli::maintain_launcher_on_startup(&cli_state) {
                         cabin_diagnostics::event(
                             cabin_diagnostics::Level::Warn,
                             "cli",
@@ -232,7 +239,7 @@ pub fn run() {
                 ),
             }
             lifecycle::install_tray(app.handle())?;
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             host.install_network_power_watch();
             host.run_connection_loop()
                 .map_err(|error| std::io::Error::other(error.message))?;
@@ -344,9 +351,18 @@ mod tests {
             crate::host_permissions::FolderAccessState::decl(&config),
             crate::host_permissions::FolderAccess::decl(&config),
             crate::host_permissions::MacProjectAccess::decl(&config),
+            crate::host_cli::HostCliConfig::decl(&config),
+            crate::host_cli::LauncherState::decl(&config),
+            crate::host_cli::NativeChannelState::decl(&config),
+            crate::host_cli::HostCliBinding::decl(&config),
+            crate::host_cli::HostCliStatus::decl(&config),
             crate::system_route::SystemRoute::decl(&config),
         ] {
-            generated.push_str(&format!("export {declaration}\n"));
+            generated.push_str("export ");
+            for line in declaration.lines() {
+                generated.push_str(line.trim_end());
+                generated.push('\n');
+            }
         }
         generated.push_str("export type IpcCommand =\n");
         for (index, name) in commands.iter().enumerate() {

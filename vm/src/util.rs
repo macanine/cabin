@@ -3,10 +3,12 @@
 
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, PipeReader, PipeWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -145,6 +147,9 @@ fn temp_path(parent: &Path, name: &str) -> PathBuf {
 }
 
 pub fn atomic_write_bytes(path: &Path, data: &[u8], mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
     if let Some(parent) = path.parent() {
         ensure_dir(parent)?;
     }
@@ -154,11 +159,17 @@ pub fn atomic_write_bytes(path: &Path, data: &[u8], mode: u32) -> Result<()> {
         .and_then(OsStr::to_str)
         .unwrap_or("artifact");
     let temp = temp_path(parent, name);
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(mode);
+    #[cfg(not(unix))]
+    let _ = mode;
+    let file = options.open(&temp)?;
     let result = (|| -> Result<()> {
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        let mut file = options.open(&temp)?;
-        chmod(&temp, mode)?;
+        let mut file = file;
+        #[cfg(unix)]
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
         file.write_all(data)?;
         file.flush()?;
         file.sync_all()?;
@@ -200,6 +211,8 @@ pub fn remove_path(path: &Path) -> std::io::Result<()> {
                 use std::os::windows::fs::FileTypeExt;
                 if metadata.permissions().readonly() {
                     let mut perms = metadata.permissions();
+                    // On Windows this clears FILE_ATTRIBUTE_READONLY only.
+                    #[allow(clippy::permissions_set_readonly_false)]
                     perms.set_readonly(false);
                     let _ = fs::set_permissions(path, perms);
                 }
@@ -294,7 +307,10 @@ pub fn parse_size_bytes(value: &str) -> Result<u64> {
             return message(format!("invalid size: {value:?} (expected e.g. 20G)"));
         }
     };
-    Ok(number * multiplier)
+    number
+        .checked_mul(multiplier)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| Error::Message(format!("size is out of range: {value:?}")))
 }
 
 /// Python's `format(float, "g")` for the 1..4 compositor scales used here.
@@ -399,18 +415,32 @@ pub fn curl_binary() -> &'static str {
     }
 }
 
-pub fn random_password(length: usize) -> String {
+pub fn random_password(length: usize) -> Result<String> {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    // Reject the bytes beyond the largest multiple of the alphabet size to
+    // give each character the same probability.
+    let limit = 256 - 256 % ALPHABET.len();
+    let mut password = String::with_capacity(length);
     let mut random = [0u8; 64];
-    random_bytes(&mut random);
-    (0..length)
-        .map(|index| ALPHABET[random[index % random.len()] as usize % ALPHABET.len()] as char)
-        .collect()
+    while password.len() < length {
+        random_bytes(&mut random)?;
+        let remaining = length - password.len();
+        password.extend(
+            random
+                .iter()
+                .map(|&byte| usize::from(byte))
+                .filter(|&index| index < limit)
+                .take(remaining)
+                .map(|index| char::from(ALPHABET[index % ALPHABET.len()])),
+        );
+    }
+    Ok(password)
 }
 
-/// Operating-system entropy. A host without one cannot make safe secrets.
-pub fn random_bytes(buffer: &mut [u8]) {
-    getrandom::fill(buffer).expect("the operating system provides no entropy");
+pub fn random_bytes(buffer: &mut [u8]) -> std::io::Result<()> {
+    getrandom::fill(buffer).map_err(|error| {
+        std::io::Error::other(format!("Could not get operating-system entropy: {error}"))
+    })
 }
 
 pub fn port_free(port: u16, host: &str) -> bool {
@@ -470,95 +500,166 @@ fn capture_with_stdin(
     cwd: Option<&Path>,
     env: Option<&[(String, String)]>,
 ) -> CaptureResult {
-    if argv.is_empty() {
+    let Some((program, args)) = argv.split_first() else {
         return CaptureResult {
             code: 127,
             output: "command not found: <empty>".to_string(),
         };
-    }
-    let mut command = Command::new(&argv[0]);
-    command.args(&argv[1..]);
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    command.stdin(match file {
-        Some(file) => Stdio::from(file),
-        None if input.is_some() => Stdio::piped(),
-        None => Stdio::null(),
+    };
+    let command = prepare_command(program, args, cwd, env);
+    let mut output = [Vec::new(), Vec::new()];
+    let result = execute_command(command, timeout, input, file, |index, chunk| {
+        output[index].extend_from_slice(chunk);
     });
-    crate::util::no_window(&mut command);
+    let [stdout, stderr] = output;
+    let mut output = String::from_utf8_lossy(&stdout).into_owned();
+    output.push_str(&String::from_utf8_lossy(&stderr));
+    let code = match result {
+        Ok(Some(status)) => status.code().unwrap_or(125),
+        Ok(None) => 124,
+        Err(error) if error.kind() == io::ErrorKind::NotFound && output.is_empty() => {
+            output = format!("command not found: {program}");
+            127
+        }
+        Err(error) => {
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str(&error.to_string());
+            125
+        }
+    };
+    CaptureResult { code, output }
+}
+
+fn prepare_command(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    env: Option<&[(String, String)]>,
+) -> Command {
+    let mut command = Command::new(program);
+    command.args(args);
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
     if let Some(env) = env {
         command.envs(env.iter().map(|(key, value)| (key, value)));
     }
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return CaptureResult {
-                code: 127,
-                output: format!("command not found: {}", argv[0]),
-            };
-        }
-        Err(error) => {
-            return CaptureResult {
-                code: 125,
-                output: error.to_string(),
-            };
-        }
-    };
-    if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
-        let data = data.as_bytes().to_vec();
-        thread::spawn(move || {
-            let _ = stdin.write_all(&data);
-        });
-    }
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let out_handle = thread::spawn(move || read_stream(stdout));
-    let err_handle = thread::spawn(move || read_stream(stderr));
-    let started = Instant::now();
-    let mut timed_out = false;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => {
-                if started.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    timed_out = true;
-                    break;
-                }
-                thread::sleep(Duration::from_millis(15));
-            }
-            Err(_) => break,
-        }
-    }
-    let status = child.wait().ok();
-    let stdout = out_handle.join().unwrap_or_default();
-    let stderr = err_handle.join().unwrap_or_default();
-    let mut output = String::from_utf8_lossy(&stdout).into_owned();
-    output.push_str(&String::from_utf8_lossy(&stderr));
-    let code = if timed_out {
-        124
-    } else {
-        status.and_then(|value| value.code()).unwrap_or(125)
-    };
-    CaptureResult { code, output }
+    command
 }
 
-fn read_stream(stream: Option<impl Read>) -> Vec<u8> {
-    let Some(mut stream) = stream else {
-        return Vec::new();
+/// Returns `None` on timeout. Keep the command deadline active until every
+/// pipe is closed, including any copies that the child passed on.
+fn execute_command(
+    mut command: Command,
+    timeout: Duration,
+    input: Option<&str>,
+    file: Option<File>,
+    mut output: impl FnMut(usize, &[u8]),
+) -> io::Result<Option<ExitStatus>> {
+    use crate::platform::command_pipe;
+
+    let started = Instant::now();
+    let (stdout, stdout_writer) = command_pipe::output()?;
+    let (stderr, stderr_writer) = command_pipe::output()?;
+    command.stdout(stdout_writer).stderr(stderr_writer);
+    let mut stdin = match (file, input) {
+        (Some(file), _) => {
+            command.stdin(file);
+            None
+        }
+        (None, Some(input)) => {
+            let (reader, writer) = command_pipe::input()?;
+            command.stdin(reader);
+            Some((writer, input.as_bytes()))
+        }
+        (None, None) => {
+            command.stdin(Stdio::null());
+            None
+        }
     };
-    let mut buffer = Vec::new();
-    let mut chunk = [0u8; 65536];
-    loop {
-        match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+    let mut readers = [Some(stdout), Some(stderr)];
+    let mut child = crate::platform::CommandTree::spawn(&mut command)?;
+    // Command owns the child ends of explicit pipes and can otherwise keep
+    // them open after the subprocess exits.
+    drop(command);
+    let mut chunk = [0; 64 * 1024];
+    let result = (|| loop {
+        if started.elapsed() >= timeout {
+            break Ok(None);
+        }
+        let mut progressed = false;
+        for (index, pipe) in readers.iter_mut().enumerate() {
+            if let Some(bytes) = read_command_output(pipe, &mut chunk)? {
+                output(index, bytes);
+                progressed = true;
+            }
+        }
+        progressed |= write_command_input(&mut stdin)?;
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break Ok(None);
+        }
+        // Reap the leader only once the pipes close. Until then its PID
+        // still identifies the isolated Unix process group on timeout.
+        if stdin.is_none()
+            && readers.iter().all(Option::is_none)
+            && let Some(status) = child.try_wait()?
+        {
+            break Ok(Some(status));
+        }
+        if !progressed {
+            thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
+    })();
+    if !matches!(result, Ok(Some(_))) {
+        child.terminate();
+        drop(stdin);
+        drop(readers);
+    }
+    result
+}
+
+fn read_command_output<'a>(
+    pipe: &mut Option<PipeReader>,
+    chunk: &'a mut [u8],
+) -> io::Result<Option<&'a [u8]>> {
+    if let Some(reader) = pipe {
+        match crate::platform::command_pipe::read(reader, chunk) {
+            Ok(0) => *pipe = None,
+            Ok(read) => return Ok(Some(&chunk[..read])),
+            Err(error) if pipe_pending(&error) => (),
+            Err(error) => return Err(error),
         }
     }
-    buffer
+    Ok(None)
+}
+
+fn write_command_input(stdin: &mut Option<(PipeWriter, &[u8])>) -> io::Result<bool> {
+    if let Some((writer, pending)) = stdin {
+        match writer.write(pending) {
+            Ok(written) => {
+                *pending = &pending[written..];
+                if pending.is_empty() {
+                    *stdin = None;
+                }
+                return Ok(written > 0);
+            }
+            Err(error) if pipe_pending(&error) => (),
+            // Tools can exit or deliberately close stdin before reading it all.
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => *stdin = None,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(false)
+}
+
+fn pipe_pending(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+    )
 }
 
 pub struct RunOptions<'a> {
@@ -581,87 +682,132 @@ impl<'a> Default for RunOptions<'a> {
     }
 }
 
+/// Stream logs off the command thread. Keep at most 16 chunks (1 MiB) queued
+/// and give the logger a short grace period after the child has been reaped.
+struct CommandLog {
+    chunks: SyncSender<Vec<u8>>,
+    footer: SyncSender<String>,
+    finished: Receiver<()>,
+    cancelled: Arc<AtomicBool>,
+    skipped: usize,
+}
+
+impl CommandLog {
+    fn start(log: &Arc<Mutex<File>>, program: &str) -> io::Result<Self> {
+        let (chunks, pending) = mpsc::sync_channel::<Vec<u8>>(16);
+        let (footer, summary) = mpsc::sync_channel::<String>(1);
+        let (complete, finished) = mpsc::sync_channel::<()>(0);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stop = cancelled.clone();
+        let log = log.clone();
+        let header = format!("$ {program}\n");
+        thread::Builder::new()
+            .name("vm-command-log".into())
+            .spawn(move || {
+                let _complete = complete;
+                let write = |bytes: &[u8]| loop {
+                    if stop.load(Ordering::Acquire) {
+                        return false;
+                    }
+                    match log.try_lock() {
+                        Ok(mut file) => {
+                            return file.write_all(bytes).and_then(|()| file.flush()).is_ok();
+                        }
+                        Err(std::sync::TryLockError::WouldBlock) => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(std::sync::TryLockError::Poisoned(_)) => return false,
+                    }
+                };
+                if !write(header.as_bytes()) {
+                    return;
+                }
+                for chunk in pending {
+                    if !write(&chunk) {
+                        return;
+                    }
+                }
+                if let Ok(summary) = summary.try_recv() {
+                    write(summary.as_bytes());
+                }
+            })?;
+        Ok(Self {
+            chunks,
+            footer,
+            finished,
+            cancelled,
+            skipped: 0,
+        })
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        if matches!(
+            self.chunks.try_send(bytes.to_vec()),
+            Err(TrySendError::Full(_))
+        ) {
+            self.skipped = self.skipped.saturating_add(bytes.len());
+        }
+    }
+
+    fn finish(self, mut footer: String) {
+        if self.skipped > 0 {
+            footer = format!(
+                "\n[omitted {} bytes while log was busy]\n{footer}",
+                self.skipped
+            );
+        }
+        let _ = self.footer.try_send(footer);
+        drop(self.chunks);
+        let _ = self.finished.recv_timeout(Duration::from_millis(100));
+        // A filesystem write can remain blocked in the OS. The command has
+        // already finished and never joins that worker.
+        self.cancelled.store(true, Ordering::Release);
+    }
+}
+
 /// Run a command, stream combined output into a step log and check the status.
 pub fn run(argv: &[String], log: &Arc<Mutex<File>>, options: RunOptions<'_>) -> Result<i32> {
-    if argv.is_empty() {
+    let Some((command, args)) = argv.split_first() else {
         return message("command not found: <empty>");
-    }
+    };
     // Command arguments can carry scripts, environment values, and secrets.
-    let program = Path::new(&argv[0])
+    let program = Path::new(command)
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
-    log_line(log, &format!("$ {program}"));
     let started = Instant::now();
-    let mut command = Command::new(&argv[0]);
-    command.args(&argv[1..]);
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    if options.input.is_some() {
-        command.stdin(Stdio::piped());
-    } else {
-        command.stdin(Stdio::null());
-    }
-    crate::util::no_window(&mut command);
-    if let Some(cwd) = options.cwd {
-        command.current_dir(cwd);
-    }
-    if let Some(env) = options.env {
-        command.envs(env.iter().map(|(key, value)| (key, value)));
-    }
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return message(format!("command not found: {}", argv[0]));
+    let mut log = CommandLog::start(log, &program).ok();
+    let process = prepare_command(command, args, options.cwd, options.env);
+    let status = execute_command(process, options.timeout, options.input, None, |_, chunk| {
+        if let Some(log) = &mut log {
+            log.write(chunk);
         }
-        Err(error) => return Err(Error::Io(error)),
-    };
-    if let (Some(data), Some(mut stdin)) = (options.input, child.stdin.take()) {
-        let data = data.as_bytes().to_vec();
-        thread::spawn(move || {
-            let _ = stdin.write_all(&data);
-        });
-    }
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let log_out = log.clone();
-    let out_handle = thread::spawn(move || copy_stream(stdout, log_out));
-    let log_err = log.clone();
-    let err_handle = thread::spawn(move || copy_stream(stderr, log_err));
-    let mut timed_out = false;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => {
-                if started.elapsed() >= options.timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    timed_out = true;
-                    break;
-                }
-                thread::sleep(Duration::from_millis(20));
+    })
+    .map(|status| {
+        (
+            status.is_none(),
+            status.map_or(124, |status| status.code().unwrap_or(125)),
+        )
+    });
+    if let Some(log) = log {
+        let mut footer = String::new();
+        if let Ok((timed_out, code)) = status {
+            if timed_out {
+                footer = format!("[timeout after {}s]\n", options.timeout.as_secs());
             }
-            Err(_) => break,
+            footer.push_str(&format!(
+                "[exit {code}, {:.1}s]\n",
+                started.elapsed().as_secs_f64()
+            ));
         }
+        log.finish(footer);
     }
-    let status = child.wait().ok();
-    let _ = out_handle.join();
-    let _ = err_handle.join();
-    let code = if timed_out {
-        124
-    } else {
-        status.and_then(|value| value.code()).unwrap_or(125)
+    let (timed_out, code) = match status {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return message(format!("command not found: {command}"));
+        }
+        other => other?,
     };
-    if let Ok(mut handle) = log.lock() {
-        if timed_out {
-            let _ = writeln!(handle, "[timeout after {}s]", options.timeout.as_secs());
-        }
-        let _ = writeln!(
-            handle,
-            "[exit {code}, {:.1}s]",
-            started.elapsed().as_secs_f64()
-        );
-        let _ = handle.flush();
-    }
     if timed_out {
         return message(format!("command timed out: {program}"));
     }
@@ -669,24 +815,6 @@ pub fn run(argv: &[String], log: &Arc<Mutex<File>>, options: RunOptions<'_>) -> 
         return message(format!("{program} failed (exit {code})"));
     }
     Ok(code)
-}
-
-fn copy_stream(stream: Option<impl Read>, log: Arc<Mutex<File>>) {
-    let Some(mut stream) = stream else {
-        return;
-    };
-    let mut chunk = [0u8; 65536];
-    loop {
-        match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(read) => {
-                if let Ok(mut handle) = log.lock() {
-                    let _ = handle.write_all(&chunk[..read]);
-                    let _ = handle.flush();
-                }
-            }
-        }
-    }
 }
 
 pub fn log_line(log: &Arc<Mutex<File>>, text: &str) {
@@ -787,10 +915,202 @@ mod stamp_tests {
 mod tests {
     use super::*;
 
+    const PIPE_TEST_ROLE: &str = "CABIN_TEST_COMMAND_PIPE_ROLE";
+    const PIPE_TEST_DIR: &str = "CABIN_TEST_COMMAND_PIPE_DIR";
+
+    fn command_fixture() -> Vec<String> {
+        vec![
+            std::env::current_exe()
+                .unwrap()
+                .into_os_string()
+                .into_string()
+                .unwrap(),
+            "--exact".into(),
+            "util::tests::command_pipe_fixture".into(),
+            "--nocapture".into(),
+        ]
+    }
+
+    #[test]
+    // The fixture is a short-lived subprocess whose descendant must outlive it.
+    #[allow(clippy::zombie_processes)]
+    fn command_pipe_fixture() {
+        match std::env::var(PIPE_TEST_ROLE).as_deref() {
+            Ok("parent") => {
+                let argv = command_fixture();
+                let mut command = Command::new(&argv[0]);
+                command.args(&argv[1..]).env(PIPE_TEST_ROLE, "descendant");
+                no_window(&mut command);
+                // The descendant inherits stdin, stdout and stderr. This
+                // parent exits immediately without waiting for it.
+                let _descendant = command.spawn().unwrap();
+                println!("parent exiting");
+            }
+            Ok("descendant") => {
+                eprintln!("descendant holding pipes");
+                thread::sleep(Duration::from_secs(8));
+            }
+            Ok("roundtrip") => {
+                let mut input = Vec::new();
+                io::stdin().read_to_end(&mut input).unwrap();
+                io::stdout().write_all(&input).unwrap();
+                eprintln!("input complete");
+            }
+            Ok("blocked-log") => {
+                let dir = PathBuf::from(std::env::var_os(PIPE_TEST_DIR).unwrap());
+                fs::write(dir.join("pid"), std::process::id().to_string()).unwrap();
+                let started = Instant::now();
+                while !dir.join("write-output").exists() {
+                    assert!(started.elapsed() < Duration::from_secs(5));
+                    thread::sleep(Duration::from_millis(10));
+                }
+                eprintln!("output while log is blocked");
+                fs::write(dir.join("output-written"), b"").unwrap();
+                thread::sleep(Duration::from_secs(8));
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn inherited_pipes_cannot_extend_capture_or_run_deadline() {
+        let argv = command_fixture();
+        let env = [(PIPE_TEST_ROLE.into(), "parent".into())];
+        let input = "*".repeat(256 * 1024);
+        let timeout = Duration::from_millis(1500);
+
+        let start = Instant::now();
+        let result = capture_env(&argv, timeout, Some(&input), None, Some(&env));
+        assert_eq!(result.code, 124, "{}", result.output);
+        assert!(
+            result.output.contains("parent exiting"),
+            "{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("descendant holding pipes"),
+            "{}",
+            result.output
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            start.elapsed()
+        );
+
+        let dir = crate::sockets::test_dir();
+        let path = dir.join("command.log");
+        let log = Arc::new(Mutex::new(File::create(&path).unwrap()));
+        let start = Instant::now();
+        let error = run(
+            &argv,
+            &log,
+            RunOptions {
+                env: Some(&env),
+                timeout,
+                input: Some(&input),
+                ..RunOptions::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("command timed out"), "{error}");
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            start.elapsed()
+        );
+        drop(log);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("parent exiting") && text.contains("descendant holding pipes"),
+            "{text}"
+        );
+        assert!(text.contains("[exit 124,"), "{text}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn command_completes_large_pipe_io_before_deadline() {
+        let env = [(PIPE_TEST_ROLE.into(), "roundtrip".into())];
+        let input = "#".repeat(256 * 1024);
+        let timeout = Duration::from_secs(5);
+        let result = capture_env(&command_fixture(), timeout, Some(&input), None, Some(&env));
+        assert_eq!(result.code, 0);
+        assert!(result.output.contains(&input));
+        assert!(
+            result.output.ends_with("input complete\n")
+                || result.output.ends_with("input complete\r\n")
+        );
+    }
+
+    #[test]
+    fn blocked_log_cannot_extend_run_deadline() {
+        let dir = crate::sockets::test_dir();
+        let log = Arc::new(Mutex::new(File::create(dir.join("command.log")).unwrap()));
+        let env = [
+            (PIPE_TEST_ROLE.into(), "blocked-log".into()),
+            (PIPE_TEST_DIR.into(), dir.to_str().unwrap().into()),
+        ];
+        let (send, result) = mpsc::channel();
+        let run_log = log.clone();
+        let runner = thread::spawn(move || {
+            let result = run(
+                &command_fixture(),
+                &run_log,
+                RunOptions {
+                    env: Some(&env),
+                    timeout: Duration::from_millis(1500),
+                    ..RunOptions::default()
+                },
+            );
+            let _ = send.send(result);
+        });
+
+        let started = Instant::now();
+        let pid = loop {
+            if let Some(pid) = fs::read_to_string(dir.join("pid"))
+                .ok()
+                .and_then(|text| text.parse().ok())
+            {
+                break pid;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(4),
+                "child did not start"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        // Take the lock after the child starts so the old inline sink stalls
+        // on its output, with the child still running past the deadline.
+        let guard = log.lock().unwrap();
+        fs::write(dir.join("write-output"), b"").unwrap();
+        let outcome = result.recv_timeout(Duration::from_secs(4));
+        let reaped = !pid_alive(pid);
+        drop(guard);
+        runner.join().unwrap();
+        assert!(
+            dir.join("output-written").is_file(),
+            "child did not write output"
+        );
+        drop(log);
+        fs::remove_dir_all(dir).unwrap();
+        let error = outcome
+            .expect("run should return while the log is locked")
+            .unwrap_err();
+        assert!(error.to_string().contains("command timed out"), "{error}");
+        assert!(
+            reaped,
+            "child survived the deadline while the log was locked"
+        );
+    }
+
     #[test]
     fn sizes() {
         assert_eq!(parse_size_bytes("20G").unwrap(), 20 * 1024 * 1024 * 1024);
         assert_eq!(parse_size_bytes(" 512M ").unwrap(), 512 * 1024 * 1024);
+        assert_eq!(parse_size_bytes("16383P").unwrap(), 16383 * 1024u64.pow(5));
+        assert!(parse_size_bytes("16384P").is_err());
+        assert!(parse_size_bytes("0G").is_err());
         assert!(parse_size_bytes("wide").is_err());
     }
 

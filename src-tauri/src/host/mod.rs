@@ -290,6 +290,61 @@ impl Host {
         self.machine.details().map_err(Self::vm_error)
     }
 
+    #[cfg(unix)]
+    pub(crate) fn machine_state(&self) -> (MachineState, GuestConnection) {
+        let status = self.status.read_lock();
+        (status.state, status.connection)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn ready_native_channels(&self) -> Result<PathBuf, AppError> {
+        let generation = self.generation.load(Ordering::SeqCst);
+        let connected = || {
+            self.machine_state() == (MachineState::Running, GuestConnection::Connected)
+                && !self.stopping.load(Ordering::Acquire)
+        };
+        let offline = || unavailable("Start the VM from Cabin before using the CLI");
+        if !connected() {
+            return Err(offline());
+        }
+        let runtime = self.machine.runtime().map_err(Self::vm_error)?;
+        let pid = runtime.pid().ok_or_else(offline)?;
+        let dir = vm_core::agentd::native_channel_dir(&runtime).map_err(Self::vm_error)?;
+        vm_core::agentd::verify_native_guest(&runtime).map_err(Self::vm_error)?;
+        if !connected()
+            || self.generation.load(Ordering::SeqCst) != generation
+            || runtime.pid() != Some(pid)
+        {
+            return Err(offline());
+        }
+        Ok(dir)
+    }
+
+    pub fn repair_native_channels(&self) -> Result<(), AppError> {
+        #[cfg(unix)]
+        {
+            let runtime = self.machine.runtime().map_err(Self::vm_error)?;
+            if !runtime.alive() {
+                return Err(unavailable(
+                    "Start the machine before repairing native CLI channels.",
+                ));
+            }
+            let dir = vm_core::agentd::native_channel_dir(&runtime).map_err(Self::vm_error)?;
+            let _project = crate::native_cli::lock_native_project(&dir).map_err(|error| {
+                unavailable(format!(
+                    "Could not reserve the CLI channels for repair: {error}"
+                ))
+            })?;
+            vm_core::agentd::prepare_native(&runtime, true).map_err(Self::vm_error)
+        }
+        #[cfg(not(unix))]
+        {
+            Err(unavailable(
+                "Native CLI channels are currently supported on macOS and Linux.",
+            ))
+        }
+    }
+
     pub fn save_resources(
         &self,
         request: vm_core::resources::ResourceRequest,
@@ -321,10 +376,12 @@ impl Host {
     pub fn storage(&self, identifier: &str) -> crate::storage::StorageReport {
         let blocked = if self.machine.storage_in_use() {
             Some("Stop the machine to clean up storage".into())
-        } else if self.sync.overlaps_host_path(self.machine.home()) {
-            Some("A synced Mac folder overlaps the app data directory".into())
         } else {
-            None
+            match self.sync.overlaps_host_path(self.machine.home()) {
+                Ok(false) => None,
+                Ok(true) => Some("A synced Mac folder overlaps the app data directory".into()),
+                Err(error) => Some(error),
+            }
         };
         crate::storage::StorageReport::read(&self.machine, identifier, blocked)
     }
@@ -334,7 +391,11 @@ impl Host {
         target: vm_core::storage::CleanupTarget,
     ) -> Result<vm_core::storage::CleanupResult, AppError> {
         self.busy("Cleaning storage", || {
-            if self.sync.overlaps_host_path(self.machine.home()) {
+            if self
+                .sync
+                .overlaps_host_path(self.machine.home())
+                .map_err(vm_core::Error::Message)?
+            {
                 return vm_core::message(
                     "A synced Mac folder overlaps the app data directory; its files were kept",
                 );

@@ -202,51 +202,19 @@ fn manual_proxy(url: &url::Url, servers: &str, bypass: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-#[cfg(not(windows))]
-fn system_proxy(_: &url::Url) -> Option<String> {
-    None
-}
-
 #[cfg(windows)]
-fn system_proxy(url: &url::Url) -> Option<String> {
-    // WinHTTP exposes the signed-in user's manual Windows proxy and bypass list.
-    #[repr(C)]
-    #[derive(Default)]
-    struct ProxyConfig {
-        auto_detect: i32,
-        auto_config: *mut u16,
-        proxy: *mut u16,
-        bypass: *mut u16,
-    }
-    #[link(name = "winhttp")]
-    unsafe extern "system" {
-        fn WinHttpGetIEProxyConfigForCurrentUser(config: *mut ProxyConfig) -> i32;
-    }
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn GlobalFree(memory: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-    }
+mod windows_proxy;
 
-    let take_string = |ptr: *mut u16| {
-        if ptr.is_null() {
-            return String::new();
-        }
-        // WinHTTP returns NUL-terminated UTF-16 strings owned by the caller.
-        unsafe {
-            let len = (0..).find(|&index| *ptr.add(index) == 0).unwrap();
-            let value = String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len));
-            GlobalFree(ptr.cast());
-            value
-        }
-    };
-    let mut config = ProxyConfig::default();
-    let success = unsafe { WinHttpGetIEProxyConfigForCurrentUser(&mut config) } != 0;
-    let proxy = take_string(config.proxy);
-    let bypass = take_string(config.bypass);
-    let _ = take_string(config.auto_config);
-    success
-        .then(|| manual_proxy(url, &proxy, &bypass))
-        .flatten()
+fn system_proxy(url: &url::Url, timeout: Duration) -> std::io::Result<Option<String>> {
+    #[cfg(windows)]
+    {
+        windows_proxy::resolve(url, timeout)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (url, timeout);
+        Ok(None)
+    }
 }
 
 pub(crate) struct HttpOptions {
@@ -268,6 +236,11 @@ pub(crate) fn request(
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
     let started = Instant::now();
     for hop in 0..=5 {
+        let remaining = || {
+            options
+                .timeout
+                .map(|timeout| timeout.saturating_sub(started.elapsed()))
+        };
         let var = |name: &str| std::env::var(name).ok();
         let bypass = var("no_proxy")
             .or_else(|| var("NO_PROXY"))
@@ -275,11 +248,15 @@ pub(crate) fn request(
         let proxy = if bypasses_proxy(&url, &bypass) {
             None
         } else {
-            env_proxy(&url, var).or_else(|| system_proxy(&url))
+            match env_proxy(&url, var) {
+                Some(proxy) => Some(proxy),
+                None => system_proxy(
+                    &url,
+                    remaining().unwrap_or(CONNECT_TIMEOUT).min(CONNECT_TIMEOUT),
+                )?,
+            }
         };
-        let remaining = options
-            .timeout
-            .map(|timeout| timeout.saturating_sub(started.elapsed()));
+        let remaining = remaining();
         let mut builder = ureq::AgentBuilder::new()
             .resolver(crate::ipv4::resolve)
             .redirects(0)
@@ -334,7 +311,9 @@ pub(crate) fn request(
 
 pub(crate) fn http_error(error: &ureq::Error) -> String {
     let detail = error.to_string();
-    if detail.contains("tls connection") {
+    if detail.contains("Windows system proxy") {
+        detail
+    } else if detail.contains("tls connection") {
         format!(
             "TLS verification or handshake failed. Check this computer's date and time and whether its proxy certificate is trusted: {detail}"
         )

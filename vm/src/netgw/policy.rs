@@ -53,9 +53,11 @@ impl EgressMode {
         match self {
             Self::Open => true,
             Self::Install => tcp_packet(packet)
-                .is_some_and(|(ip, tcp)| matches!(remote_endpoint(ip, tcp, to_guest).1, 80 | 443)),
+                .and_then(|(ip, tcp)| remote_endpoint(ip, tcp, to_guest))
+                .is_some_and(|(_, port)| matches!(port, 80 | 443)),
             Self::Checking | Self::Rechecking => tcp_packet(packet)
-                .is_some_and(|(ip, tcp)| verification_endpoint(remote_endpoint(ip, tcp, to_guest))),
+                .and_then(|(ip, tcp)| remote_endpoint(ip, tcp, to_guest))
+                .is_some_and(verification_endpoint),
             Self::Closed | Self::Suspended => false,
         }
     }
@@ -109,17 +111,16 @@ pub(super) fn tcp_packet(packet: &[u8]) -> Option<(&[u8], &[u8])> {
     Some(packet.split_at(header))
 }
 
-fn remote_endpoint(ip: &[u8], tcp: &[u8], to_guest: bool) -> (Ipv4Addr, u16) {
+fn remote_endpoint(ip: &[u8], tcp: &[u8], to_guest: bool) -> Option<(Ipv4Addr, u16)> {
     let (addr, port) = if to_guest { (12, 0) } else { (16, 2) };
-    (
-        Ipv4Addr::from(<[u8; 4]>::try_from(&ip[addr..addr + 4]).unwrap()),
-        u16::from_be_bytes([tcp[port], tcp[port + 1]]),
-    )
+    let address = *ip.get(addr..)?.first_chunk::<4>()?;
+    let port = *tcp.get(port..)?.first_chunk::<2>()?;
+    Some((Ipv4Addr::from(address), u16::from_be_bytes(port)))
 }
 
 pub(super) fn outbound_probe_tcp(packet: &[u8]) -> Option<((Ipv4Addr, u16), &[u8])> {
     let (ip, tcp) = tcp_packet(packet)?;
-    let remote = remote_endpoint(ip, tcp, false);
+    let remote = remote_endpoint(ip, tcp, false)?;
     if ip[12..16] != GUEST_IP.octets() || !verification_endpoint(remote) {
         return None;
     }

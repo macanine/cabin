@@ -1,5 +1,7 @@
 //! Window subscription, guest forwarding and VM lifecycle commands.
 
+use std::path::Path;
+
 use agent_core::model::{
     AppEvent, BrowserEnvironmentView, BrowserSettings, HostSnapshot, InstallPlan, InstallStep,
     MachineInstallOptions, MachineStatus, MirrorResult, SyncPreview, SyncProjectInput, SyncView,
@@ -227,23 +229,51 @@ pub(crate) async fn preview_close(host: State<'_, Shared>, port: u16) -> Result<
 /// Read a small text file the user picked with the Mac file dialog.
 #[tauri::command]
 pub(crate) async fn read_text_file(path: String) -> Result<String, AppError> {
-    let meta = std::fs::metadata(&path).map_err(|error| AppError {
+    tauri::async_runtime::spawn_blocking(move || read_selected_text(Path::new(&path)))
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+}
+
+const MAX_ACCOUNT_FILE_BYTES: usize = 2 * 1024 * 1024;
+
+fn read_selected_text(path: &Path) -> Result<String, AppError> {
+    use std::io::Read;
+
+    let io_error = |error| AppError {
         code: "io".into(),
-        message: format!("Could not read {path}: {error}"),
+        message: format!("Could not read {}: {error}", path.display()),
         details: None,
-    })?;
-    if !meta.is_file() || meta.len() > 2 * 1024 * 1024 {
-        return Err(AppError {
-            code: "invalid".into(),
-            message: "Choose a text file smaller than 2 MB".into(),
-            details: None,
-        });
+    };
+    let invalid = || AppError {
+        code: "invalid".into(),
+        message: "Choose a text file up to 2 MB".into(),
+        details: None,
+    };
+    if !path.metadata().map_err(io_error)?.is_file() {
+        return Err(invalid());
     }
-    std::fs::read_to_string(&path).map_err(|error| AppError {
-        code: "io".into(),
-        message: format!("Could not read {path}: {error}"),
-        details: None,
-    })
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A regular file may have been replaced by a FIFO since the path check.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(io_error)?;
+    let meta = file.metadata().map_err(io_error)?;
+    if !meta.is_file() || meta.len() > MAX_ACCOUNT_FILE_BYTES as u64 {
+        return Err(invalid());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_ACCOUNT_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    if bytes.len() > MAX_ACCOUNT_FILE_BYTES {
+        return Err(invalid());
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| io_error(std::io::Error::new(std::io::ErrorKind::InvalidData, error)))
 }
 
 /// Write a credential export without replacing another file. The folder comes
@@ -253,9 +283,15 @@ pub(crate) async fn write_codex_export(
     directory: String,
     contents: String,
 ) -> Result<String, AppError> {
+    tauri::async_runtime::spawn_blocking(move || write_export(Path::new(&directory), &contents))
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+}
+
+fn write_export(directory: &Path, contents: &str) -> Result<String, AppError> {
     use std::io::Write;
 
-    if contents.len() > 2 * 1024 * 1024 {
+    if contents.len() > MAX_ACCOUNT_FILE_BYTES {
         return Err(AppError {
             code: "invalid".into(),
             message: "The credential export is too large".into(),
@@ -268,15 +304,26 @@ pub(crate) async fn write_codex_export(
         } else {
             format!("codex-account-{number}.json")
         };
-        let path = std::path::Path::new(&directory).join(name);
+        let path = directory.join(name);
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
         match options.open(&path) {
             Ok(mut file) => {
-                if let Err(error) = vm_core::util::chmod(&path, 0o600)
-                    .and_then(|()| file.write_all(contents.as_bytes()))
-                    .and_then(|()| file.sync_all())
-                {
+                let write = (|| {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+                    }
+                    file.write_all(contents.as_bytes())?;
+                    file.sync_all()
+                })();
+                if let Err(error) = write {
                     drop(file);
                     let _ = std::fs::remove_file(&path);
                     return Err(AppError {
@@ -305,8 +352,29 @@ pub(crate) async fn write_codex_export(
 }
 
 #[cfg(test)]
-mod export_tests {
-    use super::write_codex_export;
+mod file_tests {
+    use super::{MAX_ACCOUNT_FILE_BYTES, read_selected_text, write_codex_export};
+
+    #[test]
+    fn selected_text_requires_a_regular_file_with_bounded_utf8() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        assert_eq!(read_selected_text(dir.path()).unwrap_err().code, "invalid");
+
+        let path = dir.path().join("account.json");
+        std::fs::write(&path, vec![b'x'; MAX_ACCOUNT_FILE_BYTES])?;
+        assert_eq!(
+            read_selected_text(&path).unwrap().len(),
+            MAX_ACCOUNT_FILE_BYTES
+        );
+
+        let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+        file.set_len(MAX_ACCOUNT_FILE_BYTES as u64 + 1)?;
+        assert_eq!(read_selected_text(&path).unwrap_err().code, "invalid");
+
+        std::fs::write(&path, [0xff])?;
+        assert_eq!(read_selected_text(&path).unwrap_err().code, "io");
+        Ok(())
+    }
 
     #[test]
     fn exports_are_private_and_never_overwrite() {
@@ -377,7 +445,11 @@ fn sync_error(message: String) -> AppError {
 
 #[tauri::command]
 pub(crate) async fn sync_list(host: State<'_, Shared>) -> Result<Vec<SyncView>, AppError> {
-    blocking(&host, |host| Ok(host.sync.list())).await
+    blocking(&host, |host| {
+        host.sync.require_registry().map_err(sync_error)?;
+        Ok(host.sync.list())
+    })
+    .await
 }
 
 /// What a Mac folder would sync under `rules` (top level, with counts).

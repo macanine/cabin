@@ -37,7 +37,7 @@ impl GlobalNetwork {
         runtime.grant.invalidate(reason);
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     pub fn system_sleep_changed(&self, sleeping: bool) {
         let mut runtime = self.runtime();
         runtime.sleeping = sleeping;
@@ -53,9 +53,9 @@ impl GlobalNetwork {
         runtime.verified_exit = None;
         runtime.verified_samples.clear();
         let reason = if sleeping {
-            "The Mac is going to sleep"
+            "This computer is going to sleep"
         } else {
-            "The Mac woke up. A fresh network check is required."
+            "This computer woke up. A fresh network check is required."
         };
         runtime.grant.invalidate(reason);
         runtime.apply_policy();

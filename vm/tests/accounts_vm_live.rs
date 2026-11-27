@@ -11,7 +11,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use vm_core::{
     Config,
     vm::{Boot, Runtime},
@@ -53,6 +53,7 @@ struct Rpc {
     child: Child,
     input: ChildStdin,
     lines: mpsc::Receiver<String>,
+    reader: Option<std::thread::JoinHandle<()>>,
     next_id: u64,
 }
 impl Rpc {
@@ -62,13 +63,13 @@ impl Rpc {
             .args(&argv[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::inherit())
             .spawn()
             .unwrap();
         let input = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let (sender, lines) = mpsc::channel();
-        std::thread::spawn(move || {
+        let reader = std::thread::spawn(move || {
             for line in BufReader::new(stdout)
                 .lines()
                 .map_while(std::result::Result::ok)
@@ -78,19 +79,21 @@ impl Rpc {
                 }
             }
         });
+        let rpc = Self {
+            child,
+            input,
+            lines,
+            reader: Some(reader),
+            next_id: 1,
+        };
         let hello: Value = serde_json::from_str(
-            &lines
+            &rpc.lines
                 .recv_timeout(Duration::from_secs(30))
                 .expect("guest hello"),
         )
         .unwrap();
         assert!(hello["hello"]["build"].as_str().is_some());
-        Self {
-            child,
-            input,
-            lines,
-            next_id: 1,
-        }
+        rpc
     }
     fn call(&mut self, method: &str, params: Value) -> Value {
         let id = self.next_id;
@@ -102,10 +105,15 @@ impl Rpc {
         )
         .unwrap();
         self.input.flush().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(40);
         loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|wait| !wait.is_zero())
+                .expect("guest RPC deadline exceeded");
             let line = self
                 .lines
-                .recv_timeout(Duration::from_secs(40))
+                .recv_timeout(remaining)
                 .expect("guest RPC response");
             let response: Value = serde_json::from_str(&line).unwrap();
             if response["id"] != id {
@@ -124,6 +132,9 @@ impl Drop for Rpc {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 
@@ -217,6 +228,11 @@ fn account_import_export_and_limits_over_guest_ssh() {
         runtime.ssh_capture("cloud-init status --wait --long", Duration::from_secs(180));
     assert_eq!(code, 0, "cloud-init: {output}");
     vm_core::agentd::deploy(&runtime, &agentd).expect("deploy test agentd");
+    let channels = vm_core::agentd::native_channel_dir(&runtime).expect("QEMU native channels");
+    assert_eq!(channels, vm_core::vm::cli_dir(&cfg).canonicalize().unwrap());
+    assert!(vm_core::agentd::verify_native_guest(&runtime).is_err());
+    vm_core::agentd::prepare_native(&runtime, false).expect("start native channel workers");
+    vm_core::agentd::verify_native_guest(&runtime).expect("all native devices are open");
     let helper = support::build_guest_helper(&dir);
     let ssh = runtime.ssh_argv(false).unwrap();
     support::install_guest_helper(Command::new(&ssh[0]).args(&ssh[1..]), &helper);

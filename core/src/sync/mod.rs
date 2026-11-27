@@ -43,6 +43,17 @@ fn ignored_patterns() -> impl Iterator<Item = String> {
         ])
 }
 
+fn is_excluded(excluded: &[String], path: &str) -> bool {
+    excluded.iter().any(|excluded| {
+        let excluded = excluded.trim_matches('/');
+        !excluded.is_empty()
+            && (path == excluded
+                || path
+                    .strip_prefix(excluded)
+                    .is_some_and(|rest| rest.starts_with('/')))
+    })
+}
+
 /// What flows where.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[cfg_attr(test, derive(TS))]
@@ -131,10 +142,41 @@ pub struct ScanRequest {
 }
 
 /// Request for the guest's `sync pack`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum PackRequest {
+    Checked { checked: CheckedPackPaths },
+    Legacy(PackPaths),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PackRequest {
-    pub paths: Vec<String>,
+pub struct CheckedPackPaths {
+    paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    absent: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackPaths {
+    paths: Vec<String>,
+}
+
+impl PackRequest {
+    pub fn new(paths: Vec<String>, checked: bool) -> Self {
+        if checked {
+            Self::checked(paths, Vec::new())
+        } else {
+            Self::Legacy(PackPaths { paths })
+        }
+    }
+
+    pub fn checked(paths: Vec<String>, absent: Vec<String>) -> Self {
+        Self::Checked {
+            checked: CheckedPackPaths { paths, absent },
+        }
+    }
 }
 
 /// `~/x`, `~\x`, `$HOME/x`, `%USERPROFILE%\x` → absolute, for paths stored with the user's home.
@@ -185,11 +227,42 @@ pub fn join_wire_path(root: &Path, rel: &str) -> PathBuf {
 /// A relative path from the wire is safe: no `..`, not absolute, not empty.
 pub fn safe_relative(path: &str) -> Option<&Path> {
     let rel = Path::new(path);
-    (!path.is_empty()
-        && rel
-            .components()
-            .all(|part| matches!(part, std::path::Component::Normal(_))))
+    (!path.contains('\0')
+        && path.split('/').all(|segment| {
+            let mut parts = Path::new(segment).components();
+            matches!(parts.next(), Some(std::path::Component::Normal(_)))
+                && parts.next().is_none()
+                && (!cfg!(windows) || !segment.contains(['\\', ':']))
+        }))
     .then_some(rel)
+}
+
+/// Reject paths that would traverse a symlinked directory inside the chosen root.
+fn check_parents(root: &Path, rel: &Path) -> std::io::Result<()> {
+    let mut current = root.to_path_buf();
+    let mut parts = rel.components().peekable();
+    while let Some(part) = parts.next().filter(|_| parts.peek().is_some()) {
+        current.push(part);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(std::io::Error::other(format!(
+                    "{} is a symlink",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                break;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 /// The guest's half: `cabind sync <scan|pack|apply|watch> <root>`, with
@@ -218,7 +291,13 @@ pub fn run_command(args: &[String]) -> Result<(), String> {
         "pack" => {
             let request: PackRequest = read_json(&mut stdin.lock())?;
             let mut out = BufWriter::with_capacity(1 << 20, stdout.lock());
-            archive::pack(&root, &request.paths, &mut out).map_err(|e| e.to_string())?;
+            match request {
+                PackRequest::Checked { checked } => {
+                    archive::pack_checked(&root, &checked.paths, &checked.absent, &mut out)
+                }
+                PackRequest::Legacy(pack) => archive::pack(&root, &pack.paths, &mut out),
+            }
+            .map_err(|e| e.to_string())?;
             out.flush().map_err(|e| e.to_string())
         }
         "apply" => {
@@ -251,7 +330,7 @@ fn write_json<T: Serialize>(out: &mut impl Write, value: &T) -> Result<(), Strin
 /// sync under each item, and why an item is left out.
 pub fn preview(root: &Path, rules: &SyncRules) -> std::io::Result<crate::model::SyncPreview> {
     use crate::model::{SyncPreview, SyncPreviewItem};
-    let entries = scan(root, rules, None)?;
+    let entries = scan::scan_metadata(root, rules, None)?;
     let mut items = Vec::new();
     let mut names: Vec<(String, bool)> = std::fs::read_dir(root)?
         .filter_map(|entry| entry.ok())

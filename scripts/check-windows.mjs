@@ -4,7 +4,7 @@
 // CI's job. The check must be warning-free: Windows warnings are where
 // platform drift starts.
 //
-//   npm run check:win            vm (lib + tests) and src-tauri (lib)
+//   npm run check:win            vm and src-tauri libraries and tests
 //   npm run check:win -- vm      one crate
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -24,7 +24,7 @@ if (spawnSync("cargo", ["zigbuild", "--help"], { env, stdio: "ignore" }).status 
 run("rustup", ["target", "add", target]);
 
 const crates = process.argv.slice(2).length ? process.argv.slice(2) : ["vm", "src-tauri"];
-const checks = { vm: ["--lib", "--tests"], "src-tauri": ["--lib"] };
+const checks = { vm: ["--lib", "--tests"], "src-tauri": ["--lib", "--tests"] };
 const appEnv = {};
 if (crates.includes("src-tauri")) {
   const vendor = path.join(root, "build/vendor/windows-x64/manifest.json");

@@ -39,14 +39,14 @@ impl ExitBaseline {
     }
 }
 
-fn baseline_key(route: &NetworkRoute) -> String {
+fn baseline_key(route: &NetworkRoute) -> Result<String, AppError> {
     let exit = route.enabled.then(|| route.chain.last()).flatten();
-    let material =
-        serde_json::to_string(&(exit, route.exit_policy)).expect("exit identity serializes");
-    format!(
+    let material = serde_json::to_string(&(exit, route.exit_policy))
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(format!(
         "network_exit_baseline_{}",
         agent_core::util::sha256_text(&material)
-    )
+    ))
 }
 
 impl GlobalNetwork {
@@ -54,7 +54,8 @@ impl GlobalNetwork {
         &self,
         route: &NetworkRoute,
     ) -> Result<Option<ExitBaseline>, AppError> {
-        self.with_store(|store| store.setting(&baseline_key(route)))
+        let key = baseline_key(route)?;
+        self.with_store(|store| store.setting(&key))
     }
 
     pub(super) fn save_exit_baseline(
@@ -62,7 +63,8 @@ impl GlobalNetwork {
         route: &NetworkRoute,
         baseline: &ExitBaseline,
     ) -> Result<(), AppError> {
-        self.with_store(|store| store.set_setting(&baseline_key(route), baseline))
+        let key = baseline_key(route)?;
+        self.with_store(|store| store.set_setting(&key, baseline))
     }
 
     pub(super) fn block_exit(&self, runtime: &mut Runtime, reason: String) {
@@ -207,6 +209,45 @@ mod tests {
             source: "fixture".into(),
             checked_at: 0,
         })
+    }
+
+    #[test]
+    fn a_baseline_error_leaves_a_full_check_closed_and_retryable() -> Result<(), AppError> {
+        let route = NetworkRoute::default();
+        let (_dir, network) = network(&route);
+        let revision = route_revision(&route);
+        let key = baseline_key(&route)?;
+        network.with_store(|store| store.set_setting(&key, &"unreadable baseline"))?;
+        let baseline = ExitBaseline::Static(OLD);
+        let attempt = network.begin_check(revision.clone(), false).unwrap();
+        assert!(
+            network
+                .finish_check(
+                    &attempt,
+                    passing_report(&revision),
+                    Some(OLD),
+                    &[],
+                    None,
+                    Some(&baseline),
+                )
+                .is_err()
+        );
+        let status = network.status(true)?;
+        assert_eq!(status.gate, NetworkGateMode::Closed);
+        assert!(status.next_retry_at.is_some());
+
+        network.with_store(|store| store.remove_setting(&key))?;
+        let retry = network.begin_check(revision.clone(), false).unwrap();
+        assert!(network.finish_check(
+            &retry,
+            passing_report(&revision),
+            Some(OLD),
+            &[],
+            None,
+            Some(&baseline),
+        )?);
+        assert_eq!(network.exit_baseline(&route)?, Some(baseline));
+        Ok(())
     }
 
     #[test]

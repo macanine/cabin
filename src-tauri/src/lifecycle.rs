@@ -8,7 +8,7 @@
 //! - A lock file in the data folder makes a second process (another build, a
 //!   copy with the same home) refuse to start instead of fighting over the VM.
 
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -36,8 +36,11 @@ pub fn acquire_owner_lock(dir: &Path) -> Result<OwnerLock, String> {
         .write(true)
         .open(dir.join("app.lock"))
         .map_err(|error| error.to_string())?;
-    file.try_lock().map_err(|_| {
-        "Another Cabin already owns this machine. Only one app can run it at a time.".to_string()
+    file.try_lock().map_err(|error| match error {
+        TryLockError::WouldBlock => {
+            "Another Cabin already owns this machine. Only one app can run it at a time.".into()
+        }
+        TryLockError::Error(error) => format!("Could not lock the Cabin data folder: {error}"),
     })?;
     Ok(OwnerLock(file))
 }
@@ -105,9 +108,16 @@ pub fn install_tray(app: &AppHandle) -> tauri::Result<()> {
             "quit" => request_quit(app),
             "toggle" => {
                 let host = app.state::<Shared>().inner().clone();
-                std::thread::spawn(move || {
-                    let running = host.snapshot().machine.state == MachineState::Running;
-                    let _ = if running { host.stop() } else { host.start() };
+                tauri::async_runtime::spawn_blocking(move || {
+                    let running = host.machine_status().state == MachineState::Running;
+                    if let Err(error) = if running { host.stop() } else { host.start() } {
+                        cabin_diagnostics::event(
+                            cabin_diagnostics::Level::Warn,
+                            "lifecycle",
+                            "tray_machine_toggle_failed",
+                            format_args!("{}", error.message),
+                        );
+                    }
                 });
             }
             _ => {}
@@ -122,26 +132,41 @@ pub fn install_tray(app: &AppHandle) -> tauri::Result<()> {
                 show_main(tray.app_handle());
             }
         });
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .icon(tauri::include_image!("icons/tray.png"))
+            .icon_as_template(true);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(icon) = app.default_window_icon() {
+            builder = builder.icon(icon.clone());
+        }
     }
     builder.build(app)?;
 
-    let host = app.state::<Shared>().inner().clone();
-    std::thread::spawn(move || {
-        loop {
-            let machine = host.snapshot().machine;
-            let busy = machine.busy.is_some();
-            let _ = status.set_text(label(machine.state, busy));
-            let _ = toggle.set_enabled(!busy && machine.state != MachineState::NotInstalled);
-            let _ = toggle.set_text(if machine.state == MachineState::Running {
-                "Stop machine"
-            } else {
-                "Start machine"
-            });
-            std::thread::sleep(Duration::from_secs(2));
-        }
-    });
+    let host = std::sync::Arc::downgrade(app.state::<Shared>().inner());
+    std::thread::Builder::new()
+        .name("machine-tray".into())
+        .spawn(move || {
+            while let Some(host) = host.upgrade() {
+                if is_quitting() {
+                    break;
+                }
+                let machine = host.machine_status();
+                drop(host);
+                let busy = machine.busy.is_some();
+                let _ = status.set_text(label(machine.state, busy));
+                let _ = toggle.set_enabled(!busy && machine.state != MachineState::NotInstalled);
+                let _ = toggle.set_text(if machine.state == MachineState::Running {
+                    "Stop machine"
+                } else {
+                    "Start machine"
+                });
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        })?;
     Ok(())
 }
 
@@ -165,5 +190,22 @@ pub(crate) async fn app_quit(
 pub(crate) fn app_background(app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::acquire_owner_lock;
+
+    #[test]
+    fn owner_lock_rejects_a_second_handle_until_the_first_is_released() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let owner = acquire_owner_lock(dir.path())?;
+        assert!(
+            matches!(acquire_owner_lock(dir.path()), Err(message) if message.contains("already owns"))
+        );
+        drop(owner);
+        assert!(acquire_owner_lock(dir.path()).is_ok());
+        Ok(())
     }
 }

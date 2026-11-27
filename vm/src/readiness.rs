@@ -671,8 +671,15 @@ fn diagnostic_tail(path: &Path, max_bytes: u64) -> String {
 /// Redact home roots and account names in every string, including nested log
 /// entries. Do this before encoding JSON so escaped Windows paths are covered.
 pub fn redact_diagnostics(value: &mut serde_json::Value, roots: &[&Path], users: &[&str]) {
-    use regex::Regex;
+    redact_with(value, roots, users, regex::Regex::new);
+}
 
+fn redact_with(
+    value: &mut serde_json::Value,
+    roots: &[&Path],
+    users: &[&str],
+    compile: impl Fn(&str) -> std::result::Result<regex::Regex, regex::Error>,
+) {
     let mut roots: Vec<_> = roots
         .iter()
         .filter(|root| root.parent().is_some())
@@ -687,22 +694,43 @@ pub fn redact_diagnostics(value: &mut serde_json::Value, roots: &[&Path], users:
         .collect();
     roots.sort_unstable_by_key(|root| std::cmp::Reverse(root.len()));
     roots.dedup();
-    let paths: Vec<_> = roots
+    let paths = roots
         .iter()
-        .filter_map(|root| Regex::new(&format!("(?i){}", regex::escape(root))).ok())
-        .collect();
-    let users: Vec<_> = users
+        .map(|root| compile(&format!("(?i){}", regex::escape(root))).map(|re| (re, "<home>")));
+    let defaults = [
+        (
+            r#"(?i)(?:[a-z]:[/\\]+Users[/\\]+|/(?:Users|home)/)[^/\\\r\n"'`<>]+"#,
+            "<home>",
+        ),
+        (
+            r"(?i)\b[\w.-]+@((?:\d{1,3}\.){3}\d{1,3}|localhost)\b",
+            "<user>@${1}",
+        ),
+        (
+            r#"(?i)(\b(?:username|user)\s*[=:]\s*["']?|\b(?:creating|adding|created) user\s+["']?)[\w.-]+"#,
+            "${1}<user>",
+        ),
+        (
+            r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s@]+@",
+            "${1}<credentials>@",
+        ),
+    ]
+    .into_iter()
+    .map(|(pattern, replacement)| compile(pattern).map(|re| (re, replacement)));
+    let users = users
         .iter()
         .flat_map(|name| [*name, name.rsplit('\\').next().unwrap_or(name)])
         .flat_map(|name| [name, name.split('@').next().unwrap_or(name)])
         .filter(|name| !name.trim().is_empty())
-        .filter_map(|name| Regex::new(&format!(r"(?i)\b{}\b", regex::escape(name))).ok())
-        .collect();
-    let home =
-        Regex::new(r#"(?i)(?:[a-z]:[/\\]+Users[/\\]+|/(?:Users|home)/)[^/\\\r\n"'`<>]+"#).unwrap();
-    let ssh_user = Regex::new(r"(?i)\b[\w.-]+@((?:\d{1,3}\.){3}\d{1,3}|localhost)\b").unwrap();
-    let user_field = Regex::new(r#"(?i)(\b(?:username|user)\s*[=:]\s*["']?|\b(?:creating|adding|created) user\s+["']?)[\w.-]+"#).unwrap();
-    let url_credentials = Regex::new(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s@]+@").unwrap();
+        .map(|name| compile(&format!(r"(?i)\b{}\b", regex::escape(name))).map(|re| (re, "<user>")));
+    let Ok(redactors) = paths
+        .chain(defaults)
+        .chain(users)
+        .collect::<std::result::Result<Vec<_>, _>>()
+    else {
+        *value = serde_json::json!({ "error": "Diagnostics withheld because redaction failed" });
+        return;
+    };
     fn walk(value: &mut serde_json::Value, redact: &impl Fn(&str) -> String) {
         use serde_json::Value;
         match value {
@@ -714,17 +742,8 @@ pub fn redact_diagnostics(value: &mut serde_json::Value, roots: &[&Path], users:
     }
     walk(value, &|text| {
         let mut text = text.to_owned();
-        for path in &paths {
-            text = path.replace_all(&text, "<home>").into_owned();
-        }
-        text = home.replace_all(&text, "<home>").into_owned();
-        text = ssh_user.replace_all(&text, "<user>@${1}").into_owned();
-        text = user_field.replace_all(&text, "${1}<user>").into_owned();
-        text = url_credentials
-            .replace_all(&text, "${1}<credentials>@")
-            .into_owned();
-        for user in &users {
-            text = user.replace_all(&text, "<user>").into_owned();
+        for (pattern, replacement) in &redactors {
+            text = pattern.replace_all(&text, *replacement).into_owned();
         }
         text
     });
@@ -946,6 +965,26 @@ mod tests {
             assert!(!encoded.contains(private), "{private}: {encoded}");
         }
         assert!(encoded.contains("<home>") && encoded.contains("<user>@127.0.0.1: SSH timed out"));
+    }
+
+    #[test]
+    fn diagnostic_report_is_withheld_when_any_redactor_cannot_compile() {
+        use serde_json::json;
+        let report = json!({ "log": "/custom/home/private https://user:pass@example.test" });
+        for fail_custom_path in [false, true] {
+            let mut value = report.clone();
+            redact_with(&mut value, &[Path::new("/custom/home")], &[], |pattern| {
+                if pattern.contains("/custom/home") == fail_custom_path {
+                    regex::RegexBuilder::new(pattern).size_limit(0).build()
+                } else {
+                    regex::Regex::new(pattern)
+                }
+            });
+            assert_eq!(
+                value,
+                json!({ "error": "Diagnostics withheld because redaction failed" })
+            );
+        }
     }
 
     #[test]

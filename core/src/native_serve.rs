@@ -23,6 +23,19 @@ const DRAIN_QUIET: Duration = Duration::from_secs(1);
 const DRAIN_BYTES: usize = 4 * 1024 * 1024;
 const POLL: Duration = Duration::from_millis(50);
 
+/// Adaptive sleep while no host client is connected to the virtio port: stays
+/// responsive (2 ms) right after activity for back-to-back sync jobs, then
+/// ramps down to 50 ms to avoid burning guest CPU and host VM exits while idle.
+fn idle_backoff(elapsed: Duration) -> Duration {
+    if elapsed < Duration::from_secs(3) {
+        Duration::from_millis(2)
+    } else if elapsed < Duration::from_secs(10) {
+        Duration::from_millis(15)
+    } else {
+        Duration::from_millis(50)
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Lane {
     Exec,
@@ -45,9 +58,11 @@ pub fn serve(which: &str, device: &Path, paths: &AppPaths) -> io::Result<()> {
     let mut reader = OpenOptions::new().read(true).write(true).open(device)?;
     let writer = Mutex::new(reader.try_clone()?);
     let mut body = vec![];
+    let mut idle_since: Option<Instant> = None;
     loop {
         match read_frame(&mut reader, &mut body) {
             Ok(START) => {
+                idle_since = None;
                 let result = serde_json::from_slice::<Request>(&body)
                     .map_err(io::Error::other)
                     .and_then(|request| {
@@ -60,7 +75,9 @@ pub fn serve(which: &str, device: &Path, paths: &AppPaths) -> io::Result<()> {
                     let _ = send(&writer, FAILURE, error.to_string().as_bytes());
                 }
             }
-            Ok(_) => {} // A closing frame or residue from a disconnected client.
+            Ok(_) => {
+                idle_since = None; // A closing frame or residue from a disconnected client.
+            }
             Err(error)
                 if matches!(
                     error.kind(),
@@ -68,7 +85,8 @@ pub fn serve(which: &str, device: &Path, paths: &AppPaths) -> io::Result<()> {
                 ) =>
             {
                 // The virtio port returns EOF while QEMU has no host client.
-                std::thread::sleep(Duration::from_millis(2));
+                let since = idle_since.get_or_insert_with(Instant::now);
+                std::thread::sleep(idle_backoff(since.elapsed()));
             }
             Err(error) => return Err(error),
         }
@@ -95,6 +113,124 @@ fn agent_kind(name: &str) -> io::Result<crate::model::AgentKind> {
     }
 }
 
+/// Parse `export LANG='...'` and `export TZ='...'` from `environment.sh`
+/// without invoking a shell.
+fn read_guest_environment(paths: &AppPaths) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(paths.environment_script()) else {
+        return Vec::new();
+    };
+    parse_environment_script(&text)
+}
+
+fn parse_environment_script(text: &str) -> Vec<(String, String)> {
+    let mut vars = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.trim().strip_prefix("export ") else {
+            continue;
+        };
+        let Some((key, raw)) = rest.split_once('=') else {
+            continue;
+        };
+        if !matches!(key, "LANG" | "TZ") {
+            continue;
+        }
+        let unquoted = raw
+            .strip_prefix('\'')
+            .and_then(|s| s.strip_suffix('\''))
+            .map(|s| s.replace(r"'\''", "'"))
+            .unwrap_or_else(|| raw.to_string());
+        if !unquoted.is_empty() && !unquoted.bytes().any(|b| b == 0) {
+            vars.push((key.to_string(), unquoted));
+        }
+    }
+    vars
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_process(
+    binary: &Path,
+    argv: Vec<String>,
+    cwd: &Path,
+    path_env: &str,
+    extra_env: Vec<(String, String)>,
+    forwarded_env: Vec<(String, String)>,
+    tty: Option<Size>,
+    reader: &mut File,
+    writer: &Mutex<File>,
+) -> io::Result<()> {
+    let safe_forwarded: Vec<(String, String)> = forwarded_env
+        .into_iter()
+        .filter(|(k, v)| is_safe_forwarded_env(k, v))
+        .collect();
+    if let Some(size) = tty {
+        let pair = native_pty_system()
+            .openpty(pty_size(
+                size.cols,
+                size.rows,
+                size.pixel_width,
+                size.pixel_height,
+            ))
+            .map_err(io::Error::other)?;
+        let mut cmd = CommandBuilder::new(binary);
+        cmd.cwd(cwd);
+        cmd.args(argv);
+        cmd.env("PATH", path_env);
+        cmd.env("TERM", size.term);
+        if let Some(color) = size.color_term {
+            cmd.env("COLORTERM", color);
+        }
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
+        for (key, value) in safe_forwarded {
+            cmd.env(key, value);
+        }
+        // portable-pty's writer injects LF + VEOF from Drop. A plain
+        // duplicate closes without ever synthesizing input bytes.
+        let fd = pair
+            .master
+            .as_raw_fd()
+            .ok_or_else(|| io::Error::other("PTY master has no descriptor"))?;
+        let input = clone_master_fd(fd)?;
+        let output = clone_master_fd(fd)?;
+        let mut child = pair.slave.spawn_command(cmd).map_err(io::Error::other)?;
+        drop(pair.slave);
+        let pid = child.process_id();
+        pump(
+            reader,
+            writer,
+            input,
+            output,
+            None::<File>,
+            pid,
+            false,
+            move |cols, rows, width, height| {
+                let _ = pair.master.resize(pty_size(cols, rows, width, height));
+            },
+            || child.wait().map(|s| s.exit_code().min(255) as u8),
+        )
+    } else {
+        let mut cmd = Command::new(binary);
+        cmd.args(argv)
+            .current_dir(cwd)
+            .env("PATH", path_env)
+            .envs(extra_env)
+            .envs(safe_forwarded);
+        run_pipes(cmd, reader, writer, false)
+    }
+}
+
+fn require_guest_dir(cwd: &str) -> io::Result<std::path::PathBuf> {
+    let cwd = crate::sync::expand_home(cwd);
+    if !cwd.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("guest project directory does not exist: {}", cwd.display()),
+        ));
+    }
+    Ok(cwd)
+}
+
 fn run(
     job: Job,
     lane: Lane,
@@ -109,6 +245,7 @@ fn run(
                 argv,
                 cwd,
                 tty,
+                env,
             },
             Lane::Exec,
         ) => {
@@ -122,65 +259,66 @@ fn run(
                     ),
                 )
             })?;
-            let cwd = crate::sync::expand_home(&cwd);
-            if !cwd.is_dir() {
+            let cwd = require_guest_dir(&cwd)?;
+            let mut extra_env = read_guest_environment(paths);
+            extra_env.extend(crate::agents::adapter(kind).launch_env());
+            spawn_process(
+                &binary, argv, &cwd, &path, extra_env, env, tty, reader, writer,
+            )
+        }
+        (
+            Job::Shell {
+                argv,
+                cwd,
+                tty,
+                env,
+            },
+            Lane::Exec,
+        ) => {
+            let path = paths.child_path();
+            let shell = crate::sessions::login_shell();
+            let cwd = require_guest_dir(&cwd)?;
+            let mut extra_env = read_guest_environment(paths);
+            extra_env.push(("SHELL".into(), shell.display().to_string()));
+            let args = if argv.is_empty() {
+                vec!["-l".into()]
+            } else {
+                argv
+            };
+            spawn_process(
+                &shell, args, &cwd, &path, extra_env, env, tty, reader, writer,
+            )
+        }
+        (
+            Job::Exec {
+                program,
+                argv,
+                cwd,
+                tty,
+                env,
+            },
+            Lane::Exec,
+        ) => {
+            if program.is_empty() || program.bytes().any(|b| b == 0) {
                 return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("guest project directory does not exist: {}", cwd.display()),
+                    io::ErrorKind::InvalidInput,
+                    "command name must not be empty",
                 ));
             }
-            if let Some(size) = tty {
-                let pair = native_pty_system()
-                    .openpty(pty_size(
-                        size.cols,
-                        size.rows,
-                        size.pixel_width,
-                        size.pixel_height,
-                    ))
-                    .map_err(io::Error::other)?;
-                let mut cmd = CommandBuilder::new(binary);
-                cmd.cwd(&cwd);
-                cmd.args(argv);
-                cmd.env("PATH", &path);
-                cmd.env("TERM", size.term);
-                if let Some(color) = size.color_term {
-                    cmd.env("COLORTERM", color);
-                }
-                for (key, value) in crate::agents::adapter(kind).launch_env() {
-                    cmd.env(key, value);
-                }
-                // portable-pty's writer injects LF + VEOF from Drop. A plain
-                // duplicate closes without ever synthesizing input bytes.
-                let fd = pair
-                    .master
-                    .as_raw_fd()
-                    .ok_or_else(|| io::Error::other("PTY master has no descriptor"))?;
-                let input = clone_master_fd(fd)?;
-                let output = clone_master_fd(fd)?;
-                let mut child = pair.slave.spawn_command(cmd).map_err(io::Error::other)?;
-                drop(pair.slave);
-                let pid = child.process_id();
-                pump(
-                    reader,
-                    writer,
-                    input,
-                    output,
-                    None::<File>,
-                    pid,
-                    false,
-                    move |cols, rows, width, height| {
-                        let _ = pair.master.resize(pty_size(cols, rows, width, height));
-                    },
-                    || child.wait().map(|s| s.exit_code().min(255) as u8),
-                )
-            } else {
-                let mut cmd = Command::new(binary);
-                cmd.args(argv)
-                    .current_dir(cwd)
-                    .env("PATH", path)
-                    .envs(crate::agents::adapter(kind).launch_env());
-                run_pipes(cmd, reader, writer, false)
-            }
+            let path = paths.child_path();
+            let cwd = require_guest_dir(&cwd)?;
+            let extra_env = read_guest_environment(paths);
+            spawn_process(
+                Path::new(&program),
+                argv,
+                &cwd,
+                &path,
+                extra_env,
+                env,
+                tty,
+                reader,
+                writer,
+            )
         }
         (Job::Sync { operation, root }, lane)
             if matches!(
@@ -224,12 +362,19 @@ fn run_pipes(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    let (Some(stdin), Some(stdout), Some(stderr)) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take())
+    else {
+        kill_job(Some(child.id()), false);
+        let _ = child.wait();
+        return Err(io::Error::other("native command did not provide its pipes"));
+    };
     pump(
         reader,
         writer,
-        child.stdin.take().unwrap(),
-        child.stdout.take().unwrap(),
-        child.stderr.take(),
+        stdin,
+        stdout,
+        Some(stderr),
         Some(child.id()),
         watch,
         |_, _, _, _| {},
@@ -297,10 +442,58 @@ fn output(
     }
 }
 
-fn kill_job(pid: Option<u32>) {
+fn kill_job(pid: Option<u32>, graceful: bool) {
     if let Some(pid) = pid {
+        let pgid = -(pid as libc::pid_t);
+        if graceful {
+            // Give interactive TUIs and shells a brief window to flush state
+            // before forcing the lane clear.
+            unsafe {
+                libc::kill(pgid, libc::SIGHUP);
+                libc::kill(pgid, libc::SIGTERM);
+            }
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while Instant::now() < deadline {
+                if unsafe { libc::kill(pgid, 0) } != 0 {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         // Both kinds of child have their own process group.
-        unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+        unsafe { libc::kill(pgid, libc::SIGKILL) };
+    }
+}
+
+fn observe_job_exit(pid: u32, tty: bool) -> io::Result<u8> {
+    // Keep the leader's PID reserved until the input worker finishes any
+    // process-group cancellation it has started.
+    let mut info = std::mem::MaybeUninit::uninit();
+    loop {
+        if unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid,
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        } == 0
+        {
+            // SAFETY: waitid returned a child status with WEXITED and no WNOHANG.
+            let info = unsafe { info.assume_init() };
+            let status = unsafe { info.si_status() };
+            return Ok(if info.si_code == libc::CLD_EXITED {
+                status as u8
+            } else if tty {
+                1 // Keep portable-pty's status for a guest-side signal.
+            } else {
+                (128 + status) as u8
+            });
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
     }
 }
 
@@ -323,6 +516,7 @@ fn pump(
         let inbound = scope.spawn(move || {
             let mut input = Some(input);
             let mut body = vec![];
+            let mut group = pid;
             loop {
                 match read_frame(reader, &mut body) {
                     Ok(INPUT) => {
@@ -335,7 +529,7 @@ fn pump(
                     Ok(EOF) if !tty => {
                         input = None;
                         if watch && !finished.load(Ordering::Acquire) {
-                            kill_job(pid);
+                            kill_job(group.take(), false);
                         }
                     }
                     Ok(RESIZE) if tty && matches!(body.len(), 4 | 8) => {
@@ -348,19 +542,27 @@ fn pump(
                                 .map_or(0, |v| u16::from_be_bytes([v[0], v[1]])),
                         );
                     }
+                    Ok(CANCEL) if body.is_empty() => {
+                        kill_job(group.take(), tty);
+                        return;
+                    }
                     Ok(_) => break,
                     Err(_) => break,
                 }
             }
             if !finished.load(Ordering::Acquire) {
-                kill_job(pid);
+                kill_job(group.take(), tty);
             }
         });
         let ready = send(writer, READY, &[]);
         let out =
             scope.spawn(|| output(stdout, writer, OUT, if tty { 8192 } else { MAX }, finished));
         let err = stderr.map(|s| scope.spawn(move || output(s, writer, ERR, 8192, finished)));
-        let status = wait();
+        let (status, reap) = if let Some(pid) = pid {
+            (observe_job_exit(pid, tty), Some(wait))
+        } else {
+            (wait(), None)
+        };
         finished.store(true, Ordering::Release);
         let sent = (|| {
             out.join()
@@ -372,10 +574,13 @@ fn pump(
             ready?;
             send(writer, EXIT, &[status?])
         })();
-        // The host acknowledges the exit or closes the port. Do not read the next
-        // start until the previous reader has relinquished the device.
-        let _ = inbound.join();
+        // A CANCEL can still arrive after EXIT. The reader owns process-group
+        // signaling, so wait for it to finish before reaping the group leader.
+        let inbound = inbound.join();
+        let reaped = reap.map(|wait| wait()).transpose();
         sent?;
+        inbound.map_err(|_| io::Error::other("native input worker stopped"))?;
+        reaped?;
         send(writer, CLOSED, &[])
     })
 }
@@ -491,6 +696,78 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_acknowledges_after_interactive_group_cleanup() {
+        let (mut host, worker) = interactive_job(
+            r#"
+                trap 'exit 0' HUP TERM
+                sh -c 'trap "" HUP; trap "sleep 0.05; printf flushed; exit 0" TERM; printf ready; while :; do :; done' &
+                wait
+            "#,
+            None,
+        );
+        started(&mut host, b"ready");
+        frame(&mut host, CANCEL, &[]).unwrap();
+        assert_eq!(until_exit(&mut host).0, b"flushed");
+        assert_eq!(read_frame(&mut host, &mut vec![]).unwrap(), CLOSED);
+        worker.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn cancellation_after_exit_still_waits_for_interactive_group_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, worker) = interactive_job(
+            r#"
+                sh -c 'trap "" HUP; trap "printf flushed > flushed; exit 0" TERM; touch ready; while :; do :; done' >/dev/null &
+                while [ ! -e ready ]; do sleep 0.01; done
+                exit 0
+            "#,
+            Some(dir.path().to_path_buf()),
+        );
+        assert_eq!(until_exit(&mut host).1, 0);
+        frame(&mut host, CANCEL, &[]).unwrap();
+        assert_eq!(read_frame(&mut host, &mut vec![]).unwrap(), CLOSED);
+        assert_eq!(
+            std::fs::read(dir.path().join("flushed")).unwrap(),
+            b"flushed"
+        );
+        worker.join().unwrap().unwrap();
+    }
+
+    fn interactive_job(
+        script: &'static str,
+        cwd: Option<std::path::PathBuf>,
+    ) -> (UnixStream, std::thread::JoinHandle<io::Result<()>>) {
+        let (host, guest) = UnixStream::pair().unwrap();
+        host.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut reader = File::from(OwnedFd::from(guest));
+            let writer = Mutex::new(reader.try_clone().unwrap());
+            let mut shell = Command::new("sh");
+            if let Some(cwd) = cwd {
+                shell.current_dir(cwd);
+            }
+            let mut child = shell
+                .args(["-c", script])
+                .process_group(0)
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            pump(
+                &mut reader,
+                &writer,
+                io::sink(),
+                child.stdout.take().unwrap(),
+                None::<File>,
+                Some(child.id()),
+                false,
+                |_, _, _, _| {},
+                || child.wait().map(|status| status.code().unwrap_or(1) as u8),
+            )
+        });
+        (host, worker)
+    }
+
+    #[test]
     fn a_resize_during_the_exit_is_harmless() {
         let (mut host, guest) = UnixStream::pair().unwrap();
         host.set_read_timeout(Some(Duration::from_secs(20)))
@@ -532,5 +809,112 @@ mod tests {
             (100, 30, 800, 480)
         );
         worker.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn idle_backoff_ramps_down_after_quiet_periods() {
+        assert_eq!(
+            idle_backoff(Duration::from_millis(0)),
+            Duration::from_millis(2)
+        );
+        assert_eq!(
+            idle_backoff(Duration::from_secs(2)),
+            Duration::from_millis(2)
+        );
+        assert_eq!(
+            idle_backoff(Duration::from_secs(5)),
+            Duration::from_millis(15)
+        );
+        assert_eq!(
+            idle_backoff(Duration::from_secs(15)),
+            Duration::from_millis(50)
+        );
+    }
+
+    #[test]
+    fn parses_lang_and_tz_from_environment_script() {
+        let script = "# Generated by cabin.\nexport LANG='en_US.UTF-8'\nexport TZ='America/New_York'\nexport PATH='/evil'\nunset HTTP_PROXY\n";
+        assert_eq!(
+            parse_environment_script(script),
+            vec![
+                ("LANG".to_string(), "en_US.UTF-8".to_string()),
+                ("TZ".to_string(), "America/New_York".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn exec_job_runs_command_and_filters_unsafe_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(dir.path().join("data"), dir.path().join("home"));
+        let (mut host, guest) = UnixStream::pair().unwrap();
+        host.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let worker = std::thread::spawn(move || {
+            let mut reader = File::from(OwnedFd::from(guest));
+            let writer = Mutex::new(reader.try_clone().unwrap());
+            run(
+                Job::Exec {
+                    program: "sh".into(),
+                    argv: vec![
+                        "-c".into(),
+                        "printf '%s|%s' \"$TERM_PROGRAM\" \"$LD_PRELOAD\"".into(),
+                    ],
+                    cwd,
+                    tty: None,
+                    env: vec![
+                        ("TERM_PROGRAM".into(), "Ghostty".into()),
+                        ("LD_PRELOAD".into(), "/tmp/evil.so".into()),
+                    ],
+                },
+                Lane::Exec,
+                &paths,
+                &mut reader,
+                &writer,
+            )
+        });
+        let (out, code) = until_exit(&mut host);
+        frame(&mut host, CLOSE, &[]).unwrap();
+        assert_eq!(read_frame(&mut host, &mut vec![]).unwrap(), CLOSED);
+        worker.join().unwrap().unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(out, b"Ghostty|");
+    }
+
+    #[test]
+    fn shell_job_executes_with_explicit_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(dir.path().join("data"), dir.path().join("home"));
+        let (mut host, guest) = UnixStream::pair().unwrap();
+        host.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let worker = std::thread::spawn(move || {
+            let mut reader = File::from(OwnedFd::from(guest));
+            let writer = Mutex::new(reader.try_clone().unwrap());
+            run(
+                Job::Shell {
+                    argv: vec!["-c".into(), "pwd".into()],
+                    cwd,
+                    tty: None,
+                    env: vec![],
+                },
+                Lane::Exec,
+                &paths,
+                &mut reader,
+                &writer,
+            )
+        });
+        let (out, code) = until_exit(&mut host);
+        frame(&mut host, CLOSE, &[]).unwrap();
+        assert_eq!(read_frame(&mut host, &mut vec![]).unwrap(), CLOSED);
+        worker.join().unwrap().unwrap();
+        assert_eq!(code, 0);
+        let actual = String::from_utf8(out).unwrap();
+        assert_eq!(
+            Path::new(actual.trim()).canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
     }
 }

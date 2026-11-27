@@ -18,16 +18,16 @@ export type DeviceDetails = { preset: string | null, cpu: string | null, storage
 export type ResourceRequest = { cpus: number, memoryMb: number, diskGib: number | null, };
 export type MachineDetails = { osName: string, accelerator: string, qemuRelease: string | null, imageUrl: string | null, imageChecksum: string | null, aptMirror: string | null, diskPath: string, diskAllocatedBytes: number | null, pendingResources: ResourceRequest | null, diskGrowthNotice: string | null, instancePath: string, logsPath: string, networkMode: string, sshEndpoint: string | null, mac: string, timezone: string, locale: string, desktop: string | null, displayMode: string, resolution: string, scale: number, gpu: string, audio: string, spice: boolean, pid: number | null, startedAt: number | null, device: DeviceDetails | null, };
 export type Fix = { "kind": "enableWhpx" } | { "kind": "restartHost" } | { "kind": "reinstallApp" } | { "kind": "openUrl", url: string, };
-export type Readiness = { id: string, label: string, ok: boolean, 
+export type Readiness = { id: string, label: string, ok: boolean,
 /**
  * A warning: the install can proceed.
  */
 optional: boolean, detail: string, fix: Fix | null, };
-export type HostFacts = { memoryMb: number, cpus: number, 
+export type HostFacts = { memoryMb: number, cpus: number,
 /**
  * The host account name, as the OS reports it (not yet sanitized).
  */
-username: string | null, deviceProfileSupported: boolean, 
+username: string | null, deviceProfileSupported: boolean,
 /**
  * macos | windows | linux
  */
@@ -43,19 +43,32 @@ export type StorageReport = { entries: Array<StorageEntry>, totalBytes: number, 
 export type FolderAccessState = "available" | "readDenied" | "writeDenied" | "missing" | "unavailable";
 export type FolderAccess = { state: FolderAccessState, message: string | null, privacySettings: boolean, };
 export type MacProjectAccess = { id: string, name: string, path: string, needsWrite: boolean, access: FolderAccess, };
-export type SystemRoute = { 
+export type HostCliConfig = { enabled: boolean, autoBindPrompt: boolean, forwardTerminalEnv: boolean, allowShell: boolean, launcherDir: string | null, };
+export type LauncherState = "installed" | "notInstalled" | "conflict" | "outdated" | "unsupported";
+export type NativeChannelState = "ready" | "needsRestart" | "vmStopped" | "disabled" | "unsupported";
+export type HostCliBinding = { id: string, name: string, hostPath: string, guestPath: string,
+/**
+ * `"safe" | "twoWay" | "mirror"`
+ */
+mode: string, paused: boolean, activeSession: boolean, conflicts: number,
+/**
+ * `"offline" | "scanning" | "syncing" | "watching" | "paused" | "error"`
+ */
+state: string, };
+export type HostCliStatus = { supported: boolean, config: HostCliConfig, brokerRunning: boolean, launcherState: LauncherState, launcherPath: string, launcherDir: string, launcherDetail: string | null, inPath: boolean, shellName: string, pathSnippet: string, channelState: NativeChannelState, activeProjectId: string | null, bindings: Array<HostCliBinding>, };
+export type SystemRoute = {
 /**
  * The interface a public destination leaves through (e.g. `utun1024`).
  */
-internetInterface: string | null, 
+internetInterface: string | null,
 /**
  * The interface of the `default` route (the physical adapter, e.g. `en0`).
  */
-defaultInterface: string | null, 
+defaultInterface: string | null,
 /**
  * Internet traffic is captured by a tunnel instead of the physical adapter.
  */
-tunnel: boolean, 
+tunnel: boolean,
 /**
  * The tunnel routes through a fake-IP gateway (198.18.0.0/15), typical
  * of Clash/mihomo and sing-box TUN modes.
@@ -103,6 +116,13 @@ export type IpcCommand =
   | "mac_permissions"
   | "mac_folder_access"
   | "mac_open_file_settings"
+  | "host_cli_status"
+  | "host_cli_save_config"
+  | "host_cli_install_launcher"
+  | "host_cli_uninstall_launcher"
+  | "host_cli_repair_channels"
+  | "host_cli_bind_folder"
+  | "host_cli_unbind_folder"
   | "sync_list"
   | "sync_preview"
   | "sync_create"

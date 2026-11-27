@@ -43,6 +43,8 @@ fn is_reserved_windows_name(part: &str) -> bool {
     matches!(
         stem.to_ascii_uppercase().as_str(),
         "CON"
+            | "CONIN$"
+            | "CONOUT$"
             | "PRN"
             | "AUX"
             | "NUL"
@@ -55,6 +57,9 @@ fn is_reserved_windows_name(part: &str) -> bool {
             | "COM7"
             | "COM8"
             | "COM9"
+            | "COM¹"
+            | "COM²"
+            | "COM³"
             | "LPT1"
             | "LPT2"
             | "LPT3"
@@ -64,6 +69,9 @@ fn is_reserved_windows_name(part: &str) -> bool {
             | "LPT7"
             | "LPT8"
             | "LPT9"
+            | "LPT¹"
+            | "LPT²"
+            | "LPT³"
     )
 }
 
@@ -106,10 +114,7 @@ pub(super) fn check_names<'a>(paths: impl IntoIterator<Item = &'a str>) -> Resul
     if comparison_failed {
         return Err("Sync stopped: Windows could not compare the project paths safely.".into());
     }
-    for pair in names.windows(2) {
-        let [(a, first), (b, second)] = pair else {
-            unreachable!()
-        };
+    for ((a, first), (b, second)) in names.iter().zip(names.iter().skip(1)) {
         match compare(a, b) {
             Some(Ordering::Equal) => {
                 return Err(format!(
@@ -171,6 +176,7 @@ mod tests {
                         mtime_ns: 0,
                         mode: 0o644,
                         target: None,
+                        digest: Some([size as u8; 32]),
                     },
                 )
             })
@@ -213,9 +219,13 @@ mod tests {
             "file:stream",
             "../file",
             "CON",
+            "conin$",
+            "CONOUT$",
             "nul.json",
             "src/com1.txt",
+            "src/com¹.txt",
             "LPT9",
+            "lpt³",
             "aux/readme.md",
         ] {
             assert!(check_names([path]).is_err(), "accepted {path}");

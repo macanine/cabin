@@ -48,17 +48,12 @@ if (prebuilt && prebuilt.isFile() && prebuilt.size > 0) {
   console.log(`build-agentd: using prebuilt ${target} cabind`);
   process.exit(0);
 }
-const args = ["--release", "--bin", "cabind", "--target", target];
+const args = ["--locked", "--release", "--bin", "cabind", "--target", target];
 
-function has(program) {
-  const check = spawnSync(program, ["--version"], {
-    stdio: "ignore",
-    shell: process.platform === "win32",
-  });
-  return check.status === 0;
-}
-
-const zigbuild = has("cargo-zigbuild");
+const zigbuild = spawnSync("cargo", ["zigbuild", "--help"], {
+  stdio: "ignore",
+  shell: process.platform === "win32",
+}).status === 0;
 const argv = zigbuild
   ? ["zigbuild", ...args]
   : ["build", ...args];

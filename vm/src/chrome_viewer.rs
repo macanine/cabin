@@ -57,7 +57,7 @@ fn bridges() -> Result<std::sync::MutexGuard<'static, Registry>> {
 
 fn token() -> io::Result<String> {
     let mut random = [0; 32];
-    crate::util::random_bytes(&mut random);
+    crate::util::random_bytes(&mut random)?;
     Ok(crate::util::hex_lower(&random))
 }
 

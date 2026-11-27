@@ -10,13 +10,15 @@
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::{RecursiveMode, Watcher};
 
-use super::{GitHandling, IGNORE_FILE, SyncRules, ignored_patterns};
+use super::{GitHandling, IGNORE_FILE, SyncRules, ignored_patterns, is_excluded};
 
 /// Quiet time that ends a burst.
 const SETTLE: Duration = Duration::from_millis(200);
@@ -24,6 +26,7 @@ const SETTLE: Duration = Duration::from_millis(200);
 const MAX_HOLD: Duration = Duration::from_millis(1500);
 /// More folders than this: re-scan everything instead.
 const MAX_SCOPE: usize = 256;
+const EVENT_QUEUE: usize = 1024;
 
 fn noise_filter(root: &Path, rules: &SyncRules) -> Gitignore {
     let mut builder = GitignoreBuilder::new(root);
@@ -33,9 +36,6 @@ fn noise_filter(root: &Path, rules: &SyncRules) -> Gitignore {
     let _ = builder.add(root.join(IGNORE_FILE));
     for line in &rules.ignore {
         let _ = builder.add_line(None, line);
-    }
-    for path in &rules.excluded {
-        let _ = builder.add_line(None, &format!("/{}", path.trim_matches('/')));
     }
     if rules.git != GitHandling::Sync {
         let _ = builder.add_line(None, "/.git");
@@ -77,69 +77,93 @@ pub struct Batches {
 
 pub fn watch(root: &Path, rules: &SyncRules) -> notify::Result<Batches> {
     let root: PathBuf = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let filter = noise_filter(&root, rules);
-    let (events_tx, events) = mpsc::channel::<PathBuf>();
+    let rules = rules.clone();
+    let mut filter = noise_filter(&root, &rules);
+    let (events_tx, events) = mpsc::sync_channel::<PathBuf>(EVENT_QUEUE);
+    let rescan = Arc::new(AtomicBool::new(false));
+    let overflow = rescan.clone();
+    let rescan_root = root.clone();
+    let send_event = move |path| {
+        if matches!(events_tx.try_send(path), Err(mpsc::TrySendError::Full(_))) {
+            overflow.store(true, Ordering::Relaxed);
+            // If the consumer drained the queue in between, wake it explicitly.
+            let _ = events_tx.try_send(rescan_root.clone());
+        }
+    };
     let watch_root = root.clone();
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-        use notify::event::{AccessKind, AccessMode, EventKind};
+        use notify::event::{AccessKind, AccessMode, EventKind, MetadataKind, ModifyKind};
         if let Ok(event) = result {
             if event.need_rescan() {
-                let _ = events_tx.send(watch_root.clone());
+                send_event(watch_root.clone());
             } else if !matches!(
                 event.kind,
                 EventKind::Access(
                     AccessKind::Read
                         | AccessKind::Open(AccessMode::Read)
                         | AccessKind::Close(AccessMode::Read)
-                )
+                ) | EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime))
             ) {
                 for path in event.paths {
-                    let _ = events_tx.send(path);
+                    send_event(path);
                 }
             }
         }
     })?;
     watcher.watch(&root, RecursiveMode::Recursive)?;
     let (batch_tx, batches) = mpsc::channel();
-    std::thread::spawn(move || {
-        loop {
-            let Ok(first) = events.recv() else { return };
-            let mut dirs = BTreeSet::new();
-            let mut add = |path: PathBuf| {
-                if path == root {
+    std::thread::Builder::new()
+        .name("sync-watch-batches".into())
+        .spawn(move || {
+            loop {
+                let Ok(first) = events.recv() else { return };
+                let mut dirs = BTreeSet::new();
+                let mut add = |path: PathBuf| {
+                    let Ok(relative) = path.strip_prefix(&root) else {
+                        return;
+                    };
+                    let Some(rel) = super::scan::wire_path(relative) else {
+                        return;
+                    };
+                    let root_rule = rel == IGNORE_FILE
+                        || (rules.gitignore
+                            && matches!(rel.as_str(), ".gitignore" | ".git/info/exclude"));
+                    if rel.is_empty() || root_rule {
+                        filter = noise_filter(&root, &rules);
+                        dirs.insert(String::new());
+                        return;
+                    }
+                    let ignored = is_excluded(&rules.excluded, &rel)
+                        || filter
+                            .matched_path_or_any_parents(relative, path.is_dir())
+                            .is_ignore();
+                    if !ignored && let Some(dir) = scope_of(&root, &path) {
+                        dirs.insert(dir);
+                    }
+                };
+                add(first);
+                let started = Instant::now();
+                loop {
+                    let wait = SETTLE.min(MAX_HOLD.saturating_sub(started.elapsed()));
+                    match events.recv_timeout(wait) {
+                        Ok(path) => add(path),
+                        Err(RecvTimeoutError::Timeout) => break,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                    if started.elapsed() >= MAX_HOLD {
+                        break;
+                    }
+                }
+                if rescan.swap(false, Ordering::Relaxed) {
+                    filter = noise_filter(&root, &rules);
                     dirs.insert(String::new());
+                }
+                if !dirs.is_empty() && batch_tx.send(collapse(dirs)).is_err() {
                     return;
                 }
-                let ignored = path
-                    .strip_prefix(&root)
-                    .map(|rel| {
-                        filter
-                            .matched_path_or_any_parents(rel, path.is_dir())
-                            .is_ignore()
-                    })
-                    .unwrap_or(true);
-                if !ignored && let Some(dir) = scope_of(&root, &path) {
-                    dirs.insert(dir);
-                }
-            };
-            add(first);
-            let started = Instant::now();
-            loop {
-                let wait = SETTLE.min(MAX_HOLD.saturating_sub(started.elapsed()));
-                match events.recv_timeout(wait) {
-                    Ok(path) => add(path),
-                    Err(RecvTimeoutError::Timeout) => break,
-                    Err(RecvTimeoutError::Disconnected) => return,
-                }
-                if started.elapsed() >= MAX_HOLD {
-                    break;
-                }
             }
-            if !dirs.is_empty() && batch_tx.send(collapse(dirs)).is_err() {
-                return;
-            }
-        }
-    });
+        })
+        .map_err(notify::Error::io)?;
     Ok(Batches { watcher, batches })
 }
 

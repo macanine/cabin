@@ -104,8 +104,7 @@ fn fallback() -> &'static Mutex<Option<AccelProblem>> {
     FALLBACK.get_or_init(Default::default)
 }
 
-/// Start `qemu` under WHPX with no devices for about three seconds. A process
-/// still alive at the deadline means the accelerator initialised.
+/// Require a QMP status reply from a paused guest under WHPX.
 pub fn probe_whpx(qemu: &Path) -> Result<(), AccelProblem> {
     let argv: Vec<String> = [
         &qemu.display().to_string(),
@@ -119,17 +118,39 @@ pub fn probe_whpx(qemu: &Path) -> Result<(), AccelProblem> {
         "-S",
         "-monitor",
         "none",
+        "-serial",
+        "none",
+        "-qmp",
+        "stdio",
     ]
     .iter()
     .map(|part| part.to_string())
     .collect();
-    let result = capture(&argv, Duration::from_secs(3), None);
-    match result.code {
-        124 => Ok(()),
-        127 | 125 => Err(AccelProblem::ProbeFailed(result.output.trim().to_string())),
-        0 => Ok(()),
-        _ => Err(classify_failure(&result.output)),
+    let requests = concat!(
+        "{\"execute\":\"qmp_capabilities\"}\n",
+        "{\"execute\":\"query-status\",\"id\":\"status\"}\n",
+        "{\"execute\":\"quit\"}\n",
+    );
+    let result = capture(&argv, Duration::from_secs(8), Some(requests));
+    if result.code == 0 && probe_status_received(&result.output) {
+        return Ok(());
     }
+    Err(
+        classify_whpx_output(&result.output).unwrap_or_else(|| match result.code {
+            124 => {
+                AccelProblem::ProbeFailed("QEMU timed out before completing the WHPX probe".into())
+            }
+            0 => AccelProblem::ProbeFailed("QEMU did not return WHPX monitor status".into()),
+            _ => classify_failure(&result.output),
+        }),
+    )
+}
+
+fn probe_status_received(output: &str) -> bool {
+    output.lines().any(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .is_ok_and(|reply| reply["id"] == "status" && reply["return"]["status"].is_string())
+    })
 }
 
 /// `probe_whpx`, cached per engine path.
@@ -281,6 +302,17 @@ pub fn status_for_engine(qemu: &Path) -> AccelStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whpx_probe_requires_the_requested_monitor_status() {
+        assert!(!probe_status_received(r#"{"QMP":{"version":{}}}"#));
+        assert!(!probe_status_received(
+            r#"{"id":"status","error":{"desc":"not ready"}}"#
+        ));
+        assert!(probe_status_received(
+            "WHPX initialized\n{\"id\":\"status\",\"return\":{\"status\":\"prelaunch\"}}\n"
+        ));
+    }
 
     #[test]
     fn whpx_output_is_classified() {

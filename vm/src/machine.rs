@@ -311,9 +311,14 @@ pub struct Machine {
     root: PathBuf,
     /// Bundled Linux guest binary used by native helpers before the daemon is available.
     agentd_binary: PathBuf,
-    /// Configuration of the install in progress (for cancelling it).
-    installing: std::sync::Mutex<Option<Config>>,
+    installing: std::sync::Mutex<InstallState>,
     lifecycle: Arc<Lifecycle>,
+}
+
+#[derive(Default)]
+struct InstallState {
+    config: Option<Config>,
+    aborting: bool,
 }
 
 impl Machine {
@@ -325,7 +330,7 @@ impl Machine {
             lifecycle,
             root: root.into(),
             agentd_binary: crate::agentd::default_binary(),
-            installing: std::sync::Mutex::new(None),
+            installing: std::sync::Mutex::default(),
         }
     }
 
@@ -680,7 +685,7 @@ impl Machine {
         }
         let mut cfg = build_config(&self.install_overrides(options), &self.root)?;
         crate::vm::validate_socket_paths(&cfg)?;
-        let _install = self.begin_install(&cfg)?;
+        let install = self.begin_install(&cfg)?;
         // Pin the newest build of the chosen OS before anything is saved.
         cfg.pin_image()?;
         let runner = Runner::new(cfg.clone())?.with_agentd(&self.agentd_binary);
@@ -704,6 +709,7 @@ impl Machine {
                 )),
             };
         }
+        drop(install);
         drop(lock);
         Ok(self.info())
     }
@@ -718,7 +724,7 @@ impl Machine {
         let since = SystemTime::now() - Duration::from_secs(1);
         let done = Arc::new(AtomicBool::new(false));
         let on_progress = Arc::new(on_progress);
-        let poller = {
+        let worker = {
             let cfg = cfg.clone();
             let done = done.clone();
             let on_progress = on_progress.clone();
@@ -727,7 +733,7 @@ impl Machine {
                 .spawn(move || {
                     while !done.load(Ordering::Relaxed) {
                         on_progress(progress(&cfg, since));
-                        std::thread::sleep(Duration::from_secs(1));
+                        std::thread::park_timeout(Duration::from_secs(1));
                     }
                 })
                 .map_err(|error| {
@@ -736,12 +742,14 @@ impl Machine {
                     ))
                 })?
         };
-        let _stop = StopPoller(done.clone());
+        let poller = StopPoller {
+            done,
+            worker: Some(worker),
+        };
         let result = self.lifecycle.check().and_then(|()| work());
-        done.store(true, Ordering::Relaxed);
-        let _ = poller.join();
+        drop(poller);
         on_progress(progress(cfg, since));
-        result
+        result.and_then(|value| self.lifecycle.check().map(|()| value))
     }
 
     /// Check every step without changing anything. On a healthy install all
@@ -789,7 +797,7 @@ impl Machine {
     ) -> Result<MachineInfo> {
         let lock = self.lock()?;
         let mut cfg = self.config()?;
-        let _install = self.begin_install(&cfg)?;
+        let install = self.begin_install(&cfg)?;
         if let Some(mirror) = apt_mirror {
             cfg.apt_mirror = mirror
                 .map(|m| m.trim().trim_end_matches('/').to_string())
@@ -803,6 +811,7 @@ impl Machine {
                 .apply_locked(&lock)
                 .and_then(|()| runner.start_vm_locked(&lock).map(|_| ()))
         })?;
+        drop(install);
         drop(lock);
         Ok(self.info())
     }
@@ -810,7 +819,7 @@ impl Machine {
     fn begin_install(&self, cfg: &Config) -> Result<ClearInstalling<'_>> {
         let mut installing = self.installing.locked();
         self.lifecycle.check()?;
-        *installing = Some(cfg.clone());
+        installing.config = Some(cfg.clone());
         Ok(ClearInstalling(self))
     }
 
@@ -818,13 +827,18 @@ impl Machine {
     /// install observes the cancellation before creating a QEMU process.
     pub fn abort_install(&self) -> bool {
         let cfg = {
-            let installing = self.installing.locked();
-            let Some(cfg) = installing.as_ref() else {
+            let mut installing = self.installing.locked();
+            if installing.aborting {
+                return true;
+            }
+            let Some(cfg) = installing.config.clone() else {
                 return false;
             };
+            installing.aborting = true;
             self.lifecycle.set_cancelled(true);
-            cfg.clone()
+            cfg
         };
+        let _abort = ClearAborting(self);
         crate::download::cancel_all();
         let _ = self.stop_for_exit(&cfg, Duration::from_secs(12));
         true
@@ -832,7 +846,7 @@ impl Machine {
 
     pub fn begin_quit(&self) {
         self.lifecycle.begin_quit();
-        if self.installing.locked().is_some() {
+        if self.installing.locked().config.is_some() {
             crate::download::cancel_all();
         }
     }
@@ -841,7 +855,7 @@ impl Machine {
     /// operation lock. The runtime's separate barrier serializes launch/stop.
     pub fn shutdown(&self, timeout: Duration) -> Result<()> {
         self.begin_quit();
-        let installing = self.installing.locked().clone();
+        let installing = self.installing.locked().config.clone();
         if let Some(cfg) = installing.or_else(|| self.config().ok()) {
             return self.stop_for_exit(&cfg, timeout);
         }
@@ -1112,16 +1126,39 @@ struct ClearInstalling<'a>(&'a Machine);
 impl Drop for ClearInstalling<'_> {
     fn drop(&mut self) {
         let mut installing = self.0.installing.locked();
-        *installing = None;
-        self.0.lifecycle.set_cancelled(false);
+        installing.config = None;
+        if !installing.aborting {
+            self.0.lifecycle.set_cancelled(false);
+        }
     }
 }
 
-struct StopPoller(Arc<AtomicBool>);
+struct ClearAborting<'a>(&'a Machine);
+
+impl Drop for ClearAborting<'_> {
+    fn drop(&mut self) {
+        let mut installing = self.0.installing.locked();
+        installing.aborting = false;
+        // A new launch can proceed only after both the install worker and its
+        // cancellation have returned.
+        if installing.config.is_none() {
+            self.0.lifecycle.set_cancelled(false);
+        }
+    }
+}
+
+struct StopPoller {
+    done: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
 
 impl Drop for StopPoller {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.done.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
     }
 }
 
@@ -1183,6 +1220,36 @@ mod tests {
         assert!(!cfg.pidfile().exists());
         drop(log);
         drop(lock);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn cancellation_stays_active_until_both_install_and_abort_finish() {
+        let home = crate::sockets::test_dir();
+        let machine = Machine::new(&home, env!("CARGO_MANIFEST_DIR"));
+        let cfg = machine.install_config(&InstallOptions::default()).unwrap();
+        let operation = machine.lock().unwrap();
+        for install_finishes_first in [true, false] {
+            let install = machine.begin_install(&cfg).unwrap();
+            machine.installing.locked().aborting = true;
+            machine.lifecycle.set_cancelled(true);
+            let abort = ClearAborting(&machine);
+            let assert_cancelled = || {
+                let error = machine.lifecycle.check().unwrap_err();
+                assert_eq!(error.to_string(), "Install cancelled");
+            };
+            if install_finishes_first {
+                drop(install);
+                assert_cancelled();
+                drop(abort);
+            } else {
+                drop(abort);
+                assert_cancelled();
+                drop(install);
+            }
+            machine.lifecycle.check().unwrap();
+        }
+        drop(operation);
         std::fs::remove_dir_all(home).unwrap();
     }
 

@@ -100,10 +100,33 @@ type GuestLink = (
     Value,
 );
 
-/// Why a link could not be opened, and whether the guest answered at all.
+/// Why a link could not be opened, and whether deploying can repair it.
 struct LinkFailure {
     reason: String,
-    reachable: bool,
+    redeploy: bool,
+}
+
+impl LinkFailure {
+    fn retry(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            redeploy: false,
+        }
+    }
+
+    fn before_hello(code: Option<i32>) -> Self {
+        match code {
+            // The bridge successfully connected to the daemon socket, but the
+            // daemon closed the connection, for example at its client limit.
+            Some(0) => Self::retry("cabind closed the connection before sending hello"),
+            Some(255) => Self::retry("Could not reach the guest over SSH"),
+            None => Self::retry("SSH closed the handshake without an exit code"),
+            Some(_) => Self {
+                reason: "cabind did not answer".into(),
+                redeploy: true,
+            },
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -141,6 +164,44 @@ impl Host {
         if let Some(mut link) = self.link.locked().take() {
             let _ = link.child.kill();
             let _ = link.child.wait();
+        }
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    pub(super) fn recheck_link_after_wake(self: &Arc<Self>) {
+        if self.stopping.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(pid) = self.link.locked().as_ref().map(|link| link.child.id()) else {
+            return;
+        };
+        let host = self.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("guest-wake-check".into())
+            .spawn(move || {
+                if host
+                    .call_guest_with_timeout("clock", json!({}), Duration::from_secs(5))
+                    .is_ok()
+                {
+                    return;
+                }
+                let stale = {
+                    let mut link = host.link.locked();
+                    link.take_if(|link| link.child.id() == pid)
+                };
+                if let Some(mut link) = stale {
+                    let _ = link.child.kill();
+                    let _ = link.child.wait();
+                    host.wake();
+                }
+            })
+        {
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Warn,
+                "ssh",
+                "wake_check_failed",
+                format_args!("{error}"),
+            );
         }
     }
 
@@ -348,20 +409,14 @@ impl Host {
         Ok(hash)
     }
 
-    /// Open `cabind connect` over SSH and read its hello line. The error
-    /// says whether the guest answered at all: `reachable == false` (SSH
-    /// itself failed or hung) must not be "fixed" by redeploying the daemon.
+    /// Open `cabind connect` over SSH and read its hello line.
     fn open_link(
         &self,
         runtime: &vm_core::vm::Runtime,
         attempt: Option<&Arc<Attempt>>,
     ) -> Result<GuestLink, LinkFailure> {
-        let unreachable = |reason: String| LinkFailure {
-            reason,
-            reachable: false,
-        };
         let argv = vm_core::agentd::connect_argv(runtime)
-            .map_err(|error| unreachable(error.to_string()))?;
+            .map_err(|error| LinkFailure::retry(error.to_string()))?;
         let stderr = attempt
             .and_then(|attempt| attempt.log_file())
             .or_else(|| {
@@ -378,12 +433,12 @@ impl Host {
         vm_core::util::no_window(&mut command);
         let mut child = command
             .spawn()
-            .map_err(|e| unreachable(format!("could not run {}: {e}", argv[0])))?;
+            .map_err(|e| LinkFailure::retry(format!("could not run {}: {e}", argv[0])))?;
         let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(unreachable(
-                "SSH did not provide the cabind handshake pipes".into(),
+            return Err(LinkFailure::retry(
+                "SSH did not provide the cabind handshake pipes",
             ));
         };
         let (hello_tx, hello_rx) = mpsc::channel();
@@ -396,37 +451,33 @@ impl Host {
         {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(unreachable(format!(
+            return Err(LinkFailure::retry(format!(
                 "Could not start reading the cabind handshake: {error}"
             )));
         }
         let timeout = Duration::from_secs(20) * vm_core::platform::slowdown();
         let deadline = Instant::now() + timeout;
         let hello = match hello_rx.recv_timeout(timeout) {
-            Err(_) => Err(unreachable(
-                "Timed out waiting for the cabind handshake".into(),
+            Err(_) => Err(LinkFailure::retry(
+                "Timed out waiting for the cabind handshake",
             )),
             Ok((Some(Ok(line)), lines)) => match serde_json::from_str::<Value>(&line) {
-                Ok(hello) => Ok((hello, lines)),
+                Ok(hello) if hello["hello"]["build"].as_str().is_none_or(str::is_ascii) => {
+                    Ok((hello, lines))
+                }
+                Ok(_) => Err(LinkFailure {
+                    reason: "Invalid cabind build fingerprint".into(),
+                    redeploy: true,
+                }),
                 Err(error) => Err(LinkFailure {
                     reason: format!("Invalid cabind handshake: {error}"),
-                    reachable: true,
+                    redeploy: true,
                 }),
             },
-            // The stream closed without a hello: ssh exits 255 when the guest
-            // could not be reached; any other code means the guest answered
-            // but no (working) daemon did.
-            Ok(_) => {
-                let code = wait_for_ssh_exit(&mut child, deadline);
-                Err(match code {
-                    Some(255) => unreachable("Could not reach the guest over SSH".into()),
-                    None => unreachable("SSH closed the handshake without exiting".into()),
-                    _ => LinkFailure {
-                        reason: "cabind did not answer".into(),
-                        reachable: true,
-                    },
-                })
-            }
+            Ok((Some(Err(error)), _)) => Err(LinkFailure::retry(error.to_string())),
+            Ok((None, _)) => Err(LinkFailure::before_hello(wait_for_ssh_exit(
+                &mut child, deadline,
+            ))),
         };
         match hello {
             Ok((hello, lines)) => Ok((child, stdin, lines, hello)),
@@ -480,7 +531,7 @@ impl Host {
                 },
                 Err(LinkFailure {
                     reason,
-                    reachable: false,
+                    redeploy: false,
                 }) => return Err(reason),
                 Err(LinkFailure { reason, .. }) => reason,
             };
@@ -505,9 +556,8 @@ impl Host {
         };
         let deployed = self.deployment.locked().ready(&guest);
         #[cfg(unix)]
-        if vm_core::vm::cli_dir(&runtime.cfg)
-            .join("exec.sock")
-            .exists()
+        if let Ok(dir) = vm_core::agentd::native_channel_dir(&runtime)
+            && let Ok(_project) = crate::native_cli::lock_native_project(&dir)
             && let Err(error) = vm_core::agentd::prepare_native(&runtime, deployed)
         {
             cabin_diagnostics::event(
@@ -731,6 +781,15 @@ fn wait_for_ssh_exit(child: &mut Child, deadline: Instant) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clean_close_before_hello_retries_without_redeploying() {
+        assert!(!LinkFailure::before_hello(Some(0)).redeploy);
+        assert!(!LinkFailure::before_hello(Some(255)).redeploy);
+        assert!(!LinkFailure::before_hello(None).redeploy);
+        assert!(LinkFailure::before_hello(Some(1)).redeploy);
+        assert!(LinkFailure::before_hello(Some(127)).redeploy);
+    }
 
     #[test]
     fn reconnect_does_not_repeat_a_deploy_until_a_match_or_a_new_start() {

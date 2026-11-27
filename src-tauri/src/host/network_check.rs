@@ -213,13 +213,21 @@ impl Host {
         kind: VerificationKind,
     ) -> Result<NetworkStatus, AppError> {
         let commit_candidate = kind == VerificationKind::Candidate;
+        {
+            let machine = self.status.read_lock();
+            if machine.state != MachineState::Running {
+                return Err(unavailable("Start the machine before checking its network"));
+            }
+            if machine.busy.is_some() {
+                return Err(unavailable(
+                    "Wait for the machine operation to finish before checking its network",
+                ));
+            }
+        }
         let cfg = self.machine.config().map_err(Self::vm_error)?;
         let profile_revision = cfg.environment_revision().map_err(Self::vm_error)?;
         self.network
             .observe_environment_revision(Some(profile_revision.clone()));
-        if self.status.read_lock().state != MachineState::Running {
-            return Err(unavailable("Start the machine before checking its network"));
-        }
         let state = self.network.status(true)?;
         if state.paused {
             return Err(unavailable(
@@ -288,7 +296,7 @@ impl Host {
             ));
         };
         self.notify_hold_timeout();
-        self.emit_network()?;
+        self.emit_verification_status();
 
         let observed = std::thread::scope(|scope| {
             let exits = std::thread::Builder::new()
@@ -343,7 +351,7 @@ impl Host {
                 }
                 self.network
                     .record_check(kind.journal_kind(), &error.message, None);
-                self.emit_network()?;
+                self.emit_verification_status();
                 return Err(error);
             }
         };
@@ -445,7 +453,7 @@ impl Host {
             if candidate_changed {
                 return Err(error.clone());
             }
-            self.emit_network()?;
+            self.emit_verification_status();
             self.fail_guest_chats(error.message.clone());
             return self.network.status(true);
         }
@@ -480,7 +488,7 @@ impl Host {
             {
                 self.stop_chats_after_hold();
             }
-            self.emit_network()?;
+            self.emit_verification_status();
             return self.network.status(true);
         }
         let opened = match self.network.finish_check(
@@ -502,7 +510,10 @@ impl Host {
                 }
                 false
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                self.emit_verification_status();
+                return Err(error);
+            }
         };
         if commit_candidate && !opened {
             return Err(AppError {
@@ -516,6 +527,8 @@ impl Host {
             });
         }
         if commit_candidate {
+            // The candidate is committed. A later status read cannot roll it back.
+            *previous_gate = None;
             let message = if route.enabled {
                 format!("Applied a proxy route with {} hops", route.chain.len())
             } else {
@@ -523,7 +536,7 @@ impl Host {
             };
             self.network.record_check("routeApplied", &message, None);
         }
-        self.emit_network()?;
+        self.emit_verification_status();
         let status = self.network.status(true)?;
         if state.gate == NetworkGateMode::Open
             && status.gate == NetworkGateMode::Closed
@@ -535,6 +548,17 @@ impl Host {
             ));
         }
         Ok(status)
+    }
+
+    fn emit_verification_status(&self) {
+        if let Err(error) = self.emit_network() {
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Warn,
+                "network",
+                "verification_status_failed",
+                format_args!("{}", error.code),
+            );
+        }
     }
 
     /// When `report` failed only because the machine's time zone differs from
@@ -684,17 +708,26 @@ impl Host {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(crate) fn install_network_power_watch(self: &Arc<Self>) {
         let host = Arc::downgrade(self);
-        network_health::install_power_watch(move |sleeping| {
+        if let Err(error) = network_health::install_power_watch(move |sleeping| {
             if let Some(host) = host.upgrade() {
                 host.network.system_sleep_changed(sleeping);
+                let _ = host.emit_network();
                 if !sleeping {
                     host.wake();
+                    host.recheck_link_after_wake();
                 }
             }
-        });
+        }) {
+            cabin_diagnostics::event(
+                cabin_diagnostics::Level::Warn,
+                "network",
+                "power_watch_failed",
+                format_args!("{error}"),
+            );
+        }
     }
 
     pub(super) fn start_network_recovery(self: &Arc<Self>) -> Result<(), AppError> {
@@ -736,17 +769,20 @@ impl Host {
                 };
                 let mut delay = network_health::CHECK_INTERVAL;
                 loop {
-                    if matches!(signal.recv_timeout(delay), Ok(()))
-                        && let Some(me) = weak.upgrade()
-                    {
-                        let _ = me.emit_network();
-                        me.recover_network_if_due();
-                    }
+                    let signaled = match signal.recv_timeout(delay) {
+                        Ok(()) => true,
+                        Err(mpsc::RecvTimeoutError::Timeout) => false,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
                     let Some(me) = weak.upgrade() else {
                         break;
                     };
                     if me.stopping.load(Ordering::Relaxed) {
                         break;
+                    }
+                    if signaled {
+                        let _ = me.emit_network();
+                        me.recover_network_if_due();
                     }
                     delay = network_health::CHECK_INTERVAL;
                     if let Some(target) = me.network.health_target() {

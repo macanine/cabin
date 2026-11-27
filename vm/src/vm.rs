@@ -869,6 +869,21 @@ impl Runtime {
             };
             let gate = self.lifecycle.lock();
             let args = launch().map_err(setup_error)?;
+            // Reserve a reaper before spawning QEMU so a thread creation
+            // failure cannot leave an already-running child unowned.
+            let (reap, children) = std::sync::mpsc::sync_channel::<Child>(1);
+            thread::Builder::new()
+                .name("qemu-reaper".into())
+                .spawn(move || {
+                    if let Ok(mut child) = children.recv() {
+                        let _ = child.wait();
+                    }
+                })
+                .map_err(|error| {
+                    setup_error(crate::Error::Message(format!(
+                        "Could not start the QEMU process reaper: {error}"
+                    )))
+                })?;
             let whpx = args
                 .windows(2)
                 .any(|pair| pair[0] == "-accel" && pair[1].starts_with("whpx,"));
@@ -879,16 +894,16 @@ impl Runtime {
                 let reason = exited_whpx()
                     .then(|| whpx_start_failure(&error.to_string()))
                     .flatten();
+                let started = self.foreground_child().is_some();
+                self.handoff_to_reaper(reap).map_err(setup_error)?;
                 drop(gate);
-                if self.foreground_child().is_some() {
+                if started {
                     self.stop(log, Duration::from_secs(10));
-                    self.reap_in_background();
                 }
                 return Err((error, reason));
             }
+            self.handoff_to_reaper(reap).map_err(setup_error)?;
             drop(gate);
-            // The reaper owns the child now that its PID and monitor are verified.
-            self.reap_in_background();
             log_line(
                 log,
                 &format!(
@@ -941,12 +956,17 @@ impl Runtime {
         Ok(())
     }
 
-    fn reap_in_background(&self) {
-        if let Some(mut child) = self.foreground_child().take() {
-            thread::spawn(move || {
-                let _ = child.wait();
-            });
+    fn handoff_to_reaper(&self, reaper: std::sync::mpsc::SyncSender<Child>) -> Result<()> {
+        let child = self.foreground_child().take();
+        if let Some(child) = child
+            && let Err(std::sync::mpsc::SendError(mut child)) = reaper.send(child)
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            self.cleanup_stale();
+            return message("The QEMU process reaper exited unexpectedly");
         }
+        Ok(())
     }
 
     pub fn stop(&self, log: &Arc<Mutex<File>>, timeout: Duration) -> bool {
