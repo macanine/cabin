@@ -9,6 +9,7 @@ import { diskGb } from "../lib/installForm";
 import { attempt } from "../lib/operations";
 import { type CardTone, MachineCard } from "../views/install/MachineCard";
 import { BootHero, BootPage } from "./Boot";
+import { CabinWordmark } from "./CabinMark";
 import { MachineStage } from "./MachineStage";
 import { StartStage } from "./StartReportView";
 import { CopyDiagnosticsButton, RecoveryPanel } from "./Recovery";
@@ -90,6 +91,7 @@ export function MachineGate({ children }: { children?: ReactNode }) {
     return (
       <MachineStage
         center
+        eyebrow={<CabinWordmark size={20} />}
         title={t("gate.setupTitle")}
         lead={t("gate.setupLead")}
         main={<div><Button size="md" rightSection={<IconArrowRight size={16} />} onClick={() => uiActions.navigate({ kind: "install" })}>{t("gate.setupBtn")}</Button></div>}

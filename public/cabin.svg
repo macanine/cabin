@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#f9f7f2"/>
+      <stop offset="100%" stop-color="#ebe4d8"/>
+    </linearGradient>
+    <linearGradient id="roof" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0%" stop-color="#e58044"/>
+      <stop offset="100%" stop-color="#b85422"/>
+    </linearGradient>
+    <linearGradient id="gable" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#2a2724"/>
+      <stop offset="100%" stop-color="#171614"/>
+    </linearGradient>
+    <linearGradient id="side" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#cfc7bb"/>
+      <stop offset="100%" stop-color="#bab1a4"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#1d1c1a" stop-opacity="0.12"/>
+    </linearGradient>
+    <clipPath id="squircle">
+      <path d="M 168,44 L 344,44 C 426,44 468,86 468,168 L 468,344 C 468,426 426,468 344,468 L 168,468 C 86,468 44,426 44,344 L 44,168 C 44,86 86,44 168,44 Z"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#squircle)">
+    <rect x="44" y="44" width="424" height="424" fill="url(#bg)"/>
+    <path d="M 227.5,148 L 302,148 Q 312,148 318,156 L 393,256 Q 399,264 389,264 L 314.5,264 Q 304.5,264 298.5,256 L 223.5,156 Q 217.5,148 227.5,148 Z" fill="url(#roof)"/>
+    <path d="M 194,156 Q 200,148 206,156 L 281,256 Q 284,260 284,265 L 284,354 C 284,362 278,368 270,368 L 233,368 C 230,368 228,366 228,363 L 228,312 A 28,28 0 0 0 172,312 L 172,363 C 172,366 170,368 167,368 L 130,368 C 122,368 116,362 116,354 L 116,265 Q 116,260 119,256 Z" fill="url(#gable)"/>
+    <path d="M 298,278 L 372,278 C 375.5,278 378,280.5 378,284 L 378,354 C 378,362 372,368 364,368 L 304,368 C 300.5,368 298,365.5 298,362 Z" fill="url(#side)"/>
+  </g>
+  <path d="M 168,45 L 344,45 C 425.4,45 467,86.6 467,168 L 467,344 C 467,425.4 425.4,467 344,467 L 168,467 C 86.6,467 45,425.4 45,344 L 45,168 C 45,86.6 86.6,45 168,45 Z" fill="none" stroke="url(#rim)" stroke-width="2"/>
+</svg>

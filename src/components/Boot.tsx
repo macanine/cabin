@@ -1,5 +1,6 @@
 import { IconAlertTriangle, IconCheck, IconX } from "@tabler/icons-react";
 import type { ReactNode } from "react";
+import { CabinMark } from "./CabinMark";
 import { DisclosureChevron, Reveal } from "./motion";
 
 /* The pieces of the machine start and install screens: a centred column, a
@@ -45,7 +46,7 @@ export function BootHero({ tone, progress, title, subtitle, aside }: {
           />
         </svg>
         <span key={tone} className="grid animate-settle place-items-center" aria-hidden>
-          {tone === "ok" ? <IconCheck size={28} stroke={2.4} /> : tone === "bad" ? <IconAlertTriangle size={26} stroke={2} /> : <span className="size-2.5 animate-breathe rounded-full bg-current" />}
+          {tone === "ok" ? <IconCheck size={28} stroke={2.4} /> : tone === "bad" ? <IconAlertTriangle size={26} stroke={2} /> : <CabinMark variant="mono" size={24} className="animate-breathe" />}
         </span>
       </div>
       <h1 role="status" className="m-0 text-xl font-semibold tracking-tight text-fg">{title}</h1>

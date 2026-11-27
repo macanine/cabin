@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Minimalist 3-plane monochrome template tray icon matching icon.svg -->
+  <!-- Folded roof plane (coplanar ridge y=4.5, crisp 1.5-unit parallel seam) -->
+  <path fill="#000000" d="M 10.7,4.5 L 15.0,4.5 Q 15.7,4.5 16.1,5.1 L 20.8,11.3 Q 21.2,11.9 20.5,11.9 L 16.2,11.9 Q 15.5,11.9 15.1,11.3 L 10.4,5.1 Q 10.0,4.5 10.7,4.5 Z"/>
+  <!-- Front gable with arched portal cutout -->
+  <path fill="#000000" d="M 7.7,5.1 Q 8.1,4.5 8.5,5.1 L 13.1,11.2 Q 13.4,11.6 13.4,12.1 L 13.4,18.6 C 13.4,19.1 13.0,19.5 12.5,19.5 L 10.1,19.5 L 10.1,16.0 A 2.0,2.0 0 0 0 6.1,16.0 L 6.1,19.5 L 3.7,19.5 C 3.2,19.5 2.8,19.1 2.8,18.6 L 2.8,12.1 Q 2.8,11.6 3.1,11.2 Z"/>
+  <!-- Grounded side slab -->
+  <path fill="#000000" d="M 14.8,13.3 L 19.2,13.3 C 19.5,13.3 19.7,13.5 19.7,13.8 L 19.7,18.6 C 19.7,19.1 19.3,19.5 18.8,19.5 L 15.2,19.5 C 15.0,19.5 14.8,19.3 14.8,19.1 Z"/>
+</svg>

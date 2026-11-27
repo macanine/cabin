@@ -8,6 +8,7 @@ import { attempt } from "../lib/operations";
 import { attentionCount } from "../lib/agentsHub";
 import { networkGuidance, selectNetworkSummary } from "../lib/networkSummary";
 import { AGENT_KINDS } from "../components/AgentPicker";
+import { CabinMark } from "../components/CabinMark";
 import { Composer } from "../components/Composer";
 import { RecentTasks } from "../components/RecentTasks";
 import { useI18n } from "../i18n";
@@ -52,9 +53,12 @@ export function NewSessionView({ workspaceId }: { workspaceId?: string }) {
   return (
     <div className="home-scroll">
       <div className="home-stage">
-        <h1 className={`m-0 mb-5 text-center text-[28px] font-semibold tracking-[-0.025em] text-fg transition-opacity duration-200 ${submitting ? "opacity-35" : ""}`}>
-          {t("home.title")}
-        </h1>
+        <div className={`mb-5 flex flex-col items-center gap-2.5 transition-opacity duration-200 ${submitting ? "opacity-35" : ""}`}>
+          <CabinMark variant="color" size={34} className="text-fg" />
+          <h1 className="m-0 text-center text-[28px] font-semibold tracking-[-0.025em] text-fg">
+            {t("home.title")}
+          </h1>
+        </div>
 
         {stopped || machine?.state === "notInstalled" ? (
           <div className="glass flex items-center gap-3 rounded-2xl p-4 text-md">
