@@ -1,99 +1,60 @@
 import { useSyncExternalStore } from "react";
-import { en, type MessageKey } from "./en.ts";
-import { zhCN } from "./zh-CN.ts";
+import { createI18n, type LocalePref as EngineLocalePref, type ParamsFor } from "./engine.ts";
+import { CATALOGS, FALLBACK_LOCALE, SUPPORTED_LOCALES, type EnMessages, type Locale } from "./registry.ts";
+import type { MessageKey } from "./locales/en/index.ts";
 
-export type { MessageKey };
-export type Locale = "en" | "zh-CN";
-export type LocalePref = "auto" | Locale;
+export type { Locale, MessageKey };
+export type LocalePref = EngineLocalePref<Locale>;
+/** Message keys that take zero interpolation variables (safe for lookup tables). */
+export type StaticMessageKey = {
+  [K in MessageKey]: ParamsFor<EnMessages[K]> extends [] ? K : never;
+}[MessageKey];
+export { SUPPORTED_LOCALES };
 
-const STORAGE_KEY = "cabin.locale";
-const MESSAGES: Record<Locale, Record<MessageKey, string>> = {
-  en,
-  "zh-CN": zhCN,
-};
+export const i18n = createI18n<Locale, EnMessages>({
+  locales: SUPPORTED_LOCALES,
+  fallback: FALLBACK_LOCALE,
+  catalogs: CATALOGS as Record<Locale, EnMessages>,
+  storageKey: "cabin.locale",
+});
 
-export function detectSystemLocale(): Locale {
-  if (typeof navigator === "undefined") return "en";
-  const langs = [...(navigator.languages ?? []), navigator.language].filter(Boolean);
-  for (const lang of langs) {
-    if (lang.toLowerCase().startsWith("zh")) return "zh-CN";
-  }
-  return "en";
+export const getLocale = i18n.getLocale;
+export const getLocalePref = i18n.getPref;
+export const getLocaleDir = i18n.getDir;
+export const setLocalePref = i18n.setPref;
+export const subscribeLocale = i18n.subscribe;
+export const detectSystemLocale = i18n.detectSystemLocale;
+
+/**
+ * Compile-time type-safe translator:
+ * - Parameterless keys forbid extra arguments.
+ * - Keys with `{var}` or ICU `{count, plural, ...}` enforce exact variable names.
+ */
+export function t<K extends MessageKey>(key: K, ...args: ParamsFor<EnMessages[K]>): string {
+  return i18n.t(key, ...args);
 }
 
-export function resolveLocale(pref: LocalePref): Locale {
-  return pref === "auto" ? detectSystemLocale() : pref;
+/** Reactive locale selector (lightweight; ideal for date/time formatting). */
+export function useLocale(): Locale {
+  return useSyncExternalStore(subscribeLocale, getLocale, () => FALLBACK_LOCALE);
 }
 
-function readStoredPref(): LocalePref {
-  try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
-    if (raw === "en" || raw === "zh-CN" || raw === "auto") return raw;
-  } catch {
-    // Ignore restricted storage.
-  }
-  return "auto";
-}
-
-let currentPref: LocalePref = readStoredPref();
-let currentLocale: Locale = resolveLocale(currentPref);
-const listeners = new Set<() => void>();
-
-function syncDocumentLang() {
-  if (typeof document !== "undefined" && document.documentElement) {
-    document.documentElement.lang = currentLocale;
-  }
-}
-syncDocumentLang();
-
-function notify() {
-  listeners.forEach((listener) => listener());
-}
-
-export function getLocalePref(): LocalePref {
-  return currentPref;
-}
-
-export function getLocale(): Locale {
-  return currentLocale;
-}
-
-export function setLocalePref(pref: LocalePref): void {
-  const nextLocale = resolveLocale(pref);
-  if (pref === currentPref && nextLocale === currentLocale) return;
-  currentPref = pref;
-  currentLocale = nextLocale;
-  try {
-    if (typeof localStorage !== "undefined") localStorage.setItem(STORAGE_KEY, pref);
-  } catch {
-    // Ignore restricted storage.
-  }
-  syncDocumentLang();
-  notify();
-}
-
-export function subscribeLocale(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
-
-/** Translate a typed message key with optional `{var}` interpolation. */
-export function t(key: MessageKey, vars?: Record<string, string | number>, locale: Locale = currentLocale): string {
-  const template = MESSAGES[locale][key] ?? MESSAGES.en[key] ?? key;
-  if (!vars) return template;
-  return template.replace(/\{(\w+)\}/g, (_, name: string) =>
-    Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : `{${name}}`,
-  );
-}
-
-/** Reactive hook for components: re-renders automatically when the user switches language. */
+/** Reactive React hook returning a locale-bound `t()`, active locale, preference, and setter. */
 export function useI18n() {
-  const locale = useSyncExternalStore(subscribeLocale, getLocale, () => "en" as Locale);
+  const locale = useLocale();
   const pref = useSyncExternalStore(subscribeLocale, getLocalePref, () => "auto" as LocalePref);
+  const dir = getLocaleDir(locale);
+
+  function translate<K extends MessageKey>(key: K, ...args: ParamsFor<EnMessages[K]>): string {
+    return i18n.tFor(locale, key, ...args);
+  }
+
   return {
     locale,
     pref,
+    dir,
+    locales: SUPPORTED_LOCALES,
     setLocalePref,
-    t: (key: MessageKey, vars?: Record<string, string | number>) => t(key, vars, locale),
+    t: translate,
   };
 }

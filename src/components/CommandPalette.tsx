@@ -12,7 +12,7 @@ import { useApp } from "../state/store";
 import { SETTINGS_TABS, uiActions, useUi, type View } from "../state/ui";
 import { IS_MAC } from "../lib/platform";
 import { sessionKindName } from "./common";
-import { type MessageKey, useI18n } from "../i18n";
+import { type StaticMessageKey, useI18n } from "../i18n";
 
 interface Entry extends PaletteItem {
   icon: ReactNode;
@@ -21,14 +21,14 @@ interface Entry extends PaletteItem {
 }
 
 const I = { size: 16, stroke: 1.7 } as const;
-const VIEWS: { view: View; labelKey: MessageKey; icon: ReactNode; keywords?: string }[] = [
+const VIEWS: { view: View; labelKey: StaticMessageKey; icon: ReactNode; keywords?: string }[] = [
   { view: { kind: "chrome" }, labelKey: "nav.chrome", icon: <IconBrandChrome {...I} />, keywords: "browser desktop environment chrome 浏览器" },
   { view: { kind: "agents" }, labelKey: "palette.agentsAndProviders", icon: <IconRobot {...I} />, keywords: "claude codex opencode pi antigravity account limits sign in 智能体" },
   { view: { kind: "usage" }, labelKey: "nav.usage", icon: <IconChartBar {...I} />, keywords: "cost tokens spend usage 用量" },
   { view: { kind: "mcp" }, labelKey: "palette.extensionsMcp", icon: <IconPlug {...I} />, keywords: "mcp servers extensions plugins 扩展" },
   { view: { kind: "skills" }, labelKey: "palette.extensionsSkills", icon: <IconSparkles {...I} />, keywords: "skills discover extensions 技能" },
 ];
-const TAB_LABEL_KEY: Record<(typeof SETTINGS_TABS)[number], MessageKey> = {
+const TAB_LABEL_KEY: Record<(typeof SETTINGS_TABS)[number], StaticMessageKey> = {
   general: "settings.tab.general",
   network: "settings.tab.network",
   remote: "settings.tab.remote",

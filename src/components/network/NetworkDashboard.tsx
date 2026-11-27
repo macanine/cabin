@@ -138,9 +138,9 @@ export function NetworkDashboard() {
     : dirty && deferred ? "Start the machine and resume internet access to apply route changes."
       : chainProblem;
   const activePath = active.enabled
-    ? active.chain.map((id) => bareName(byId.get(id)?.name ?? "Missing node")).join(" → ") || "No nodes"
-    : "Direct via this computer";
-  const policyLabel = (active.exitPolicy ?? "static") === "dynamicResidential" ? "Dynamic residential IP" : "Static IP lock";
+    ? active.chain.map((id) => bareName(byId.get(id)?.name ?? "Missing node")).join(" → ") || t("network.noNodes")
+    : t("network.directViaComputer");
+  const policyLabel = (active.exitPolicy ?? "static") === "dynamicResidential" ? t("network.exitPolicyDynamic") : t("network.staticPolicy");
 
   const addNode = useCallback((id: string) => setEdited((old) => {
     const route = old ?? active;
@@ -285,15 +285,15 @@ export function NetworkDashboard() {
           <div className="flex items-center gap-1.5">
             {draft.enabled && draft.chain.length > 0 && (
               <Tooltip label={dirty ? "Test draft chain" : "Test active chain"} openDelay={300}>
-                <button type="button" className="net-tool press" onClick={() => void live.recheck()} disabled={checking || blocked != null} aria-label={dirty ? "Test draft chain" : "Test active chain"}>
+                <button type="button" className="net-tool press" onClick={() => void live.recheck()} disabled={checking || blocked != null} aria-label={t("network.test")}>
                   {checking ? <Loader size={13} /> : <IconRoute size={15} />}
-                  <span>Test</span>
+                  <span>{t("network.test")}</span>
                 </button>
               </Tooltip>
             )}
             <button type="button" className="net-tool press" onClick={() => setDrawer((open) => !open)} aria-expanded={drawer}>
               <IconLayoutGrid size={15} />
-              <span>Nodes{catalog.nodes.length ? ` (${catalog.nodes.length})` : ""}</span>
+              <span>{t("network.nodes")}{catalog.nodes.length ? ` (${catalog.nodes.length})` : ""}</span>
             </button>
           </div>
         </header>
@@ -369,9 +369,9 @@ export function NetworkDashboard() {
           {dirty && (
             <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 border-t border-line bg-hover/40 px-4 py-3" data-route-actions>
               {blocked && <p className="m-0 min-w-0 basis-48 grow text-sm break-words text-bad" role="status">{blocked}</p>}
-              <Button size="xs" variant="default" disabled={applying} onClick={() => setEdited(null)}>Discard</Button>
+              <Button size="xs" variant="default" disabled={applying} onClick={() => setEdited(null)}>{t("common.discard")}</Button>
               <Button size="xs" loading={applying} disabled={blocked != null} onClick={() => void apply()}>
-                Apply &amp; verify
+                {t("network.applyAndVerify")}
               </Button>
             </div>
           )}
@@ -391,7 +391,7 @@ export function NetworkDashboard() {
             <WorldMap links={links} points={points} selected={selected} draft={dirty} onSelect={selectPoint}
               onDismiss={() => setSelection(panelPoint)} hopDetail={hasHopPopover && <PointCard compact info={pointInfo(selected)} />} />
             <div className="net-map-status" aria-live="polite">
-              {dirty && <span>Draft path</span>}
+              {dirty && <span>{t("network.draftPath")}</span>}
               {unmapped > 0 && <span>{unmapped} {unmapped === 1 ? "hop location" : "hop locations"} unknown</span>}
             </div>
           </div>

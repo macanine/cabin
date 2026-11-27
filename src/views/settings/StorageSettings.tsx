@@ -12,28 +12,30 @@ import type { GuestMachineObservation } from "../../services/ipc/generated/core"
 import { useApp } from "../../state/store";
 import { uiActions } from "../../state/ui";
 import { SettingsPage } from "../SettingsView";
+import { useI18n } from "../../i18n";
 
-const labels: Record<StorageKind, [string, string]> = {
-  application: ["Application", "Current Mac app bundle or development executable"],
-  virtualDisk: ["Virtual disk", "Space the Ubuntu disk image occupies on the Mac"],
-  guestFiles: ["Other VM files", "Firmware settings, guest setup files and console logs"],
-  systemImages: ["Ubuntu images", "Downloaded system images used for setup and verification"],
-  engine: ["QEMU engine", "Virtualization binaries and firmware"],
-  downloads: ["Download cache", "Partial downloads, temporary extraction files and reusable archives"],
-  logs: ["Diagnostic logs", "Startup, setup and shutdown records"],
-  settings: ["Settings and sync", "Network settings, sync records and machine metadata"],
-  webkitCache: ["WebKit cache", "Temporary content used by the Mac app window"],
-  webkitData: ["WebKit site data", "Saved state used by the Mac app window"],
-  otherData: ["Other app data", "Remaining data in the Mac app’s VM folder"],
-  developerCache: ["Developer cache", "Local build outputs outside the installed app total"],
-};
+const KIND_KEYS = {
+  application: ["storage.kind.application", "storage.kind.applicationDesc"],
+  virtualDisk: ["storage.kind.virtualDisk", "storage.kind.virtualDiskDesc"],
+  guestFiles: ["storage.kind.guestFiles", "storage.kind.guestFilesDesc"],
+  systemImages: ["storage.kind.systemImages", "storage.kind.systemImagesDesc"],
+  engine: ["storage.kind.engine", "storage.kind.engineDesc"],
+  downloads: ["storage.kind.downloads", "storage.kind.downloadsDesc"],
+  logs: ["storage.kind.logs", "storage.kind.logsDesc"],
+  settings: ["storage.kind.settings", "storage.kind.settingsDesc"],
+  webkitCache: ["storage.kind.webkitCache", "storage.kind.webkitCacheDesc"],
+  webkitData: ["storage.kind.webkitData", "storage.kind.webkitDataDesc"],
+  otherData: ["storage.kind.otherData", "storage.kind.otherDataDesc"],
+  developerCache: ["storage.kind.developerCache", "storage.kind.developerCacheDesc"],
+} as const satisfies Record<StorageKind, readonly [string, string]>;
 
 function BreakdownRow({ entry, capacity }: { entry: StorageEntry; capacity: string | null }) {
-  const [label, description] = labels[entry.kind];
+  const { t } = useI18n();
+  const [labelKey, descKey] = KIND_KEYS[entry.kind];
   return <div className="storage-row">
-    <dt><strong>{label}</strong><span>{description}</span></dt>
+    <dt><strong>{t(labelKey)}</strong><span>{t(descKey)}</span></dt>
     <dd><strong>{formatBytes(entry.bytes)}</strong>
-      {entry.kind === "virtualDisk" && capacity && <span>{capacity.replace(/^([\d.]+)([KMGT])$/i, "$1 $2iB")} capacity</span>}
+      {entry.kind === "virtualDisk" && capacity && <span>{capacity.replace(/^([\d.]+)([KMGT])$/i, "$1 $2iB")}</span>}
       {!entry.complete && <span>Partial scan</span>}
     </dd>
   </div>;
@@ -41,13 +43,14 @@ function BreakdownRow({ entry, capacity }: { entry: StorageEntry; capacity: stri
 
 /** The entries as one bar, largest first. The list below names every size. */
 function StorageBar({ entries }: { entries: StorageEntry[] }) {
+  const { t } = useI18n();
   const sized = entries.filter((entry) => entry.bytes > 0).sort((a, b) => b.bytes - a.bytes);
   const total = sized.reduce((sum, entry) => sum + entry.bytes, 0);
   if (!total) return null;
   return (
     <div className="storage-bar" aria-hidden>
       {sized.map((entry, index) => (
-        <span key={entry.kind} title={`${labels[entry.kind][0]} · ${formatBytes(entry.bytes)}`}
+        <span key={entry.kind} title={`${t(KIND_KEYS[entry.kind][0])} · ${formatBytes(entry.bytes)}`}
           style={{ flexGrow: entry.bytes / total, opacity: Math.max(0.22, 1 - index * 0.2) }} />
       ))}
     </div>
@@ -55,6 +58,7 @@ function StorageBar({ entries }: { entries: StorageEntry[] }) {
 }
 
 export function StorageSettings() {
+  const { t } = useI18n();
   const state = useApp((app) => app.machine?.state);
   const connected = useApp((app) => app.machine?.connection === "connected");
   const busy = useApp((app) => app.machine?.busy != null);
@@ -116,55 +120,55 @@ export function StorageSettings() {
   const runtimeEntries = report?.entries.filter((entry) => entry.kind !== "developerCache") ?? [];
   const used = volume?.totalBytes ? 100 * (1 - volume.availableBytes / volume.totalBytes) : null;
   const incomplete = runtimeEntries.some((entry) => !entry.complete);
-  const blocked = state === "running" ? "Stop the machine to clean up storage" : report?.cleanupBlocked;
+  const blocked = state === "running" ? t("storage.stopToClean") : report?.cleanupBlocked;
   const filesystem = connected ? guest : null;
-  return <SettingsPage title="Storage">
+  return <SettingsPage title={t("storage.title")}>
     {scanError && <p className="callout bad" role="alert">{scanError}</p>}
-    {loading && !report && <p className="muted" role="status">Measuring disk usage…</p>}
+    {loading && !report && <p className="muted" role="status">{t("storage.measuring")}</p>}
     {report && <>
       <div className="storage-summary">
-        <div><span>App storage on Mac</span><strong>{incomplete ? "At least " : ""}{formatBytes(report.totalBytes)}</strong><span>App, machine and local data</span></div>
-        <div><span>Available on the data volume</span><strong>{formatBytes(volume?.availableBytes)}</strong>
-          {volume && <span>{formatBytes(Math.max(0, volume.totalBytes - volume.availableBytes))} used or reserved of {formatBytes(volume.totalBytes)}</span>}
-          {used != null && <Progress value={Math.min(100, Math.max(0, used))} size="sm" aria-label="Data volume used or reserved" />}
+        <div><span>{t("storage.appStorage")}</span><strong>{incomplete ? "≥ " : ""}{formatBytes(report.totalBytes)}</strong><span>{t("storage.appStorageSub")}</span></div>
+        <div><span>{t("storage.availableVolume")}</span><strong>{formatBytes(volume?.availableBytes)}</strong>
+          {volume && <span>{t("storage.usedOf", { used: formatBytes(Math.max(0, volume.totalBytes - volume.availableBytes)), total: formatBytes(volume.totalBytes) })}</span>}
+          {used != null && <Progress value={Math.min(100, Math.max(0, used))} size="sm" aria-label={t("storage.availableVolume")} />}
         </div>
       </div>
-      <Section title="Clean up">
+      <Section title={t("storage.cleanUp")}>
         {blocked && <div className="row storage-blocked"><span className="muted">{blocked}</span>
-          {state === "running" && <Button size="compact-sm" variant="subtle" onClick={() => uiActions.navigate({ kind: "settings", tab: "machine" })}>Machine settings</Button>}
+          {state === "running" && <Button size="compact-sm" variant="subtle" onClick={() => uiActions.navigate({ kind: "settings", tab: "machine" })}>{t("home.machineSettings")}</Button>}
         </div>}
         {notice && <div className={notice.failed ? "callout bad" : "storage-notice"} role={notice.failed ? "alert" : "status"}>{notice.text}</div>}
         <div className="storage-breakdown">
           {(["downloads", "logs"] as const).map((target) => {
             const bytes = runtimeEntries.find((entry) => entry.kind === target)?.cleanableBytes ?? 0;
             return <div className="storage-row" key={target}>
-              <div><strong>{target === "downloads" ? "Download cache" : "Old diagnostic logs"}</strong>
-                <span>{target === "downloads" ? "Completed QEMU archives and leftover download files" : `Logs older than ${report.logRetentionDays} days`}</span>
+              <div><strong>{target === "downloads" ? t("storage.downloadCache") : t("storage.oldLogs")}</strong>
+                <span>{target === "downloads" ? t("storage.downloadCacheHint") : t("storage.oldLogsHint", { days: report.logRetentionDays })}</span>
               </div>
               <div className="storage-clean-action">
-                <span>{bytes ? `${formatBytes(bytes)} to clean` : "Nothing to clean"}</span>
+                <span>{bytes ? t("storage.toClean", { size: formatBytes(bytes) }) : t("storage.nothingToClean")}</span>
                 <Button variant="default" size="compact-sm" leftSection={<IconTrash size={14} />}
-                  aria-label={target === "downloads" ? "Clean download cache" : "Clean old diagnostic logs"}
+                  aria-label={target === "downloads" ? t("storage.downloadCache") : t("storage.oldLogs")}
                   loading={cleaning === target} disabled={bytes === 0 || busy || blocked != null || loading || cleaning != null}
-                  onClick={() => void clean(target, bytes)}>Clean up</Button>
+                  onClick={() => void clean(target, bytes)}>{t("common.cleanUp")}</Button>
               </div>
             </div>;
           })}
         </div>
       </Section>
-      <Section title="What takes space" hint="Sizes use allocated disk space. Space reclaimed can vary with the filesystem.">
+      <Section title={t("storage.whatTakesSpace")} hint={t("storage.whatTakesSpaceHint")}>
         <StorageBar entries={runtimeEntries} />
         <dl className="storage-breakdown">
           {runtimeEntries.map((entry) => <BreakdownRow key={entry.kind} entry={entry} capacity={report.diskCapacity} />)}
         </dl>
         {filesystem?.rootAvailableBytes != null && filesystem.rootTotalBytes != null && <p className="muted fs-13">
-          Ubuntu system disk · {formatBytes(filesystem.rootAvailableBytes)} available of {formatBytes(filesystem.rootTotalBytes)}
+          {t("storage.ubuntuDisk", { avail: formatBytes(filesystem.rootAvailableBytes), total: formatBytes(filesystem.rootTotalBytes) })}
         </p>}
       </Section>
-      <Section title="Locations">
+      <Section title={t("storage.locations")}>
         <dl className="storage-breakdown">
-          <div className="storage-row"><dt>App data</dt><dd className="mono">{report.dataPath}</dd></div>
-          {report.appPath && <div className="storage-row"><dt>Application</dt><dd className="mono">{report.appPath}</dd></div>}
+          <div className="storage-row"><dt>{t("storage.appData")}</dt><dd className="mono">{report.dataPath}</dd></div>
+          {report.appPath && <div className="storage-row"><dt>{t("storage.application")}</dt><dd className="mono">{report.appPath}</dd></div>}
           {dev && (dev.bytes > 0 || !dev.complete) && <BreakdownRow entry={dev} capacity={null} />}
         </dl>
       </Section>

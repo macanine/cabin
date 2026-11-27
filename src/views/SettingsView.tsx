@@ -13,9 +13,9 @@ import { NetworkSettings } from "./settings/NetworkSettings";
 import { RemoteSettings } from "./settings/RemoteSettings";
 import { StorageSettings } from "./settings/StorageSettings";
 import { ToolsSettings } from "./settings/ToolsSettings";
-import { type MessageKey, useI18n } from "../i18n";
+import { type StaticMessageKey, useI18n } from "../i18n";
 
-const TABS: Record<SettingsTab, { labelKey: MessageKey; icon: typeof IconAdjustments; guest: boolean }> = {
+const TABS: Record<SettingsTab, { labelKey: StaticMessageKey; icon: typeof IconAdjustments; guest: boolean }> = {
   general: { labelKey: "settings.tab.general", icon: IconAdjustments, guest: true },
   network: { labelKey: "settings.tab.network", icon: IconWorld, guest: false },
   remote: { labelKey: "settings.tab.remote", icon: IconPlugConnected, guest: false },

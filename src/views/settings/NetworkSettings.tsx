@@ -19,13 +19,14 @@ const localeLabel = (locale: string | null | undefined) => locale?.split(".")[0]
 
 /** "Matches exit" / "Differs" for one setting, when the exit is known. */
 function MatchPill({ matches }: { matches: boolean | null }) {
+  const { t } = useI18n();
   if (matches == null) return null;
   return matches ? (
     <span className="inline-flex items-center gap-1 rounded-full bg-ok/12 px-2 py-0.5 text-xs font-medium text-ok">
-      <IconCheck size={12} stroke={2.5} aria-hidden="true" />Matches exit
+      <IconCheck size={12} stroke={2.5} aria-hidden="true" />{t("network.matchesExit")}
     </span>
   ) : (
-    <span className="rounded-full bg-warn/14 px-2 py-0.5 text-xs font-medium text-warn">Differs from exit</span>
+    <span className="rounded-full bg-warn/14 px-2 py-0.5 text-xs font-medium text-warn">{t("network.differsExit")}</span>
   );
 }
 
@@ -227,7 +228,7 @@ export function NetworkSettings() {
                 <p>{t("network.vmRegionSubtitle")}</p>
               </div>
             </header>
-            <SettingGroup><SettingRow label="Time zone and language" hint="Available once the machine is connected." /></SettingGroup>
+            <SettingGroup><SettingRow label={t("network.timeZoneAndLang")} hint={t("network.regionUnavailable")} /></SettingGroup>
           </div>
         )}
       </section>

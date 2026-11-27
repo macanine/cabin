@@ -167,8 +167,8 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
           </>
         ) : t("agents.subtitle")}
       >
-        <Tooltip label="Refresh agent status" openDelay={300}>
-          <ActionIcon size="md" variant="subtle" color="gray" aria-label="Refresh agent status"
+        <Tooltip label={t("agents.refreshStatus")} openDelay={300}>
+          <ActionIcon size="md" variant="subtle" color="gray" aria-label={t("agents.refreshStatus")}
             disabled={setup.installing != null} loading={setup.checking} onClick={() => void setup.check()}>
             <IconRefresh size={16} />
           </ActionIcon>
@@ -177,7 +177,7 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
 
       <div className="ag-page">
         <div className="ag-shell">
-          <nav className="ag-bar" aria-label="Agents">
+          <nav className="ag-bar" aria-label={t("agents.title")}>
             {AGENT_KINDS.map((entry) => {
               const status = agents.find((agent) => agent.kind === entry);
               const state = agentState(status);
@@ -193,17 +193,17 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
                 >
                   <AgentLogo agent={entry} size={17} />
                   <span>{AGENT_NAMES[entry]}</span>
-                  <span className={`ag-pill-dot ${status ? DOT[state.tone] : "bg-faint/40"}`} title={status ? state.label : "Checking…"} aria-hidden />
+                  <span className={`ag-pill-dot ${status ? DOT[state.tone] : "bg-faint/40"}`} title={status ? state.label : t("common.loading")} aria-hidden />
                 </button>
               );
             })}
           </nav>
 
-          {setup.checkError && <p className="callout warn m-0" role="status">Couldn’t check agent status. Refresh to retry.</p>}
+          {setup.checkError && <p className="callout warn m-0" role="status">{t("agents.checkError")}</p>}
           {setup.problem && (
             <div className="callout warn flex flex-wrap items-center justify-between gap-2">
               <span>{setup.problem}</span>
-              <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "settings", tab: "tools" })}>Set up Node.js</Button>
+              <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "settings", tab: "tools" })}>{t("agents.setupNode")}</Button>
             </div>
           )}
 
@@ -225,26 +225,27 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
 }
 
 function PlanLimits({ kind, limits }: { kind: AgentKind; limits: Limits }) {
+  const { t } = useI18n();
   const now = useMinute();
   return (
-    <section className="ag-block" aria-label="Plan limits">
+    <section className="ag-block" aria-label={t("agents.planLimits")}>
       <div className="ag-block-head">
-        <h3>Plan limits</h3>
-        <span>Pace estimate since each window opened</span>
+        <h3>{t("agents.planLimits")}</h3>
+        <span>{t("agents.paceHint")}</span>
       </div>
       <div className="ag-limit-tiles">
         {limits.windows.map((window) => {
           const forecast = forecastLimit(window, now);
           const name = `${AGENT_NAMES[kind]} · ${shortLimitLabel(window.label)}`;
           return (
-            <div key={window.label} className="ag-tile" data-tone={forecast.tone} role="group" aria-label={`${name}: ${LEFT(forecast)}% left. ${forecast.text}`}>
+            <div key={window.label} className="ag-tile" data-tone={forecast.tone} role="group" aria-label={`${name}: ${LEFT(forecast)}% ${t("agents.left")}. ${forecast.text}`}>
               <div className="ag-tile-top">
                 <span className="ag-tile-name">{shortLimitLabel(window.label)}</span>
-                {forecast.resetsIn != null && <span className="ag-tile-reset">Resets in {formatSpan(forecast.resetsIn)}</span>}
+                {forecast.resetsIn != null && <span className="ag-tile-reset">{t("agents.resetsIn", { span: formatSpan(forecast.resetsIn) })}</span>}
               </div>
               <div className="ag-tile-figure">
                 <strong>{LEFT(forecast)}<small>%</small></strong>
-                <span>left</span>
+                <span>{t("agents.left")}</span>
               </div>
               {burnable(window, now)
                 ? <BurnChart window={window} forecast={forecast} scope={limits.scope} now={now} height={60} axis />
@@ -281,8 +282,8 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
   if (!status) {
     return (
       <div className="ag-empty">
-        <Loader size="xs" aria-label="Checking agent" />
-        <span>Checking {AGENT_NAMES[kind]}…</span>
+        <Loader size="xs" aria-label={t("agents.checking", { agent: AGENT_NAMES[kind] })} />
+        <span>{t("agents.checking", { agent: AGENT_NAMES[kind] })}</span>
       </div>
     );
   }
@@ -308,7 +309,7 @@ function AgentCanvas({ kind, openSetup, status, limits, setup, onOpenTerminal, s
           disabled={setup.installing != null || nodeBlocked}
           onClick={() => void setup.install(status)}
         >
-          {status.installed ? `Reinstall ${AGENT_NAMES[kind]}` : `Install ${AGENT_NAMES[kind]}`}
+          {status.installed ? t("agents.reinstallBtn", { agent: AGENT_NAMES[kind] }) : t("agents.installBtn", { agent: AGENT_NAMES[kind] })}
         </Button>
       </section>
     );

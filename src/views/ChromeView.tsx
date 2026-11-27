@@ -18,6 +18,7 @@ import { ViewHeader } from "../components/TitleBar";
 import { StepProgress } from "../components/StepProgress";
 import { ChromeViewer, type ViewerState } from "../components/ChromeViewer";
 import { DISPLAY_ZOOMS, matchDisplay, zoomScale } from "../lib/chromeDisplay";
+import { useI18n } from "../i18n";
 
 const INSTALLING = "Installing Chrome";
 const PROTOCOL_KEY = "cabin.chromeDisplayProtocol";
@@ -61,6 +62,7 @@ export function ChromePage() {
  * the window size.
  */
 export function ChromeView() {
+  const { t } = useI18n();
   const machine = useApp((state) => state.machine);
   const [status, setStatus] = useState<ChromeStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -206,8 +208,8 @@ export function ChromeView() {
   }
   if (machine.state === "notInstalled") {
     return (
-      <Center icon title="Set up your machine first" action={<Button onClick={() => uiActions.navigate({ kind: "install" })}>Set up machine</Button>}>
-        Chrome is installed inside the machine.
+      <Center icon title={t("chrome.setupFirst")} action={<Button onClick={() => uiActions.navigate({ kind: "install" })}>{t("chrome.setupMachine")}</Button>}>
+        {t("chrome.setupFirstHint")}
       </Center>
     );
   }
@@ -217,7 +219,7 @@ export function ChromeView() {
   }
 
   if (!status) {
-    return <Center tone="bad" title="Chrome is unavailable" error={error} action={<Button variant="default" onClick={() => void load()}>Try again</Button>} />;
+    return <Center tone="bad" title={t("chrome.unavailable")} error={error} action={<Button variant="default" onClick={() => void load()}>{t("common.retry")}</Button>} />;
   }
 
   if (!status.configured) {
@@ -225,8 +227,8 @@ export function ChromeView() {
       return <ChromeSetup install={status.install} error={error} onRetry={() => void install()} />;
     }
     return (
-      <Center icon title="Chrome isn't installed" action={<Button leftSection={<IconBrandChrome size={16} />} onClick={() => void install()}>Install Chrome</Button>} error={error}>
-        The machine restarts once while Chrome is installed.
+      <Center icon title={t("chrome.notInstalled")} action={<Button leftSection={<IconBrandChrome size={16} />} onClick={() => void install()}>{t("chrome.installBtn")}</Button>} error={error}>
+        {t("chrome.notInstalledHint")}
       </Center>
     );
   }
@@ -236,18 +238,18 @@ export function ChromeView() {
     return (
       <Center
         icon
-        title={starting ? "Starting the machine…" : "The machine is stopped"}
+        title={starting ? t("chrome.startingMachine") : t("chrome.machineStopped")}
         spinner={starting}
         error={error ?? machine.error}
-        action={!starting && <Button leftSection={<IconPlayerPlay size={16} />} onClick={() => void machineIpc.start().catch((cause) => setError(toIpcError(cause).message))}>Start machine</Button>}
+        action={!starting && <Button leftSection={<IconPlayerPlay size={16} />} onClick={() => void machineIpc.start().catch((cause) => setError(toIpcError(cause).message))}>{t("nav.startMachine")}</Button>}
       />
     );
   }
 
   if (status.installed === false) {
     return (
-      <Center tone="bad" title="Chrome is missing from the machine" error={error} action={<Button onClick={() => void install()}>Repair Chrome</Button>}>
-        Reinstalling keeps your files and tabs that are still on disk.
+      <Center tone="bad" title={t("chrome.missing")} error={error} action={<Button onClick={() => void install()}>{t("chrome.repairBtn")}</Button>}>
+        {t("chrome.missingHint")}
       </Center>
     );
   }
@@ -261,22 +263,22 @@ export function ChromeView() {
   };
   return (
     <div className="chrome-page">
-      <ViewHeader title="Chrome" subtitle={!ready ? (viewer.phase === "failed" ? "Reconnecting…" : "Connecting…") : status.running === false ? "Closed" : status.version ?? undefined}>
-        <div className={`chrome-tools${ready ? "" : " dock-hidden"}`} role="toolbar" aria-label="Chrome" inert={!ready}>
+      <ViewHeader title={t("nav.chrome")} subtitle={!ready ? (viewer.phase === "failed" ? t("chrome.reconnecting") : t("chrome.connecting")) : status.running === false ? t("chrome.closed") : status.version ?? undefined}>
+        <div className={`chrome-tools${ready ? "" : " dock-hidden"}`} role="toolbar" aria-label={t("nav.chrome")} inert={!ready}>
         <AppLauncher onError={setError} />
-        <Tooltip label={fit ? "Fit to window: on" : "Fit the desktop to this window"} withinPortal>
-          <ActionIcon variant={fit ? "light" : "subtle"} color={fit ? undefined : "gray"} aria-pressed={fit} aria-label="Fit to window"
+        <Tooltip label={fit ? t("chrome.fitWindowOn") : t("chrome.fitWindowHint")} withinPortal>
+          <ActionIcon variant={fit ? "light" : "subtle"} color={fit ? undefined : "gray"} aria-pressed={fit} aria-label={t("chrome.fitWindow")}
             loading={working === "display"} disabled={!canResize && !fit} onClick={toggleFit}>
             <IconArrowsMaximize size={16} />
           </ActionIcon>
         </Tooltip>
-        <Tooltip label="Browser environment" withinPortal>
-          <ActionIcon variant="subtle" color="gray" aria-label="Browser environment" onClick={() => uiActions.setBrowserPanel(true)}>
+        <Tooltip label={t("chrome.environment")} withinPortal>
+          <ActionIcon variant="subtle" color="gray" aria-label={t("chrome.environment")} onClick={() => uiActions.setBrowserPanel(true)}>
             <IconFingerprint size={16} />
           </ActionIcon>
         </Tooltip>
-        <Tooltip label="Restart Chrome (tabs reopen)" withinPortal>
-          <ActionIcon variant="subtle" color="gray" aria-label="Restart Chrome" loading={working === "restart"} disabled={!!working}
+        <Tooltip label={t("chrome.restartHint")} withinPortal>
+          <ActionIcon variant="subtle" color="gray" aria-label={t("chrome.restartChrome")} loading={working === "restart"} disabled={!!working}
             onClick={() => void run("restart", async () => { await chromeIpc.stop(); await chromeIpc.open(); })}>
             <IconRefresh size={16} />
           </ActionIcon>
@@ -287,7 +289,7 @@ export function ChromeView() {
           </Menu.Target>
           <Menu.Dropdown>
             <Menu.Label>Chrome {status.version ?? ""}</Menu.Label>
-            <Menu.Label>Display</Menu.Label>
+            <Menu.Label>{t("chrome.display")}</Menu.Label>
             <Menu.Item rightSection={protocol === "vnc" ? <IconCheck size={14} /> : null} disabled={!!working} onClick={() => void selectProtocol("vnc")}>VNC</Menu.Item>
             <Menu.Item
               rightSection={protocol === "spice" ? <IconCheck size={14} /> : null}
@@ -298,8 +300,8 @@ export function ChromeView() {
             </Menu.Item>
             {nativeDisplay && (
               <>
-                <Menu.Label>Scale · {nativeDisplay.width} × {nativeDisplay.height}</Menu.Label>
-                <div className="chrome-scale" role="group" aria-label="Scale">
+                <Menu.Label>{t("chrome.scale")} · {nativeDisplay.width} × {nativeDisplay.height}</Menu.Label>
+                <div className="chrome-scale" role="group" aria-label={t("chrome.scale")}>
                   {DISPLAY_ZOOMS.map((value) => (
                     <button key={value} type="button" aria-pressed={nativeZoom === value}
                       disabled={!canResize || zoomScale(baseScale, value) > 4}
@@ -307,13 +309,13 @@ export function ChromeView() {
                   ))}
                 </div>
                 {(nativeDisplay.enabled || nativeDisplay.recoveryRequired) && (
-                  <Menu.Item disabled={!!working} onClick={() => { setFit(false); void changeDisplay("restore"); }}>Reset display</Menu.Item>
+                  <Menu.Item disabled={!!working} onClick={() => { setFit(false); void changeDisplay("restore"); }}>{t("chrome.resetDisplay")}</Menu.Item>
                 )}
               </>
             )}
             <Menu.Divider />
-            {status.install && <Menu.Item leftSection={<IconFileText size={14} />} onClick={() => setShowInstallLog(true)}>Setup log</Menu.Item>}
-            <Menu.Item color="red" leftSection={<IconPower size={14} />} disabled={working === "stop"} onClick={() => void run("stop", () => chromeIpc.stop())}>Quit Chrome</Menu.Item>
+            {status.install && <Menu.Item leftSection={<IconFileText size={14} />} onClick={() => setShowInstallLog(true)}>{t("chrome.setupLog")}</Menu.Item>}
+            <Menu.Item color="red" leftSection={<IconPower size={14} />} disabled={working === "stop"} onClick={() => void run("stop", () => chromeIpc.stop())}>{t("chrome.quitChrome")}</Menu.Item>
           </Menu.Dropdown>
         </Menu>
         </div>
@@ -323,17 +325,17 @@ export function ChromeView() {
         {working === "spice" || viewer.phase === "connecting" ? (
           <div className="chrome-connecting" role="status">
             <Loader size="sm" color="gray" />
-            {working === "spice" ? "Turning on SPICE…" : "Connecting to the desktop…"}
+            {working === "spice" ? t("chrome.turningOnSpice") : t("chrome.connectingDesktop")}
           </div>
         ) : viewer.phase === "failed" && (
           <div className="chrome-connecting">
             <div className="chrome-center" role="alert">
               <Loader size="sm" color="gray" />
-              <h2>Reconnecting to the desktop…</h2>
+              <h2>{t("chrome.reconnectingDesktop")}</h2>
               <p>{viewer.message}</p>
               <div className="chrome-details-actions">
                 {protocol === "vnc" && status.viewerReady === false && (
-                  <Button size="xs" variant="default" onClick={() => void install()}>Repair Chrome</Button>
+                  <Button size="xs" variant="default" onClick={() => void install()}>{t("chrome.repairBtn")}</Button>
                 )}
               </div>
             </div>
@@ -344,9 +346,9 @@ export function ChromeView() {
       {ready && status.running === false && !error && (
         <div className="chrome-toast" role="status">
           {working === "open" || working === "restart" ? (
-            <><Loader size={13} color="gray" /><span>Chrome is starting…</span></>
+            <><Loader size={13} color="gray" /><span>{t("chrome.starting")}</span></>
           ) : (
-            <><span>Chrome is closed</span><Button variant="subtle" size="compact-xs" disabled={working !== null} onClick={() => void run("open", chromeIpc.open)}>Open Chrome</Button></>
+            <><span>{t("chrome.isClosed")}</span><Button variant="subtle" size="compact-xs" disabled={working !== null} onClick={() => void run("open", chromeIpc.open)}>{t("chrome.openChrome")}</Button></>
           )}
         </div>
       )}

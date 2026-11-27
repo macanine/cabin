@@ -6,6 +6,7 @@ import { machineIpc } from "../../services/ipc/app";
 import { toIpcError } from "../../services/ipc/common";
 import type { MachineDetails } from "../../services/ipc/generated/common";
 import type { MachineStatus } from "../../services/ipc/generated/core";
+import { useI18n } from "../../i18n";
 
 const integerIn = (value: string | number, min: number, max: number): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
@@ -37,6 +38,7 @@ function ResourceForm({ cpus, memoryMb, currentDisk, nextDisk, pending, notice, 
   busy: boolean;
   onSaved: () => void;
 }) {
+  const { t } = useI18n();
   const [cpu, setCpu] = useState<number | string>(cpus);
   const [memory, setMemory] = useState<number | string>(memoryMb);
   const [disk, setDisk] = useState<number | string>(nextDisk ?? "");
@@ -66,29 +68,29 @@ function ResourceForm({ cpus, memoryMb, currentDisk, nextDisk, pending, notice, 
   }
 
   return (
-    <Section title="Change allocation" hint="Changes take effect on the next cold start. Saving does not stop the machine.">
+    <Section title={t("machine.alloc.title")} hint={t("machine.alloc.hint")}>
       <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); void submit(false); }}>
         <div className="grid gap-3 sm:grid-cols-3">
-          <NumberInput label="vCPUs" min={1} max={64} allowDecimal={false} clampBehavior="none"
+          <NumberInput label={t("machine.alloc.vcpus")} min={1} max={64} allowDecimal={false} clampBehavior="none"
             value={cpu} onChange={setCpu} disabled={disabled} />
-          <NumberInput label="Memory (MiB)" min={512} max={65536} step={512} allowDecimal={false} clampBehavior="none"
+          <NumberInput label={t("machine.alloc.memory")} min={512} max={65536} step={512} allowDecimal={false} clampBehavior="none"
             value={memory} onChange={setMemory} disabled={disabled} />
-          <NumberInput label="New disk capacity (GiB)" placeholder={currentDisk == null ? "No change" : `Current: ${currentDisk} GiB`}
+          <NumberInput label={t("machine.alloc.disk")} placeholder={currentDisk == null ? t("machine.alloc.noChange") : t("machine.alloc.currentDisk", { gb: currentDisk })}
             min={diskMinimum} max={2048} allowDecimal={false} clampBehavior="none" value={disk} onChange={setDisk}
             disabled={disabled || verifiesDisk} />
         </div>
-        <p className="m-0 text-sm text-muted">Enter the total disk capacity, not the amount to add. Expansion cannot be undone once it starts.</p>
-        {!valid && <p className="m-0 text-sm text-bad" role="status">Use 1–64 vCPUs, 512–65536 MiB of memory, and a disk capacity between {diskMinimum} and 2048 GiB, or leave the disk field blank.</p>}
+        <p className="m-0 text-sm text-muted">{t("machine.alloc.diskNote")}</p>
+        {!valid && <p className="m-0 text-sm text-bad" role="status">{t("machine.alloc.invalid", { min: diskMinimum })}</p>}
         {pending && <p className="m-0 text-sm text-muted" role="status">
           {verifiesDisk ? "The virtual disk has grown. Guest filesystem expansion is still pending; stop and start the machine to retry."
-            : `Saved for next start: ${cpus} vCPUs, ${memoryMb} MiB of memory${nextDisk ? `, ${nextDisk} GiB disk` : ""}.`}
+            : `${t("machine.alloc.save")}: ${cpus} vCPUs, ${memoryMb} MiB${nextDisk ? `, ${nextDisk} GiB` : ""}.`}
         </p>}
         {notice && <p className="m-0 text-sm text-warn [overflow-wrap:anywhere]" role="status">{notice}</p>}
         {error && <p className="m-0 text-sm text-bad [overflow-wrap:anywhere]" role="alert">{error}</p>}
         <div className="flex flex-wrap gap-2">
-          <Button type="submit" size="xs" loading={working === "save"} disabled={disabled || !valid || !changed}>Save for next start</Button>
+          <Button type="submit" size="xs" loading={working === "save"} disabled={disabled || !valid || !changed}>{t("machine.alloc.save")}</Button>
           {nextDisk != null && !verifiesDisk && !running && <Button type="button" size="xs" variant="default" loading={working === "cancel"}
-            disabled={disabled} onClick={() => void submit(true)}>Cancel queued expansion</Button>}
+            disabled={disabled} onClick={() => void submit(true)}>{t("machine.alloc.cancelDisk")}</Button>}
         </div>
       </form>
     </Section>

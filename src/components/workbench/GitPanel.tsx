@@ -14,13 +14,19 @@ import { Diff } from "../diff/Diff";
 import { Stat } from "../diff/Stat";
 import { FileIcon } from "./FileExplorer";
 import type { GitStatusState } from "./useGitStatus";
+import { type StaticMessageKey, useI18n } from "../../i18n";
 
 type Group = "conflicted" | "staged" | "changes";
-const TITLE: Record<Group, string> = { conflicted: "Merge conflicts", staged: "Staged changes", changes: "Changes" };
+const TITLE_KEY: Record<Group, StaticMessageKey> = {
+  conflicted: "wb.mergeConflicts",
+  staged: "wb.stagedChanges",
+  changes: "wb.changes",
+};
 
 /** Source control like an editor's: branch, commit box, grouped changes with
  * stage / unstage / discard, and a per-file diff (inline or side by side). */
 export function GitPanel({ root, git }: { root: WorkbenchRoot; git: GitStatusState }) {
+  const { t } = useI18n();
   const { status } = git;
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -79,13 +85,13 @@ export function GitPanel({ root, git }: { root: WorkbenchRoot; git: GitStatusSta
         onToggleStage={() => void (open.staged ? unstage([open.path]) : stage([open.path])).then(() => setOpen(null))} />
     );
   }
-  if (git.error && !status) return <div className="wb-empty"><strong>Git unavailable</strong><span>{git.error}</span></div>;
-  if (!status) return <div className="wb-empty faint">Reading git status…</div>;
+  if (git.error && !status) return <div className="wb-empty"><strong>{t("wb.gitUnavailable")}</strong><span>{git.error}</span></div>;
+  if (!status) return <div className="wb-empty faint">{t("wb.readingGitStatus")}</div>;
   if (!status.repository) {
-    return <div className="wb-empty"><IconGitBranch size={22} className="faint" /><strong>Not a git repository</strong><span>Run <code>git init</code> in this workspace to track changes here.</span></div>;
+    return <div className="wb-empty"><IconGitBranch size={22} className="faint" /><strong>{t("wb.notGitRepo")}</strong><span>Run <code>git init</code> in this workspace to track changes here.</span></div>;
   }
   const total = groups.staged.length + groups.changes.length + groups.conflicted.length;
-  const commitLabel = groups.staged.length ? "Commit" : "Commit all";
+  const commitLabel = groups.staged.length ? t("wb.commit") : t("wb.commitAll");
 
   return (
     <div className="wb-git">
@@ -110,7 +116,7 @@ export function GitPanel({ root, git }: { root: WorkbenchRoot; git: GitStatusSta
         </button>
       </div>
       <div className="wb-scroll">
-        {total === 0 && <div className="wb-empty"><IconCheck size={22} className="wb-ok" /><strong>Working tree clean</strong><span>Changes the agent makes show up here.</span></div>}
+        {total === 0 && <div className="wb-empty"><IconCheck size={22} className="wb-ok" /><strong>{t("wb.workingClean")}</strong><span>{t("wb.workingCleanHint")}</span></div>}
         {(["conflicted", "staged", "changes"] as Group[]).map((group) => {
           const files = groups[group];
           if (!files.length) return null;
@@ -120,14 +126,14 @@ export function GitPanel({ root, git }: { root: WorkbenchRoot; git: GitStatusSta
               <div className="wb-group-head">
                 <button className="wb-group-toggle" onClick={() => setCollapsed((old) => { const next = new Set(old); if (next.has(group)) next.delete(group); else next.add(group); return next; })}>
                   <IconChevronRight size={13} className={`wb-chevron${shut ? "" : " open"}`} />
-                  <span>{TITLE[group]}</span>
+                  <span>{t(TITLE_KEY[group])}</span>
                   <span className="wb-count">{files.length}</span>
                 </button>
                 <div className="wb-row-actions">
-                  {group === "changes" && <button className="wb-icon-btn" title="Discard all changes" disabled={busy} onClick={() => void discard(files)}><IconArrowBackUp size={14} /></button>}
+                  {group === "changes" && <button className="wb-icon-btn" title={t("wb.discardAll")} disabled={busy} onClick={() => void discard(files)}><IconArrowBackUp size={14} /></button>}
                   {group === "staged"
-                    ? <button className="wb-icon-btn" title="Unstage all" disabled={busy} onClick={() => void unstage(files.map((f) => f.path))}><IconMinus size={14} /></button>
-                    : <button className="wb-icon-btn" title="Stage all" disabled={busy} onClick={() => void stage(files.map((f) => f.path))}><IconPlus size={14} /></button>}
+                    ? <button className="wb-icon-btn" title={t("wb.unstageAll")} disabled={busy} onClick={() => void unstage(files.map((f) => f.path))}><IconMinus size={14} /></button>
+                    : <button className="wb-icon-btn" title={t("wb.stageAll")} disabled={busy} onClick={() => void stage(files.map((f) => f.path))}><IconPlus size={14} /></button>}
                 </div>
               </div>
               {!shut && files.map((file) => {
@@ -143,10 +149,10 @@ export function GitPanel({ root, git }: { root: WorkbenchRoot; git: GitStatusSta
                     <span className="grow" />
                     <Stat additions={file.additions} deletions={file.deletions} />
                     <div className="wb-row-actions" onClick={(e) => e.stopPropagation()}>
-                      {group === "changes" && <button className="wb-icon-btn" title="Discard changes" disabled={busy} onClick={() => void discard([file])}><IconArrowBackUp size={14} /></button>}
+                      {group === "changes" && <button className="wb-icon-btn" title={t("wb.discardFile")} disabled={busy} onClick={() => void discard([file])}><IconArrowBackUp size={14} /></button>}
                       {staged
-                        ? <button className="wb-icon-btn" title="Unstage" disabled={busy} onClick={() => void unstage([file.path])}><IconMinus size={14} /></button>
-                        : <button className="wb-icon-btn" title="Stage" disabled={busy} onClick={() => void stage([file.path])}><IconPlus size={14} /></button>}
+                        ? <button className="wb-icon-btn" title={t("wb.unstage")} disabled={busy} onClick={() => void unstage([file.path])}><IconMinus size={14} /></button>
+                        : <button className="wb-icon-btn" title={t("wb.stage")} disabled={busy} onClick={() => void stage([file.path])}><IconPlus size={14} /></button>}
                     </div>
                     <span className={`wb-letter s-${statusLetter(file)}`}>{statusLetter(file)}</span>
                   </div>
@@ -166,6 +172,7 @@ const SPLIT_KEY = "cabin.diffSplit";
 function DiffView({ root, path, staged, file, busy, onBack, onToggleStage }: {
   root: WorkbenchRoot; path: string; staged: boolean; file: GitFileStatus | null; busy: boolean; onBack: () => void; onToggleStage: () => void;
 }) {
+  const { t } = useI18n();
   const [diff, setDiff] = useState<GitFileDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [split, setSplit] = useState(() => { try { return localStorage.getItem(SPLIT_KEY) === "1"; } catch { return false; } });
@@ -178,18 +185,18 @@ function DiffView({ root, path, staged, file, busy, onBack, onToggleStage }: {
   return (
     <div className="wb-viewer">
       <div className="wb-viewer-head">
-        <button className="wb-icon-btn" aria-label="Back to changes" title="Back to changes" onClick={onBack}><IconArrowLeft size={15} /></button>
+        <button className="wb-icon-btn" aria-label={t("wb.backToChanges")} title={t("wb.backToChanges")} onClick={onBack}><IconArrowLeft size={15} /></button>
         <FileIcon path={path} />
         <div className="wb-viewer-title truncate" title={path}><strong>{name}</strong>{dir && <span className="faint"> {dir}</span>}</div>
-        <span className="wb-meta">{staged ? "Staged" : file?.status === "?" ? "Untracked" : "Working tree"}</span>
-        <button className="wb-icon-btn" title={split ? "Inline diff" : "Side-by-side diff"} onClick={toggleSplit}>{split ? <IconLayoutRows size={15} /> : <IconLayoutColumns size={15} />}</button>
-        {file && <button className="wb-chip" disabled={busy} onClick={onToggleStage}>{staged ? "Unstage" : "Stage"}</button>}
+        <span className="wb-meta">{staged ? t("wb.staged") : file?.status === "?" ? t("wb.untracked") : t("wb.workingTree")}</span>
+        <button className="wb-icon-btn" title={split ? t("wb.inlineDiff") : t("wb.splitDiff")} onClick={toggleSplit}>{split ? <IconLayoutRows size={15} /> : <IconLayoutColumns size={15} />}</button>
+        {file && <button className="wb-chip" disabled={busy} onClick={onToggleStage}>{staged ? t("wb.unstage") : t("wb.stage")}</button>}
       </div>
       <div className="wb-scroll wb-viewer-body">
         {error && <div className="wb-empty"><strong>Diff unavailable</strong><span>{error}</span></div>}
-        {!diff && !error && <div className="wb-empty faint">Loading diff…</div>}
-        {diff && (diff.binary ? <div className="wb-empty"><strong>Binary file changed</strong></div>
-          : !diff.patch ? <div className="wb-empty faint">No textual changes (mode or rename only).</div>
+        {!diff && !error && <div className="wb-empty faint">{t("wb.loadingDiff")}</div>}
+        {diff && (diff.binary ? <div className="wb-empty"><strong>{t("wb.binaryChanged")}</strong></div>
+          : !diff.patch ? <div className="wb-empty faint">{t("wb.noTextChanges")}</div>
             : <div className="wb-diff"><Diff patch={diff.patch} path={path} toolbar={false} format={split ? "side-by-side" : "line-by-line"} />{diff.truncated && <div className="wb-empty faint">Diff truncated.</div>}</div>)}
       </div>
     </div>

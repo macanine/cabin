@@ -11,6 +11,7 @@
  * Components never multiply by 1000 or call `new Date(guestTime)` themselves.
  */
 import { hostTime } from "./clock.ts";
+import { getLocale } from "../i18n/index.ts";
 
 export const DAY_MS = 86_400_000;
 
@@ -34,15 +35,15 @@ export function formatDateTime(
   ms: Millis,
   options: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "short" },
 ): string {
-  return new Intl.DateTimeFormat(undefined, options).format(absoluteDate(ms));
+  return new Intl.DateTimeFormat(getLocale(), options).format(absoluteDate(ms));
 }
 
 export function formatDate(ms: Millis, options: Intl.DateTimeFormatOptions = { dateStyle: "medium" }): string {
-  return new Intl.DateTimeFormat(undefined, options).format(absoluteDate(ms));
+  return new Intl.DateTimeFormat(getLocale(), options).format(absoluteDate(ms));
 }
 
 export function formatTime(ms: Millis, options: Intl.DateTimeFormatOptions = { timeStyle: "short" }): string {
-  return new Intl.DateTimeFormat(undefined, options).format(absoluteDate(ms));
+  return new Intl.DateTimeFormat(getLocale(), options).format(absoluteDate(ms));
 }
 
 export function formatGuestDateTime(guestMs: Millis): string {
@@ -101,11 +102,12 @@ export function weekdayIndex(dayKey: string): number {
 /** Short clock label for a Mac-clock timestamp: "14:05", "Fri 14:05", "Jul 3 14:05". */
 export function formatClockTime(ms: Millis, now: Millis = Date.now()): string {
   if (!ms) return "";
+  const locale = getLocale();
   const date = absoluteDate(ms);
-  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const time = date.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
   if (localDayKey(ms) === localDayKey(now)) return time;
   if (now - ms < 6 * DAY_MS) {
-    return `${date.toLocaleDateString([], { weekday: "short" })} ${time}`;
+    return `${date.toLocaleDateString(locale, { weekday: "short" })} ${time}`;
   }
-  return `${date.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+  return `${date.toLocaleDateString(locale, { month: "short", day: "numeric" })} ${time}`;
 }

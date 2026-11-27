@@ -17,6 +17,7 @@ import { machineLabel } from "../../components/MachineGate";
 import { Section, StateIcon } from "../../components/common";
 import { StartReportView } from "../../components/StartReportView";
 import { SettingsPage } from "../SettingsView";
+import { useI18n } from "../../i18n";
 
 async function destroy() {
   if (!await confirmAction(
@@ -52,13 +53,14 @@ function useInspection<T>(load: () => Promise<T>, request: string | null, keepLa
 }
 
 const PAGES = [
-  { value: "resources", label: "Resources" },
-  { value: "details", label: "Details" },
-  { value: "recovery", label: "Diagnostics and recovery" },
+  { value: "resources", labelKey: "machine.tab.resources" },
+  { value: "details", labelKey: "machine.tab.details" },
+  { value: "recovery", labelKey: "machine.tab.recovery" },
 ] as const;
 type MachinePage = (typeof PAGES)[number]["value"];
 
 export function MachineSettings() {
+  const { t } = useI18n();
   const machine = useApp((state) => state.machine);
   const start = useApp((state) => state.start);
   const request = machine ? `${machine.state}:${machine.connection}:${machine.busy ?? ""}:${machine.display}:${machine.browser}:${machine.device}` : null;
@@ -97,8 +99,8 @@ export function MachineSettings() {
   ].filter((fact) => fact != null);
 
   return (
-    <SettingsPage title="Machine">
-      <section className="mb-4 rounded-[var(--card-radius)] border border-line bg-surface p-5" aria-label="Machine status">
+    <SettingsPage title={t("machine.title")}>
+      <section className="mb-4 rounded-[var(--card-radius)] border border-line bg-surface p-5" aria-label={t("machine.title")}>
         <div className="flex flex-wrap items-center gap-4">
           <span className={`relative grid size-12 shrink-0 place-items-center rounded-2xl ${tone === "ok" ? "bg-ok/13 text-ok" : tone === "warn" ? "bg-warn/14 text-warn" : tone === "bad" ? "bg-bad/13 text-bad" : "bg-hover text-muted"}`}>
             <IconServer size={22} />
@@ -113,12 +115,12 @@ export function MachineSettings() {
           </div>
           {!installed ? (
             <Button leftSection={<IconDownload size={14} />} onClick={() => uiActions.navigate({ kind: "install" })}>
-              {busy ? "Show progress" : "Install…"}
+              {busy ? t("gate.showProgress") : `${t("common.install")}…`}
             </Button>
           ) : running ? (
-            <Button variant="default" leftSection={<IconPlayerStop size={14} />} loading={busy} disabled={busy} onClick={() => attempt(machineIpc.stop(), "Machine stopped")}>Stop</Button>
+            <Button variant="default" leftSection={<IconPlayerStop size={14} />} loading={busy} disabled={busy} onClick={() => attempt(machineIpc.stop())}>{t("common.stop")}</Button>
           ) : (
-            <Button leftSection={<IconPlayerPlay size={14} />} loading={busy} disabled={busy || cannotReadConfig} onClick={() => attempt(machineIpc.start(), "Machine started")}>Start</Button>
+            <Button leftSection={<IconPlayerPlay size={14} />} loading={busy} disabled={busy || cannotReadConfig} onClick={() => attempt(machineIpc.start())}>{t("common.start")}</Button>
           )}
         </div>
         {facts.length > 0 && (
@@ -129,55 +131,55 @@ export function MachineSettings() {
       </section>
 
       {machine.error && <RecoveryPanel compact message={machine.error} />}
-      <nav className="mb-4 flex gap-[18px] border-b border-line" aria-label="Machine sections">
-        {PAGES.map(({ value, label }) => (
-          <button key={value} type="button" className="agents-nav-button" aria-current={page === value ? "page" : undefined} onClick={() => setChosen(value)}>{label}</button>
+      <nav className="mb-4 flex gap-[18px] border-b border-line" aria-label={t("machine.title")}>
+        {PAGES.map(({ value, labelKey }) => (
+          <button key={value} type="button" className="agents-nav-button" aria-current={page === value ? "page" : undefined} onClick={() => setChosen(value)}>{t(labelKey)}</button>
         ))}
       </nav>
       {page === "resources" && <>
       {installed && inspection?.value && <MachineResourceEditor machine={machine} details={inspection.value}
         onSaved={() => setResourceRevision((revision) => revision + 1)} />}
         {installed ? <MachineResources machine={machine} observation={observation?.value ?? null} />
-          : <p className="muted machine-note">Install the machine to set its resources.</p>}
-      {connected && observation?.error && <p className="muted machine-note" role="status">Guest observation unavailable · {observation.error}</p>}
+          : <p className="muted machine-note">{t("machine.installToConfigure")}</p>}
+      {connected && observation?.error && <p className="muted machine-note" role="status">{observation.error}</p>}
 
       </>}
       {page === "details" && (inspection?.value && installed
         ? <MachineDetailsPanel machine={machine} details={inspection.value} observation={observation?.value ?? null} />
-        : <p className="muted machine-note" role="status">{!installed ? "Install the machine to see its details." : inspection?.error ?? (inspection ? "Saved machine configuration is unavailable" : "Reading machine configuration…")}</p>)}
+        : <p className="muted machine-note" role="status">{!installed ? t("machine.installToDetails") : inspection?.error ?? (inspection ? t("machine.configUnavailable") : t("machine.readingConfig"))}</p>)}
       {page === "recovery" && <>
-      <Section title="Startup and diagnostics" action={<CopyDiagnosticsButton />}>
+      <Section title={t("machine.startupDiag")} action={<CopyDiagnosticsButton />}>
         {start ? (
           <details className="machine-expander" open={startFailed || start.state === "running" || undefined}>
-            <summary>{startFailed ? "Start failed" : start.state === "running" ? "Start in progress" : `Last start · ${formatDuration(reportElapsed(start, Date.now()))}`}</summary>
+            <summary>{startFailed ? t("machine.startFailed") : start.state === "running" ? t("machine.startInProgress") : t("machine.lastStart", { duration: formatDuration(reportElapsed(start, Date.now())) })}</summary>
             <StartReportView key={start.startedAt} report={start} />
           </details>
-        ) : <p className="muted machine-note">No startup report in this app session</p>}
+        ) : <p className="muted machine-note">{t("machine.noStartupReport")}</p>}
         <details className="machine-expander" open={blocking || undefined}>
-          <summary>This computer</summary>
+          <summary>{t("machine.thisComputer")}</summary>
           {checks?.value?.length ? <ul className="machine-findings">
             {checks.value.map((check) => <li key={check.id}>
               <StateIcon tone={check.ok ? "ok" : check.optional ? "skipped" : "bad"} />
               <div><div>{check.label}</div><div className="muted fs-12">{check.detail}</div></div>
             </li>)}
-          </ul> : <p className="muted machine-note">{checks?.error ?? (checks ? "No checks available" : "Checking this computer…")}</p>}
+          </ul> : <p className="muted machine-note">{checks?.error ?? (checks ? t("machine.noChecks") : t("machine.checkingComputer"))}</p>}
         </details>
       </Section>
 
-      {(installed || recoveryNeeded) && <Section title="Recovery mode" hint="These tools run on this computer, even when the guest cannot connect." quiet>
+      {(installed || recoveryNeeded) && <Section title={t("machine.recoveryMode")} hint={t("machine.recoveryHint")} quiet>
         {installed && <div className="mb-3 flex flex-wrap items-center gap-3">
           <div className="min-w-0 flex-1">
-            <strong>Verify or repair installation</strong>
-            <div className="text-sm text-muted">Review the recorded setup steps and resume repair with the machine stopped.</div>
+            <strong>{t("machine.verifyRepair")}</strong>
+            <div className="text-sm text-muted">{t("machine.verifyRepairHint")}</div>
           </div>
-          <Button variant="default" disabled={busy || cannotReadConfig} onClick={() => uiActions.navigate({ kind: "install" })}>Review installation</Button>
+          <Button variant="default" disabled={busy || cannotReadConfig} onClick={() => uiActions.navigate({ kind: "install" })}>{t("machine.reviewInstall")}</Button>
         </div>}
         <div className="danger-zone flex flex-wrap items-center gap-3">
           <div className="min-w-0 flex-1">
-            <strong>Erase and reinstall</strong>
-            <div className="text-sm text-muted">Deletes the VM disk and app data, then opens setup. Shared folders on your Mac are kept.</div>
+            <strong>{t("machine.eraseTitle")}</strong>
+            <div className="text-sm text-muted">{t("machine.eraseHint")}</div>
           </div>
-          <Button variant="light" color="red" leftSection={<IconTrash size={14} />} disabled={busy} onClick={() => void destroy()}>Erase machine…</Button>
+          <Button variant="light" color="red" leftSection={<IconTrash size={14} />} disabled={busy} onClick={() => void destroy()}>{t("machine.eraseBtn")}</Button>
         </div>
       </Section>}
       </>}

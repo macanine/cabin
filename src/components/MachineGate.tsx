@@ -12,6 +12,7 @@ import { BootHero, BootPage } from "./Boot";
 import { MachineStage } from "./MachineStage";
 import { StartStage } from "./StartReportView";
 import { CopyDiagnosticsButton, RecoveryPanel } from "./Recovery";
+import { t as translate, useI18n } from "../i18n";
 
 const openMachineSettings = () => uiActions.navigate({ kind: "settings", tab: "machine" });
 
@@ -40,6 +41,7 @@ const StartButton = ({ label, busy }: { label: string; busy: boolean }) => (
 
 /** Shown instead of a VM-backed view until cabind is connected. */
 export function MachineGate({ children }: { children?: ReactNode }) {
+  const { t } = useI18n();
   const guestReady = useApp((state) => state.guestReady);
   const machine = useApp((state) => state.machine);
   const start = useApp((state) => state.start);
@@ -58,10 +60,10 @@ export function MachineGate({ children }: { children?: ReactNode }) {
         recovery={failed && start.error ? <RecoveryPanel message={start.error} compact retry={machine.state === "running"} /> : undefined}
         actions={failed ? <>
           <CopyDiagnosticsButton />
-          <Button variant="default" onClick={openMachineSettings}>Machine settings</Button>
+          <Button variant="default" onClick={openMachineSettings}>{t("home.machineSettings")}</Button>
           <span className="flex-1" />
-          <Button variant="default" onClick={() => uiActions.navigate({ kind: "install" })}>Repair installation</Button>
-          <StartButton label="Try again" busy={busy} />
+          <Button variant="default" onClick={() => uiActions.navigate({ kind: "install" })}>{t("gate.repairInstall")}</Button>
+          <StartButton label={t("common.tryAgain")} busy={busy} />
         </> : undefined}
       />
     );
@@ -74,10 +76,10 @@ export function MachineGate({ children }: { children?: ReactNode }) {
           tone="running"
           progress={null}
           title={`${machine.busy}…`}
-          subtitle="This can take a few minutes."
+          subtitle={t("gate.busyHint")}
           aside={
             machine.busy === "Installing the machine" ? (
-              <Button className="mt-2" variant="default" size="xs" onClick={() => uiActions.navigate({ kind: "install" })}>Show progress</Button>
+              <Button className="mt-2" variant="default" size="xs" onClick={() => uiActions.navigate({ kind: "install" })}>{t("gate.showProgress")}</Button>
             ) : undefined
           }
         />
@@ -88,9 +90,9 @@ export function MachineGate({ children }: { children?: ReactNode }) {
     return (
       <MachineStage
         center
-        title="Set up your agent machine"
-        lead="Claude Code, Codex, OpenCode, Pi and Antigravity run inside one private Ubuntu machine on this computer."
-        main={<div><Button size="md" rightSection={<IconArrowRight size={16} />} onClick={() => uiActions.navigate({ kind: "install" })}>Set up the machine</Button></div>}
+        title={t("gate.setupTitle")}
+        lead={t("gate.setupLead")}
+        main={<div><Button size="md" rightSection={<IconArrowRight size={16} />} onClick={() => uiActions.navigate({ kind: "install" })}>{t("gate.setupBtn")}</Button></div>}
       />
     );
   }
@@ -98,13 +100,13 @@ export function MachineGate({ children }: { children?: ReactNode }) {
     return (
       <MachineStage
         center
-        title="Your machine is stopped"
-        lead="Workspaces, tasks and agents are saved on its disk. Start it to pick up where you left off."
+        title={t("gate.stoppedTitle")}
+        lead={t("gate.stoppedLead")}
         main={<>
           {machine.error && <RecoveryPanel compact message={machine.error} retry={false} />}
           <div className="flex flex-wrap items-center gap-2">
-            <StartButton label="Start machine" busy={busy} />
-            <Button size="md" variant="default" onClick={openMachineSettings}>Machine settings</Button>
+            <StartButton label={t("nav.startMachine")} busy={busy} />
+            <Button size="md" variant="default" onClick={openMachineSettings}>{t("home.machineSettings")}</Button>
           </div>
         </>}
         aside={<Card machine={machine} tone={machine.error ? "failed" : "stopped"} />}
@@ -115,15 +117,15 @@ export function MachineGate({ children }: { children?: ReactNode }) {
   return (
     <MachineStage
       center
-      title={updating ? "Updating Cabin's service" : "Connecting to your machine"}
+      title={updating ? t("gate.updatingTitle") : t("gate.connectingTitle")}
       lead={updating
-        ? "Installing the build that matches this app. Sessions resume after."
-        : machine.error ? "The app will keep trying to connect." : "This usually takes a few seconds."}
+        ? t("gate.updatingLead")
+        : machine.error ? t("gate.connectingRetry") : t("gate.connectingLead")}
       main={machine.error
         ? <RecoveryPanel message={machine.error} />
-        : <div className="stage-progress" data-indeterminate role="progressbar" aria-label={updating ? "Updating" : "Connecting"}><span /></div>}
+        : <div className="stage-progress" data-indeterminate role="progressbar" aria-label={updating ? t("gate.status.updating") : t("gate.status.connecting")}><span /></div>}
       aside={<Card machine={machine} tone={machine.error ? "failed" : "starting"} screen={updating ? "updating cabind…" : "waiting for cabind…"} />}
-      bar={machine.error ? <><CopyDiagnosticsButton /><span className="flex-1" /><Button variant="default" onClick={openMachineSettings}>Machine settings</Button></> : undefined}
+      bar={machine.error ? <><CopyDiagnosticsButton /><span className="flex-1" /><Button variant="default" onClick={openMachineSettings}>{t("home.machineSettings")}</Button></> : undefined}
     />
   );
 }
@@ -133,10 +135,14 @@ export function machineLabel(state: MachineStatus | null): string {
   if (state.busy) return state.busy;
   switch (state.state) {
     case "notInstalled":
-      return "Not installed";
+      return translate("gate.status.notInstalled");
     case "stopped":
-      return "Stopped";
+      return translate("gate.status.stopped");
     case "running":
-      return state.connection === "connected" ? "Running" : state.connection === "updating" ? "Updating agent" : "Connecting…";
+      return state.connection === "connected"
+        ? translate("gate.status.running")
+        : state.connection === "updating"
+          ? translate("gate.status.updating")
+          : translate("gate.status.connecting");
   }
 }

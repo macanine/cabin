@@ -19,30 +19,36 @@ import {
 import { toIpcError } from "../services/ipc/common";
 import type { AgentKind, UsageLog } from "../services/ipc/generated/core";
 import { usageIpc, type UsageDashboard, type UsageFilter } from "../services/ipc/usage";
-import { useI18n } from "../i18n";
+import { t as translateGlobal, type StaticMessageKey, useI18n } from "../i18n";
 
 const PAGE_SIZE = 20;
 const RANGE_KEY = "cabin.usageRange";
-const METRICS: { value: UsageMetric; label: string }[] = [
-  { value: "cost", label: "Cost" },
-  { value: "tokens", label: "Tokens" },
-  { value: "requests", label: "Requests" },
+const METRICS: { value: UsageMetric; labelKey: StaticMessageKey }[] = [
+  { value: "cost", labelKey: "usage.col.cost" },
+  { value: "tokens", labelKey: "usage.col.tokens" },
+  { value: "requests", labelKey: "usage.requests" },
 ];
-const METRIC_HEADING: Record<UsageMetric, string> = {
-  cost: "Daily spend",
-  tokens: "Daily tokens",
-  requests: "Daily requests",
+const METRIC_HEADING_KEY: Record<UsageMetric, StaticMessageKey> = {
+  cost: "usage.dailySpend",
+  tokens: "usage.dailyTokens",
+  requests: "usage.dailyRequests",
 };
 type Tab = "requests" | "models" | "agents" | "pricing";
-const TABS: { value: Tab; label: string }[] = [
-  { value: "requests", label: "Requests" },
-  { value: "models", label: "Models" },
-  { value: "agents", label: "Agents" },
-  { value: "pricing", label: "Pricing" },
+const TABS: { value: Tab; labelKey: StaticMessageKey }[] = [
+  { value: "requests", labelKey: "usage.tab.requests" },
+  { value: "models", labelKey: "usage.tab.models" },
+  { value: "agents", labelKey: "usage.tab.agents" },
+  { value: "pricing", labelKey: "usage.tab.pricing" },
 ];
 
 const RANGE_SHORT: Record<UsageRange, string> = { "1": "1D", "7": "7D", "30": "30D", "90": "90D", all: "All" };
-const RANGE_NAMES: Record<UsageRange, string> = { "1": "Today", "7": "Last 7 days", "30": "Last 30 days", "90": "Last 90 days", all: "All time" };
+const RANGE_NAME_KEY: Record<UsageRange, StaticMessageKey> = {
+  "1": "usage.range.1",
+  "7": "usage.range.7",
+  "30": "usage.range.30",
+  "90": "usage.range.90",
+  all: "usage.range.all",
+};
 
 function readRange(): UsageRange {
   try {
@@ -86,6 +92,7 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
   onDashboard: (dashboard: UsageDashboard) => void;
   onEditPrices: () => void;
 }) {
+  const { t } = useI18n();
   const { offset: clockOffset } = useClock();
   const zone = hostZone();
   const [range, setRangeState] = useState<UsageRange>(readRange);
@@ -152,8 +159,8 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
           <div className="usg-toolbar-right">
             {options.length > 1 && (
               <Select
-                aria-label="Filter by model"
-                placeholder="All models"
+                aria-label={t("usage.allModels")}
+                placeholder={t("usage.allModels")}
                 size="xs"
                 clearable
                 searchable
@@ -167,7 +174,7 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
               {USAGE_RANGES.map((entry) => {
                 const active = range === entry.value;
                 return (
-                  <Tooltip key={entry.value} label={RANGE_NAMES[entry.value]} openDelay={350}>
+                  <Tooltip key={entry.value} label={t(RANGE_NAME_KEY[entry.value])} openDelay={350}>
                     <button
                       type="button"
                       role="radio"
@@ -186,7 +193,7 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
 
         {(agent || model) && (
           <div className="usg-active-filters">
-            <span className="text-xs text-faint">Filtered by</span>
+            <span className="text-xs text-faint">{t("usage.filteredBy")}</span>
             {agent && (
               <button type="button" className="usg-filter-chip press" onClick={() => { setAgent(null); setModel(null); setPage(0); }}>
                 <span>{agentName(agent)}</span>
@@ -200,7 +207,7 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
               </button>
             )}
             <button type="button" className="usg-clear-link" onClick={() => { setAgent(null); setModel(null); setPage(0); }}>
-              Clear all
+              {t("usage.clearAll")}
             </button>
           </div>
         )}
@@ -209,48 +216,48 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
           onCloseError={() => { usage.clearError(); setError(null); }} onCloseImport={usage.clearImportErrors} />
 
         {!dashboard || !summary ? (
-          <div className="usg-loading">{loading ? <><Loader size="sm" /> Loading usage…</> : "No usage data."}</div>
+          <div className="usg-loading">{loading ? <><Loader size="sm" /> {t("usage.loading")}</> : t("usage.noData")}</div>
         ) : (
           <div className={`usg-results${loading ? " loading" : ""}`} aria-busy={loading}>
             <div className="usg-kpis stagger">
               <KpiCard
                 tone="accent"
                 icon={<IconCoin size={16} stroke={1.9} />}
-                label={`Spend · ${RANGE_NAMES[range]}`}
+                label={t("usage.spendRange", { range: t(RANGE_NAME_KEY[range]) })}
                 value={formatUsd(summary.cost)}
                 foot={
                   summary.unpricedRequests > 0
-                    ? `+ ${formatInteger(summary.unpricedRequests)} unpriced`
-                    : `${formatUsd(summary.cost / activeDays)} / active day`
+                    ? t("usage.unpriced", { count: formatInteger(summary.unpricedRequests) })
+                    : t("usage.perActiveDay", { cost: formatUsd(summary.cost / activeDays) })
                 }
               />
               <KpiCard
                 tone="info"
                 icon={<IconActivity size={16} stroke={1.9} />}
-                label="Requests"
+                label={t("usage.requests")}
                 value={formatInteger(summary.requests)}
-                foot={`${formatInteger(dashboard.models.length)} ${dashboard.models.length === 1 ? "model" : "models"} · ${formatInteger(dashboard.agents.length)} ${dashboard.agents.length === 1 ? "agent" : "agents"}`}
+                foot={t("usage.modelsAgentsMeta", { models: dashboard.models.length, agents: dashboard.agents.length })}
               />
               <KpiCard
                 tone="ok"
                 icon={<IconStack2 size={16} stroke={1.9} />}
-                label="Total tokens"
+                label={t("usage.totalTokens")}
                 value={formatCount(totalTok)}
                 bar={
                   totalTok > 0 ? (
-                    <span className="usg-tok-bar" title={`Input ${formatCount(summary.input)} · Output ${formatCount(summary.output)} · Cache ${formatCount(summary.cacheRead + summary.cacheWrite)}`}>
+                    <span className="usg-tok-bar" title={`${t("usage.col.input")} ${formatCount(summary.input)} · ${t("usage.col.output")} ${formatCount(summary.output)} · ${t("usage.col.cacheRead")} ${formatCount(summary.cacheRead + summary.cacheWrite)}`}>
                       <span className="in" style={{ width: `${inPct}%` }} />
                       <span className="out" style={{ width: `${outPct}%` }} />
                       <span className="cache" style={{ width: `${cachePct}%` }} />
                     </span>
                   ) : null
                 }
-                foot={`${formatCount(summary.input)} in · ${formatCount(summary.output)} out`}
+                foot={t("usage.inOutFoot", { input: formatCount(summary.input), output: formatCount(summary.output) })}
               />
               <KpiCard
                 tone="warn"
                 icon={<IconBolt size={16} stroke={1.9} />}
-                label="Cache hit rate"
+                label={t("usage.cacheHitRate")}
                 value={hitRate === null ? "—" : `${(hitRate * 100).toFixed(1)}%`}
                 bar={
                   hitRate !== null ? (
@@ -259,42 +266,48 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
                     </span>
                   ) : null
                 }
-                foot={`${formatCount(summary.cacheRead)} read from cache`}
+                foot={t("usage.readFromCache", { count: formatCount(summary.cacheRead) })}
               />
             </div>
 
-            <section className="usg-card usg-trend" aria-label="Activity trend">
+            <section className="usg-card usg-trend" aria-label={t(METRIC_HEADING_KEY[metric])}>
               <div className="usg-card-head">
                 <div>
-                  <h2>{METRIC_HEADING[metric]}</h2>
-                  <p>{RANGE_NAMES[range]}{agent ? ` · ${agentName(agent)}` : ""}{model ? ` · ${model}` : ""}</p>
+                  <h2>{t(METRIC_HEADING_KEY[metric])}</h2>
+                  <p>{t(RANGE_NAME_KEY[range])}{agent ? ` · ${agentName(agent)}` : ""}{model ? ` · ${model}` : ""}</p>
                 </div>
-                <SegmentedControl size="xs" value={metric} data={METRICS} onChange={(value) => setMetric(value as UsageMetric)} aria-label="Chart metric" />
+                <SegmentedControl
+                  size="xs"
+                  value={metric}
+                  data={METRICS.map((m) => ({ value: m.value, label: t(m.labelKey) }))}
+                  onChange={(value) => setMetric(value as UsageMetric)}
+                  aria-label="Chart metric"
+                />
               </div>
               <DailyBars dashboard={dashboard} metric={metric} range={range} />
             </section>
 
             <div className="usg-split">
               <BreakdownCard
-                title="By agent"
-                empty="No agent activity in this period."
+                title={t("usage.byAgent")}
+                empty={t("usage.noAgentData")}
                 rows={agents.map((row) => ({
                   key: row.agent,
                   label: agentName(row.agent),
-                  meta: `${formatInteger(row.requests)} req`,
+                  meta: t("usage.reqShort", { count: formatInteger(row.requests) }),
                   cost: row.cost,
                 }))}
                 active={agent}
                 onPick={(key) => { if (isAgentKind(key)) { setAgent(agent === key ? null : key); setModel(null); setPage(0); } }}
               />
               <BreakdownCard
-                title="Top models"
+                title={t("usage.topModels")}
                 mono
-                empty="No model activity in this period."
+                empty={t("usage.noModelData")}
                 rows={modelsSorted.map((row) => ({
                   key: row.model,
                   label: row.model,
-                  meta: `${formatInteger(row.requests)} req`,
+                  meta: t("usage.reqShort", { count: formatInteger(row.requests) }),
                   cost: row.cost,
                 }))}
                 active={model}
@@ -307,14 +320,14 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
                 <div className="usg-tabs" role="tablist" aria-label="Details">
                   {TABS.map((entry) => (
                     <button key={entry.value} type="button" role="tab" aria-selected={tab === entry.value} className="press" onClick={() => setTab(entry.value)}>
-                      {entry.label}
+                      {t(entry.labelKey)}
                       {entry.value === "requests" && <span className="usg-tab-count">{formatCount(dashboard.total)}</span>}
                       {entry.value === "models" && <span className="usg-tab-count">{dashboard.models.length}</span>}
                     </button>
                   ))}
                 </div>
                 {tab === "requests" && dashboard.total > 0 && (
-                  <span className="usg-range-meta tabular-nums">Showing {pageStart}–{pageEnd} of {formatInteger(dashboard.total)}</span>
+                  <span className="usg-range-meta tabular-nums">{t("usage.showingRange", { start: pageStart, end: pageEnd, total: formatInteger(dashboard.total) })}</span>
                 )}
               </div>
 
@@ -323,7 +336,7 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
                   <div className="usg-table-wrap">
                     <table className="usg-table">
                       <thead>
-                        <tr><th>Time</th><th>Agent</th><th>Model</th><th className="num">Input</th><th className="num">Output</th><th className="num">Cache read</th><th className="num">Cost</th></tr>
+                        <tr><th>{t("usage.col.time")}</th><th>{t("usage.col.agent")}</th><th>{t("usage.col.model")}</th><th className="num">{t("usage.col.input")}</th><th className="num">{t("usage.col.output")}</th><th className="num">{t("usage.col.cacheRead")}</th><th className="num">{t("usage.col.cost")}</th></tr>
                       </thead>
                       <tbody>
                         {dashboard.logs.map((log) => (
@@ -342,18 +355,18 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
                   </div>
                   {pageCount > 1 && (
                     <div className="usg-pager">
-                      <Button size="compact-xs" variant="default" disabled={loading || page === 0} onClick={() => setPage(page - 1)}>Newer</Button>
-                      <span>Page {page + 1} of {pageCount}</span>
-                      <Button size="compact-xs" variant="default" disabled={loading || page + 1 >= pageCount} onClick={() => setPage(page + 1)}>Older</Button>
+                      <Button size="compact-xs" variant="default" disabled={loading || page === 0} onClick={() => setPage(page - 1)}>{t("usage.newer")}</Button>
+                      <span>{t("usage.pageOf", { page: page + 1, total: pageCount })}</span>
+                      <Button size="compact-xs" variant="default" disabled={loading || page + 1 >= pageCount} onClick={() => setPage(page + 1)}>{t("usage.older")}</Button>
                     </div>
                   )}
                 </>
-              ) : <div className="usg-empty">No requests in this period.</div>)}
+              ) : <div className="usg-empty">{t("usage.noRequests")}</div>)}
 
               {tab === "models" && (shares.length ? (
                 <div className="usg-table-wrap">
                   <table className="usg-table">
-                    <thead><tr><th>Model</th><th className="num">Requests</th><th className="num">Tokens</th><th className="num">Cost</th><th className="usg-share-col">Share of {metric}</th></tr></thead>
+                    <thead><tr><th>{t("usage.col.model")}</th><th className="num">{t("usage.requests")}</th><th className="num">{t("usage.col.tokens")}</th><th className="num">{t("usage.col.cost")}</th><th className="usg-share-col">{t("usage.col.shareOf", { metric: t(METRICS.find((m) => m.value === metric)!.labelKey) })}</th></tr></thead>
                     <tbody>
                       {shares.map((row) => {
                         const item = dashboard.models.find((entry) => entry.model === row.key);
@@ -373,12 +386,12 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
                     </tbody>
                   </table>
                 </div>
-              ) : <div className="usg-empty">No models in this period.</div>)}
+              ) : <div className="usg-empty">{t("usage.noModels")}</div>)}
 
               {tab === "agents" && (agents.length ? (
                 <div className="usg-table-wrap">
                   <table className="usg-table">
-                    <thead><tr><th>Agent</th><th className="num">Requests</th><th className="num">Tokens</th><th className="num">Cache hit</th><th className="num">Cost</th></tr></thead>
+                    <thead><tr><th>{t("usage.col.agent")}</th><th className="num">{t("usage.requests")}</th><th className="num">{t("usage.col.tokens")}</th><th className="num">{t("usage.col.cacheHit")}</th><th className="num">{t("usage.col.cost")}</th></tr></thead>
                     <tbody>
                       {agents.map((row) => {
                         const rate = cacheHitRate(row);
@@ -395,7 +408,7 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
                     </tbody>
                   </table>
                 </div>
-              ) : <div className="usg-empty">No agent activity in this period.</div>)}
+              ) : <div className="usg-empty">{t("usage.noAgentData")}</div>)}
 
               {tab === "pricing" && (
                 <div className="usg-pricing">
@@ -405,12 +418,12 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
                       {dashboard.priceSources[0]?.lastSuccess != null ? ` (${formatInteger(dashboard.priceSources[0].count)} models, updated ${formatGuestDateTime(dashboard.priceSources[0].lastSuccess)})` : ""}.
                       Your custom overrides always take precedence.
                     </p>
-                    <Button size="xs" variant="default" leftSection={<IconCoin size={14} />} onClick={onEditPrices}>Edit prices</Button>
+                    <Button size="xs" variant="default" leftSection={<IconCoin size={14} />} onClick={onEditPrices}>{t("usage.editPrices")}</Button>
                   </div>
                   {dashboard.prices.length ? (
                     <div className="usg-table-wrap">
                       <table className="usg-table">
-                        <thead><tr><th>Model</th><th className="num">Input</th><th className="num">Output</th><th className="num">Cache read</th><th className="num">Cache write</th></tr></thead>
+                        <thead><tr><th>{t("usage.col.model")}</th><th className="num">{t("usage.col.input")}</th><th className="num">{t("usage.col.output")}</th><th className="num">{t("usage.col.cacheRead")}</th><th className="num">{t("usage.col.cacheWrite")}</th></tr></thead>
                         <tbody>
                           {dashboard.prices.slice().sort((a, b) => a.model.localeCompare(b.model)).map((price) => (
                             <tr key={price.model}>
@@ -424,7 +437,7 @@ function UsageContent({ usage, onDashboard, onEditPrices }: {
                         </tbody>
                       </table>
                     </div>
-                  ) : <div className="usg-empty">No custom price overrides yet. Prices are per 1M tokens.</div>}
+                  ) : <div className="usg-empty">{t("usage.noCustomPrices")}</div>}
                 </div>
               )}
             </section>
@@ -466,13 +479,14 @@ function BreakdownCard({ title, empty, rows, active, onPick, mono = false }: {
   onPick: (key: string) => void;
   mono?: boolean;
 }) {
+  const { t } = useI18n();
   const total = rows.reduce((sum, row) => sum + row.cost, 0);
   const shown = rows.slice(0, 6);
   return (
     <section className="usg-card usg-breakdown" aria-label={title}>
       <div className="usg-breakdown-head">
         <h2>{title}</h2>
-        {rows.length > 0 && <span>{rows.length} total</span>}
+        {rows.length > 0 && <span>{t("usage.totalItems", { count: rows.length })}</span>}
       </div>
       {shown.length === 0 ? (
         <p className="m-0 py-6 text-center text-xs text-faint">{empty}</p>
@@ -508,5 +522,5 @@ function BreakdownCard({ title, empty, rows, active, onPick, mono = false }: {
 
 /** The figure shown next to Usage in the sidebar. */
 export function todayLabel(cost: number | null): string | null {
-  return cost == null || cost === 0 ? null : `Today ${formatUsd(cost)}`;
+  return cost == null || cost === 0 ? null : translateGlobal("usage.todayPrefix", { cost: formatUsd(cost) });
 }

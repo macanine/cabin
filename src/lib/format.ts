@@ -4,6 +4,8 @@
  * set to Chinese or Japanese turns 12,000 into "1.2万".
  */
 
+import { t } from "../i18n/index.ts";
+
 const COUNT_UNITS = ["", "k", "M", "B", "T"] as const;
 
 function trimFixed(value: number, digits: number): string {
@@ -83,13 +85,13 @@ export function formatMs(value: number | null | undefined): string {
 
 export function relativeTime(at: number, now: number = Date.now()): string {
   const seconds = Math.max(0, Math.round((now - at) / 1000));
-  if (seconds < 45) return "just now";
+  if (seconds < 45) return t("common.time.justNow");
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 60) return t("common.time.minutesAgo", { count: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
+  if (hours < 24) return t("common.time.hoursAgo", { count: hours });
   const days = Math.round(hours / 24);
-  return days === 1 ? "yesterday" : `${days} days ago`;
+  return days === 1 ? t("common.time.yesterday") : t("common.time.daysAgo", { count: days });
 }
 
 /** Points for an SVG polyline sparkline, newest on the right. */

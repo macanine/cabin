@@ -14,7 +14,7 @@ import { type LocalePref, useI18n } from "../../i18n";
 /** Each field saves on its own (select: on change, text: on blur or Enter);
  * a rejected value goes back to the saved one. */
 export function GeneralSettings() {
-  const { t, pref: localePref, setLocalePref } = useI18n();
+  const { t, pref: localePref, setLocalePref, locales } = useI18n();
   const settings = useApp((state) => state.settings);
   const agents = useApp((state) => state.agents);
   const dataDir = useApp((state) => state.dataDir);
@@ -57,8 +57,7 @@ export function GeneralSettings() {
             onChange={(value) => setLocalePref(value as LocalePref)}
             data={[
               { value: "auto", label: t("settings.general.languageAuto") },
-              { value: "en", label: "English" },
-              { value: "zh-CN", label: "简体中文" },
+              ...locales.map((entry) => ({ value: entry.code, label: entry.nativeName })),
             ]}
           />
         </SettingRow>

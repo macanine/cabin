@@ -34,7 +34,7 @@ import { useClock } from "../lib/clock";
 import { useMinute } from "../lib/useNow";
 import { IS_MAC } from "../lib/platform";
 import { DisclosureChevron, Reveal } from "./motion";
-import { type MessageKey, useI18n } from "../i18n";
+import { type StaticMessageKey, useI18n } from "../i18n";
 
 const NEW_TASK_KEY = IS_MAC ? "⌘N" : "Ctrl+Shift+N";
 const SEARCH_KEY = IS_MAC ? "⌘K" : "Ctrl+Shift+K";
@@ -297,11 +297,21 @@ function readCollapsedProjects(): Set<string> {
   }
 }
 
-const LIST_TITLE_KEY: Record<TaskListMode, MessageKey> = {
+const LIST_TITLE_KEY: Record<TaskListMode, StaticMessageKey> = {
   project: "nav.projects",
   session: "nav.tasks",
   recent: "nav.recent",
   unread: "nav.inbox",
+};
+
+const SECTION_LABEL_KEY: Record<string, StaticMessageKey> = {
+  Today: "nav.section.today",
+  Yesterday: "nav.section.yesterday",
+  "Previous 7 days": "nav.section.prev7",
+  "Previous 30 days": "nav.section.prev30",
+  Older: "nav.section.older",
+  unread: "nav.section.unread",
+  read: "nav.section.read",
 };
 
 function TaskList() {
@@ -389,7 +399,7 @@ function TaskList() {
                   onToggle={() => toggleProject(section.workspace!.id)}
                 />
               ) : (
-                section.label && <div className="px-2 pt-2.5 pb-0.5 text-xs font-semibold text-faint">{section.label}</div>
+                section.label && <div className="px-2 pt-2.5 pb-0.5 text-xs font-semibold text-faint">{SECTION_LABEL_KEY[section.key] ? t(SECTION_LABEL_KEY[section.key]) : section.label}</div>
               )}
               <Reveal open={open}>
                 {section.sessions.map((session) => (
@@ -481,7 +491,7 @@ function AccountBar({ collapsed, today }: { collapsed: boolean; today: string | 
       )}
       {!collapsed && <span className="flex-1" />}
       {!collapsed && today && (
-        <button type="button" className="press shrink-0 cursor-pointer rounded-md border-0 bg-transparent px-1.5 py-1 text-xs text-faint tabular-nums hover:bg-hover hover:text-fg" title={today} aria-label={today} onClick={() => uiActions.navigate({ kind: "usage" })}>{today.replace(/^Today /, "")}</button>
+        <button type="button" className="press shrink-0 cursor-pointer rounded-md border-0 bg-transparent px-1.5 py-1 text-xs text-faint tabular-nums hover:bg-hover hover:text-fg" title={today} aria-label={today} onClick={() => uiActions.navigate({ kind: "usage" })}>{today.replace(/^(?:Today|今日)\s+/, "")}</button>
       )}
       <SettingsMenu />
     </div>
@@ -491,7 +501,7 @@ function AccountBar({ collapsed, today }: { collapsed: boolean; today: string | 
 // -------------------------------------------------------------------- shell
 
 type ToolKind = "chrome" | "agents" | "usage" | "mcp";
-const TOOLS: { kind: ToolKind; labelKey: MessageKey; icon: typeof IconRobot; matches?: (view: string) => boolean }[] = [
+const TOOLS: { kind: ToolKind; labelKey: StaticMessageKey; icon: typeof IconRobot; matches?: (view: string) => boolean }[] = [
   { kind: "chrome", labelKey: "nav.chrome", icon: IconBrandChrome },
   { kind: "agents", labelKey: "nav.agents", icon: IconRobot },
   { kind: "usage", labelKey: "nav.usage", icon: IconChartBar },
