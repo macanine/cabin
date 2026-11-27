@@ -15,7 +15,7 @@ function ToneIcon({ tone, size = 13 }: { tone: Toast["tone"]; size?: number }) {
   return <Icon size={size} stroke={2.4} />;
 }
 
-function ToastCard({ toast, onHeight }: { toast: Toast; onHeight: (height: number) => void }) {
+function ToastCard({ toast, extraCount, onHeight }: { toast: Toast; extraCount: number; onHeight: (height: number) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const element = ref.current;
@@ -42,19 +42,30 @@ function ToastCard({ toast, onHeight }: { toast: Toast; onHeight: (height: numbe
       )}
       <span className="toast-copy">
         <span className="toast-text" key={`m${toast.revision}`}>{toast.message}</span>
-        {toast.detail && <span className="toast-detail">{toast.detail}</span>}
+        {toast.detail && <span className="toast-detail" key={`d${toast.revision}`}>{toast.detail}</span>}
       </span>
+      {extraCount > 0 && (
+        <span className="toast-more" aria-hidden>+{extraCount}</span>
+      )}
       <button type="button" className="toast-close" aria-label="Dismiss" onClick={() => uiActions.dismissToast(toast.id)}>
-        <IconX size={12} stroke={2.2} />
+        <IconX size={12} stroke={2.4} />
       </button>
+      {toast.duration > 0 && !toast.leaving && (
+        <span
+          key={`t${toast.revision}`}
+          className="toast-timer"
+          style={{ animationDuration: `${toast.duration}ms` }}
+          aria-hidden
+        />
+      )}
     </div>
   );
 }
 
 /**
- * Notices at the top centre, stacked like a deck: the newest in front, older
- * ones tucked behind it. Hovering fans them out and holds their timers. A
- * toast can change in place (a paste goes from "Attaching…" to "Attached").
+ * Notices at the top centre, styled as a Dynamic Island deck: the newest in
+ * front, older ones tucked behind it. Hovering fans them out and holds their
+ * timers. A toast can morph in place (e.g. "Attaching…" → "Attached").
  */
 export function Toasts() {
   const toasts = useUi((ui) => ui.toasts);
@@ -62,7 +73,8 @@ export function Toasts() {
   const [heights, setHeights] = useState<Record<number, number>>({});
   const measure = useRef(new Map<number, (height: number) => void>());
   const newestFirst = toasts.slice().reverse();
-  const expanded = paused && newestFirst.length > 1;
+  const stacked = newestFirst.length > 1;
+  const expanded = paused && stacked;
   const sizes = newestFirst.map((toast) => heights[toast.id] ?? 0);
   const slots = stackLayout(sizes, expanded);
 
@@ -87,7 +99,7 @@ export function Toasts() {
 
   return (
     <div
-      className={`toasts${expanded ? " expanded" : ""}`}
+      className={`toasts${stacked ? " stacked" : ""}${expanded ? " expanded" : ""}${paused ? " paused" : ""}`}
       style={{ height: stackHeight(sizes, expanded) }}
       aria-live="polite"
       onMouseEnter={() => uiActions.pauseToasts(true)}
@@ -107,7 +119,11 @@ export function Toasts() {
             }}
             aria-hidden={!expanded && index > 0 ? true : undefined}
           >
-            <ToastCard toast={toast} onHeight={onHeight(toast.id)} />
+            <ToastCard
+              toast={toast}
+              extraCount={!expanded && index === 0 ? newestFirst.length - 1 : 0}
+              onHeight={onHeight(toast.id)}
+            />
           </div>
         );
       })}

@@ -385,10 +385,10 @@
   display: grid;
   gap: 14px;
   padding: 12px 16px 18px;
-  background: #17201c;
-  color: #e8ece9;
+  background: #22201d;
+  color: #ecebe8;
 }
-.iw-card-screen:where([data-mantine-color-scheme="dark"] *, [data-theme="dark"] *) { background: #0c100e; }
+.iw-card-screen:where([data-mantine-color-scheme="dark"] *, [data-theme="dark"] *) { background: #121110; }
 .iw-card-dots { display: flex; gap: 6px; }
 .iw-card-dots span { width: 8px; height: 8px; border-radius: 50%; background: rgb(255 255 255 / 0.16); }
 .iw-prompt {
@@ -412,7 +412,7 @@
   animation: fade var(--motion-page) var(--ease-out);
 }
 .iw-screen-line .iw-caret { height: 12px; width: 6px; }
-.iw-prompt-user { min-width: 0; overflow: hidden; color: #7fd0ba; text-overflow: ellipsis; }
+.iw-prompt-user { min-width: 0; overflow: hidden; color: #f0a070; text-overflow: ellipsis; }
 .iw-card[data-tone="ready"] .iw-prompt-user { color: #7fd197; }
 .iw-prompt-path { color: rgb(255 255 255 / 0.55); }
 .iw-caret {
