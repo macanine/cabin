@@ -55,9 +55,9 @@ export function UserMessage({ row }: { row: Extract<TimelineRow, { kind: "user" 
           </div>
         )}
         {item.text && (
-          <div className="selectable rounded-2xl rounded-br-md border border-line/60 bg-surface px-4 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">{item.text}</div>
+          <div className="selectable rounded-2xl rounded-br-md border border-line/70 bg-surface px-4 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap shadow-[0_1px_2px_rgb(0_0_0/0.03)] [overflow-wrap:anywhere]">{item.text}</div>
         )}
-        <div className={`items-center gap-2 text-[11px] text-faint tabular-nums ${note ? "flex" : "hidden group-hover/user:flex"}`}>
+        <div className={`flex min-h-4 items-center gap-2 text-[11px] text-faint tabular-nums transition-opacity duration-150 ${note ? "opacity-100" : "opacity-0 group-hover/user:opacity-100 group-focus-within/user:opacity-100"}`}>
           {item.status === "failed" && <span className="text-bad">Not sent: {item.detail}</span>}
           {item.startedAt > 0 && item.status !== "pending" && (
             <span title={formatGuestDateTime(item.startedAt)}>{formatClockTime(hostTime(item.startedAt))}</span>

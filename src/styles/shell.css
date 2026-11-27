@@ -38,7 +38,10 @@
   background: var(--bg);
   border: 1px solid var(--glass-edge);
   border-radius: var(--card-radius);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.05);
 }
+
+:root[data-perf="lite"] .main { box-shadow: none; }
 
 /* Full-window views (the installer): the card spans the whole window. */
 .shell.focus .main {
@@ -134,6 +137,7 @@
 .split-inner > * { min-width: 0; }
 .split-label { padding: 10px 10px 4px; color: var(--faint); font-size: var(--text-xs); font-weight: 500; }
 .split-choice {
+  position: relative;
   display: flex;
   flex: none;
   align-items: center;
@@ -153,6 +157,16 @@
 }
 .split-choice:hover { background: var(--hover); }
 .split-choice[aria-current], .split-choice[aria-pressed="true"] { background: var(--selected); font-weight: 500; }
+.split-choice[aria-current]::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 0;
+  width: 2.5px;
+  border-radius: 999px;
+  background: var(--accent);
+}
 .split-choice:disabled { color: var(--faint); cursor: default; background: none; }
 .split-choice > span:not(.split-count, .dot) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .split-choice > svg { flex: none; color: var(--muted); }
@@ -162,6 +176,7 @@
   .split-page { flex-direction: column; }
   .split-list { flex-direction: row; width: auto; padding: 8px 12px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); }
   .split-list > button { width: auto; flex: none; }
+  .split-choice[aria-current]::before { top: auto; right: 10px; bottom: 0; left: 10px; width: auto; height: 2px; }
   .split-label, .split-list .ag-row-meters { display: none; }
 }
 

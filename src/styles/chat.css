@@ -105,9 +105,13 @@
   border-radius: 16px;
   background: var(--surface);
   box-shadow: var(--shadow-float);
-  transition: border-color var(--motion-fast) ease;
+  transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
-.chat-dock:focus-within { border-color: var(--field-focus-border); }
+.chat-dock:focus-within {
+  border-color: var(--field-focus-border);
+  box-shadow: var(--shadow-float), 0 0 0 3px var(--accent-soft);
+}
+.chat-dock:has([data-plan-review]) { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
 .chat-dock:has([data-request]) { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
 
 /* Prompt ticks in the gutter beside the transcript; text unfolds on hover. */

@@ -123,13 +123,20 @@ function TaskItem({ session, unread, now, showProject }: { session: Session; unr
   const kind = sessionKindName(session.agent);
   return (
     <div
-      className={`press group flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-lg pr-1 pl-2 text-[13px] text-fg ${active ? "bg-sel" : "hover:bg-hover"}`}
+      className={`press group relative flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-lg pr-1 pl-2 text-[13px] text-fg ${active ? "bg-sel font-medium" : "hover:bg-hover"}`}
       role="button"
       tabIndex={0}
+      aria-current={active ? "page" : undefined}
       title={showProject ? `${session.name} — ${kind} · ${showProject}` : `${session.name} — ${kind}`}
       onClick={() => uiActions.navigate({ kind: "session", id: session.id })}
-      onKeyDown={(e) => e.key === "Enter" && uiActions.navigate({ kind: "session", id: session.id })}
+      onKeyDown={(e) => {
+        if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          uiActions.navigate({ kind: "session", id: session.id });
+        }
+      }}
     >
+      {active && <span className="pointer-events-none absolute top-1.5 bottom-1.5 left-0 w-[2.5px] rounded-full bg-accent" aria-hidden />}
       <TaskMarker session={session} unread={unread} />
       {renaming ? (
         <InlineRename
@@ -142,10 +149,10 @@ function TaskItem({ session, unread, now, showProject }: { session: Session; unr
       ) : (
         <span className={`min-w-0 flex-1 truncate ${unread ? "font-semibold" : ""}`}>
           {session.name}
-          {session.archived && <span className="text-faint"> · archived</span>}
+          {session.archived && <span className="font-normal text-faint"> · archived</span>}
         </span>
       )}
-      <span className="pr-1 text-xs whitespace-nowrap text-faint tabular-nums group-hover:hidden group-focus-within:hidden">{shortAge(lastActivity(session), now)}</span>
+      <span className="pr-1 text-xs whitespace-nowrap text-faint tabular-nums group-hover:hidden group-focus-within:hidden group-has-[[data-expanded]]:hidden">{shortAge(lastActivity(session), now)}</span>
       <Menu position="bottom-end" withinPortal shadow="md">
         <Menu.Target>
           <ActionIcon
@@ -203,7 +210,7 @@ function ProjectHeader({
         </span>
       )}
       {sync && <SyncDot view={sync} onClick={() => setSyncOpen(true)} />}
-      <span className="pr-1 text-xs text-faint tabular-nums group-hover:hidden">{count || ""}</span>
+      <span className="pr-1 text-xs text-faint tabular-nums group-hover:hidden group-focus-within:hidden group-has-[[data-expanded]]:hidden">{count || ""}</span>
       <Tooltip label="New task in this project">
         <ActionIcon
           className="hidden group-hover:inline-flex group-focus-within:inline-flex data-expanded:inline-flex"
@@ -533,30 +540,30 @@ function ToolDock({ collapsed }: { collapsed: boolean }) {
 /** Start something, or find something: the two things the sidebar opens with. */
 function StartRow({ collapsed }: { collapsed: boolean }) {
   const active = useUi((ui) => ui.view.kind === "new");
-  const icon = "press grid size-9 shrink-0 cursor-pointer place-items-center rounded-[10px] border-0 bg-transparent p-0 text-muted hover:bg-hover hover:text-fg";
+  const icon = "press grid size-9 shrink-0 cursor-pointer place-items-center rounded-[10px] border border-line/70 bg-surface/55 p-0 text-muted hover:border-line hover:bg-surface hover:text-fg";
   const fresh = () => uiActions.navigate({ kind: "new" });
   const search = (
     <Tooltip label={`Search (${SEARCH_KEY})`} position={collapsed ? "right" : "bottom"}>
-      <button type="button" className={icon} aria-label="Search tasks and pages" onClick={uiActions.openPalette}><IconSearch size={17} stroke={1.8} /></button>
+      <button type="button" className={icon} aria-label="Search tasks and pages" onClick={uiActions.openPalette}><IconSearch size={16} stroke={1.8} /></button>
     </Tooltip>
   );
   if (collapsed) {
     return (
-      <div className="flex shrink-0 flex-col items-center gap-1">
+      <div className="flex shrink-0 flex-col items-center gap-1.5">
         <Tooltip label={`New task (${NEW_TASK_KEY})`} position="right">
-          <button type="button" className="press grid size-9 cursor-pointer place-items-center rounded-[10px] border-0 bg-accent-fill p-0 text-white hover:bg-accent-fill/88" aria-label="New task" aria-current={active ? "page" : undefined} onClick={fresh}><IconPlus size={17} stroke={2.2} /></button>
+          <button type="button" className={`press grid size-9 cursor-pointer place-items-center rounded-[10px] border-0 bg-accent-fill p-0 text-white hover:bg-accent-fill/88 ${active ? "shadow-[0_0_0_2px_var(--accent-soft)]" : ""}`} aria-label="New task" aria-current={active ? "page" : undefined} onClick={fresh}><IconPlus size={17} stroke={2.2} /></button>
         </Tooltip>
         {search}
       </div>
     );
   }
   return (
-    <div className="mx-2 mb-2 flex shrink-0 items-center gap-1">
+    <div className="mx-2 mb-2 flex shrink-0 items-center gap-1.5">
       <button type="button" aria-current={active ? "page" : undefined} onClick={fresh}
-        className="press flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[10px] border-0 bg-accent-fill px-2 text-left text-md font-medium text-white hover:bg-accent-fill/88">
+        className={`press flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[10px] border-0 bg-accent-fill px-2 text-left text-md font-medium text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.16)] hover:bg-accent-fill/88 ${active ? "ring-2 ring-accent/25" : ""}`}>
         <span className="grid size-5 shrink-0 place-items-center"><IconPlus size={16} stroke={2.2} /></span>
         <span className="min-w-0 flex-1 truncate">New task</span>
-        <span className="pr-1 text-xs text-white/75">{NEW_TASK_KEY}</span>
+        <span className="rounded bg-white/14 px-1.5 py-px font-mono text-[10.5px] font-normal text-white/85">{NEW_TASK_KEY}</span>
       </button>
       {search}
     </div>

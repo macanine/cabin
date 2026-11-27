@@ -8,6 +8,7 @@ import { useApp } from "../state/store";
 import { lastStart, rememberStart, uiActions } from "../state/ui";
 import { attempt } from "../lib/operations";
 import { AGENT_NAMES, CircleButton } from "./common";
+import { CHIP } from "./ComposerChip";
 import { AgentMark } from "./AgentMarks";
 import { AGENT_KINDS } from "./AgentPicker";
 import { NewWorkspaceModal } from "./NewWorkspaceModal";
@@ -86,7 +87,7 @@ function AgentChoice({ value, installed, onChange }: {
           <Tooltip key={kind} label={label} openDelay={250}>
             <button
               className={`press inline-flex h-6 cursor-pointer items-center justify-center gap-1.5 rounded-[7px] border-0 p-0 text-muted transition-[width,background-color,color,box-shadow] duration-300 ease-out disabled:cursor-default disabled:opacity-35 ${
-                value === kind ? "bg-sel pr-2.5 pl-2 text-fg" : "w-[30px] bg-transparent hover:not-disabled:text-fg"
+                value === kind ? "bg-surface pr-2.5 pl-2 text-fg shadow-[0_1px_2px_rgb(0_0_0/0.07),inset_0_0_0_1px_var(--glass-edge)]" : "w-[30px] bg-transparent hover:not-disabled:text-fg"
               }`}
               role="radio"
               aria-checked={value === kind}
@@ -264,10 +265,20 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true }: { wo
           {mode === "ui" && <AttachmentPicker state={attachments} disabled={busy} />}
           {mode === "ui" && <ModelPicker workspaceId={workspaceId} agent={agent} value={model} disabled={!installed(agent) || busy} onSelect={setModel} />}
           {mode === "ui" && <PermissionPicker agent={agent} value={permission} disabled={busy} onChange={setPermission} />}
-          {mode === "ui" && <label className="worktree-toggle" title="Run this task in a separate Git worktree">
-            <input type="checkbox" checked={isolated} disabled={busy || !workspaceId} onChange={(event) => setIsolated(event.currentTarget.checked)} />
-            <IconGitBranch size={14} /> Worktree
-          </label>}
+          {mode === "ui" && (
+            <Tooltip label="Run this task in a separate Git worktree" openDelay={350}>
+              <button
+                type="button"
+                className={`${CHIP} ${isolated ? "!bg-accent-soft !text-accent" : ""}`}
+                aria-pressed={isolated}
+                disabled={busy || !workspaceId}
+                onClick={() => setIsolated((value) => !value)}
+              >
+                <IconGitBranch size={14} className="shrink-0" />
+                <span>Worktree</span>
+              </button>
+            </Tooltip>
+          )}
           <span className="min-w-0 flex-1" />
           <SegmentedControl
             size="xs"
@@ -280,7 +291,7 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true }: { wo
           <CircleButton
             label={
               !anyInstalled
-                ? "Install an agent in Settings first"
+                ? "Install an agent in Agents first"
                 : workspaceId == null
                   ? "Choose or create a workspace"
                   : needsModel

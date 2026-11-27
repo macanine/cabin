@@ -1,6 +1,6 @@
 import { Loader, Textarea, Tooltip } from "@mantine/core";
 import { IconArrowUp, IconArrowUpRight, IconPlayerStopFilled } from "@tabler/icons-react";
-import { useRef, type RefObject } from "react";
+import { useRef, useState, type RefObject } from "react";
 import type { AgentKind, ChatConfigOption, ChatControls, ChatPermissionMode } from "../../services/ipc/generated/core";
 import type { QueuedMessage } from "../../lib/agentControls";
 import { AttachmentList, AttachmentPicker, clipboardFiles, type useChatAttachments } from "../ChatAttachments";
@@ -92,14 +92,23 @@ export function ChatComposer({
   onOption: (id: string, value: string) => Promise<void>;
 }) {
   const composing = useRef(false);
+  const [dragging, setDragging] = useState(false);
   const hasDraft = text.trim().length > 0 || attachments.files.length > 0;
 
   const images = controls.capabilities.prompt.images;
   return (
     <div
-      className="relative px-3 pt-2.5 pb-2"
-      onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+      className={`relative rounded-[15px] px-3 pt-2.5 pb-2 transition-colors duration-[var(--motion-fast)] ${dragging ? "bg-accent-soft/35 ring-2 ring-accent/40 ring-inset" : ""}`}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        if (!dragging) setDragging(true);
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+      }}
       onDrop={(event) => {
+        setDragging(false);
         const files = clipboardFiles(event.dataTransfer);
         if (!files.length) return;
         event.preventDefault();

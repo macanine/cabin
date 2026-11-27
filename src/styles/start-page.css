@@ -6,10 +6,13 @@
   border-radius: 16px;
   padding: 12px 14px 10px;
   box-shadow: var(--shadow-float);
-  transition: border-color var(--motion-fast) var(--ease-out);
+  transition: border-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out);
 }
 
-.composer:has(textarea:focus) { border-color: var(--field-focus-border); }
+.composer:has(textarea:focus) {
+  border-color: var(--field-focus-border);
+  box-shadow: var(--shadow-float), 0 0 0 3px var(--accent-soft);
+}
 
 /* Room for CJK: Japanese and Chinese glyphs fill the whole em box and the
    IME underlines the text being composed, so lines need more leading than
@@ -22,33 +25,30 @@
   color: var(--text);
 }
 
-.composer-bar {
+.worktree-choice {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 6px;
-}
-
-.worktree-toggle, .worktree-choice {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+  margin: 6px 0 8px;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--bg));
   color: var(--muted);
   font-size: 12px;
 }
-.worktree-toggle { cursor: pointer; white-space: nowrap; }
-.worktree-toggle input { accent-color: var(--accent); }
-.worktree-choice { display: flex; margin: 7px 0; }
+.worktree-choice > svg { flex: none; color: var(--accent); }
+.worktree-choice label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .worktree-choice select {
-  max-width: 240px;
-  margin-left: 5px;
+  max-width: 260px;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 4px;
+  padding: 3px 8px;
   font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 .worktree-choice select:focus { border-color: var(--field-focus-border); outline: none; }
 

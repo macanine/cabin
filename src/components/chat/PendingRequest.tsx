@@ -63,7 +63,11 @@ function Question({ question, value, onChange }: { question: ChatQuestion; value
 }
 
 /** A decision's key, drawn as a small keycap on its button. */
-const Key = ({ k }: { k: string }) => <kbd className="ml-0.5 rounded border border-b-2 border-line bg-surface px-1 font-mono text-[10px] text-muted">{k.toUpperCase()}</kbd>;
+const Key = ({ k, filled = false }: { k: string; filled?: boolean }) => (
+  <kbd className={`ml-0.5 rounded border border-b-2 px-1 font-mono text-[10px] ${filled ? "border-white/30 bg-white/15 text-white/95" : "border-line bg-surface text-muted"}`}>
+    {k.toUpperCase()}
+  </kbd>
+);
 
 /** The oldest waiting approval or question, docked above the composer. */
 export function PendingRequest({ sessionId, item }: { sessionId: string; item: ChatItem }) {
@@ -127,7 +131,7 @@ export function PendingRequest({ sessionId, item }: { sessionId: string; item: C
   const complete = questions.every((question) => (answers[question.id]?.length ?? 0) > 0);
 
   return (
-    <div ref={card} tabIndex={-1} className="animate-fade border-b border-line px-4 pt-3.5 pb-3 outline-none" data-request role="region" aria-label={isQuestion ? "Question from the agent" : "Approval needed"}>
+    <div ref={card} tabIndex={-1} className={`animate-fade rounded-t-[15px] border-b border-line px-4 pt-3.5 pb-3 outline-none ${isQuestion ? "bg-info/[0.04]" : "bg-warn/[0.04]"}`} data-request role="region" aria-label={isQuestion ? "Question from the agent" : "Approval needed"}>
       <div className="mb-2.5 flex items-center gap-2.5">
         <span className={`grid size-7 shrink-0 place-items-center rounded-lg ${isQuestion ? "bg-info/13 text-info" : "bg-warn/14 text-warn"}`}>
           {isQuestion ? <IconMessageQuestion size={16} /> : <IconShieldCheck size={16} />}
@@ -170,7 +174,7 @@ export function PendingRequest({ sessionId, item }: { sessionId: string; item: C
             ))}
             <span className="min-w-0 flex-1" />
             {decisions.filter((d) => !isNegative(d.decision)).map((d) => (
-              <Button key={d.decision} size="xs" variant={d.decision === "accept" ? "filled" : "default"} leftSection={<IconCheck size={13} />} title={d.warning ?? undefined} disabled={sending != null} loading={sending === d.decision} onClick={() => void respond(d.decision)} rightSection={KEYS[d.decision] && <Key k={KEYS[d.decision]} />}>{d.label}</Button>
+              <Button key={d.decision} size="xs" variant={d.decision === "accept" ? "filled" : "default"} leftSection={<IconCheck size={13} />} title={d.warning ?? undefined} disabled={sending != null} loading={sending === d.decision} onClick={() => void respond(d.decision)} rightSection={KEYS[d.decision] && <Key k={KEYS[d.decision]} filled={d.decision === "accept"} />}>{d.label}</Button>
             ))}
           </>
         )}

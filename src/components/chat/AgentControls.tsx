@@ -61,18 +61,22 @@ export function OptionPicker({ option, disabled, onChange }: {
         {groupedChoices(option).map(({ group, choices }, index) => (
           <div key={group ?? `group-${index}`}>
             {group && <Menu.Label>{group}</Menu.Label>}
-            {choices.map((choice) => (
-              <Menu.Item
-                key={choice.value}
-                leftSection={choice.value === option.current ? <IconCheck size={14} /> : <span className="model-check-space" />}
-                onClick={() => void choose(choice.value)}
-              >
-                <span className="model-option">
-                  <strong>{choice.name || choice.value}</strong>
-                  {choice.description && <small>{choice.description}</small>}
-                </span>
-              </Menu.Item>
-            ))}
+            {choices.map((choice) => {
+              const selected = choice.value === option.current;
+              return (
+                <Menu.Item
+                  key={choice.value}
+                  className={selected ? "!bg-accent-soft/60" : ""}
+                  leftSection={selected ? <IconCheck size={14} className="text-accent" /> : <span className="inline-block size-3.5" aria-hidden />}
+                  onClick={() => void choose(choice.value)}
+                >
+                  <span className="grid gap-px whitespace-normal">
+                    <strong className={`text-[13px] ${selected ? "font-semibold" : "font-medium"}`}>{choice.name || choice.value}</strong>
+                    {choice.description && <small className="text-xs leading-snug text-muted">{choice.description}</small>}
+                  </span>
+                </Menu.Item>
+              );
+            })}
           </div>
         ))}
       </Menu.Dropdown>
@@ -133,13 +137,38 @@ export function ContextMeter({ context }: { context: ChatContextUse | null }) {
   if (fill == null || !context) return null;
   const percent = Math.round(fill * 100);
   const tone = fill >= 0.9 ? "text-bad" : fill >= 0.75 ? "text-warn" : "text-muted";
+  const ringTone = fill >= 0.9 ? "stroke-bad" : fill >= 0.75 ? "stroke-warn" : "stroke-accent";
+  const r = 5.5;
+  const c = 2 * Math.PI * r;
   return (
     <Tooltip
       label={`Context ${percent}% · ${formatTokens(context.used)} of ${formatTokens(context.size)} tokens`}
       events={{ hover: true, focus: true, touch: false }}
       openDelay={250}
     >
-      <span className={`cursor-default rounded px-1 text-xs tabular-nums ${tone}`} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-label="Context window used" tabIndex={0}>
+      <span
+        className={`inline-flex cursor-default items-center gap-1 rounded-md px-1.5 py-0.5 text-xs tabular-nums ${tone}`}
+        role="meter"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-label="Context window used"
+        tabIndex={0}
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden className="shrink-0 -rotate-90">
+          <circle cx="7" cy="7" r={r} fill="none" strokeWidth="1.8" className="stroke-line" />
+          <circle
+            cx="7"
+            cy="7"
+            r={r}
+            fill="none"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            className={`${ringTone} transition-[stroke-dashoffset] duration-500 ease-out`}
+            strokeDasharray={c}
+            strokeDashoffset={c * (1 - fill)}
+          />
+        </svg>
         {percent}%
       </span>
     </Tooltip>

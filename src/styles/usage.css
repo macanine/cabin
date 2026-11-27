@@ -71,7 +71,7 @@
   width: 100%;
   border-radius: 3px 3px 1px 1px;
   background: color-mix(in srgb, var(--accent) 55%, var(--surface));
-  transition: background-color 120ms ease;
+  transition: height 280ms var(--ease-out), background-color 120ms ease;
 }
 .usage-bar:hover,
 .usage-bar.active { background: var(--hover); }
@@ -104,6 +104,7 @@
 .usage-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .usage-table th, .usage-table td { padding: var(--space-2); text-align: left; white-space: nowrap; }
 .usage-table thead th { color: var(--muted); font-weight: 500; font-size: var(--text-xs); border-bottom: 1px solid var(--border); }
+.usage-table tbody td { transition: background-color 110ms ease; }
 .usage-table tbody tr + tr td { border-top: 1px solid var(--border); }
 .usage-table tbody tr[tabindex] { cursor: pointer; }
 .usage-table tbody tr:hover td,

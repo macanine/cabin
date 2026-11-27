@@ -15,6 +15,7 @@ import { sessionKindName } from "./common";
 
 interface Entry extends PaletteItem {
   icon: ReactNode;
+  shortcut?: string;
   run: () => void;
 }
 
@@ -43,7 +44,7 @@ function useEntries(): Entry[] {
       .map((session, index) => ({
         id: `task:${session.id}`,
         label: session.name,
-        hint: `${name.get(session.workspaceId) ?? ""} · ${waiting(session.id) ? "needs you" : shortAge(lastActivity(session), now)}`,
+        hint: [name.get(session.workspaceId), waiting(session.id) ? "needs you" : shortAge(lastActivity(session), now)].filter(Boolean).join(" · "),
         group: "Tasks",
         keywords: `${sessionKindName(session.agent)}${session.archived ? " archived" : ""}`,
         onSearchOnly: session.archived || index >= 6,
@@ -53,13 +54,13 @@ function useEntries(): Entry[] {
     const active = workspaces.filter((w) => !w.archived);
     return [
       ...tasks,
-      { id: "new", label: "New task", hint: IS_MAC ? "⌘N" : "Ctrl+Shift+N", group: "New", icon: <IconPlus {...I} />, run: () => uiActions.navigate({ kind: "new" }) },
+      { id: "new", label: "New task", shortcut: IS_MAC ? "⌘N" : "Ctrl+Shift+N", group: "New", icon: <IconPlus {...I} />, run: () => uiActions.navigate({ kind: "new" }) },
       ...active.flatMap((w): Entry[] => [
         { id: `new:${w.id}`, label: `New task in ${w.name}`, group: "New", onSearchOnly: true, icon: <IconPlus {...I} />, run: () => uiActions.navigate({ kind: "new", workspaceId: w.id }) },
         { id: `term:${w.id}`, label: `New terminal in ${w.name}`, group: "New", keywords: "shell", onSearchOnly: true, icon: <IconTerminal2 {...I} />, run: () => void openTerminal(w.id) },
       ]),
       ...VIEWS.map(({ view, label, icon, keywords }): Entry => ({ id: `view:${view.kind}`, label, group: "Go to", keywords, icon, run: () => uiActions.navigate(view) })),
-      { id: "settings", label: "Settings", hint: IS_MAC ? "⌘," : undefined, group: "Go to", icon: <IconSettings {...I} />, run: () => uiActions.navigate({ kind: "settings" }) },
+      { id: "settings", label: "Settings", shortcut: IS_MAC ? "⌘," : undefined, group: "Go to", icon: <IconSettings {...I} />, run: () => uiActions.navigate({ kind: "settings" }) },
       ...SETTINGS_TABS.map((tab): Entry => ({ id: `settings:${tab}`, label: `${TAB_LABEL[tab]} settings`, group: "Go to", onSearchOnly: true, icon: <IconSettings {...I} />, run: () => uiActions.navigate({ kind: "settings", tab }) })),
       { id: "check", label: "Network check", group: "Go to", keywords: "internet route exit", onSearchOnly: true, icon: <IconWorld {...I} />, run: uiActions.openNetworkCheck },
       { id: "operations", label: "Operations", group: "Go to", keywords: "progress log", onSearchOnly: true, icon: <IconActivity {...I} />, run: () => uiActions.showOperations(true) },
@@ -111,26 +112,35 @@ function Body({ onClose }: { onClose: () => void }) {
       </label>
       <div ref={list} id="palette-list" role="listbox" aria-label="Results" className="max-h-[min(52vh,420px)] overflow-y-auto overscroll-contain p-1.5">
         {groups.map((group) => (
-          <div key={group.group} role="group" aria-label={group.group}>
-            <div className="px-2.5 pt-2 pb-1 text-xs font-medium text-faint">{group.group}</div>
+          <div key={group.group} role="group" aria-label={group.group} className="[&+&]:mt-1">
+            <div className="px-2.5 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-faint uppercase">{group.group}</div>
             {group.items.map((entry) => {
               const i = ++index;
+              const selected = i === at;
               return (
                 <div
-                  key={entry.id} id={`palette-${i}`} data-index={i} role="option" aria-selected={i === at}
-                  className={`flex h-9 cursor-pointer items-center gap-3 rounded-lg px-2.5 text-[13.5px] ${i === at ? "bg-sel" : ""}`}
-                  onMouseMove={() => i !== at && setActive(i)}
+                  key={entry.id} id={`palette-${i}`} data-index={i} role="option" aria-selected={selected}
+                  className={`press flex h-9 cursor-pointer items-center gap-3 rounded-lg px-2.5 text-[13.5px] ${selected ? "bg-sel font-medium text-fg" : "text-fg"}`}
+                  onMouseMove={() => !selected && setActive(i)}
                   onClick={() => run(entry)}
                 >
-                  <span className="grid size-5 shrink-0 place-items-center text-muted">{entry.icon}</span>
+                  <span className={`grid size-5 shrink-0 place-items-center transition-colors duration-100 ${selected ? "text-accent" : "text-muted"}`}>{entry.icon}</span>
                   <span className="min-w-0 flex-1 truncate">{entry.label}</span>
-                  {entry.hint && <span className="max-w-[45%] shrink-0 truncate text-xs text-faint">{entry.hint}</span>}
+                  {entry.hint && <span className="max-w-[45%] shrink-0 truncate text-xs font-normal text-faint">{entry.hint}</span>}
+                  {entry.shortcut && <kbd className="shrink-0 rounded border border-b-2 border-line bg-surface px-1.5 py-px font-mono text-[10.5px] font-normal text-muted">{entry.shortcut}</kbd>}
                 </div>
               );
             })}
           </div>
         ))}
         {flat.length === 0 && <p className="m-0 px-2.5 py-6 text-center text-sm text-faint">Nothing matches “{query.trim()}”.</p>}
+      </div>
+      <div className="flex items-center justify-between gap-4 border-t border-line/70 px-4 py-2 text-[11px] text-faint">
+        <span className="flex items-center gap-3">
+          <span><kbd className="mr-1 rounded border border-line bg-surface px-1 py-px font-mono text-[10px] text-muted">↑↓</kbd>Navigate</span>
+          <span><kbd className="mr-1 rounded border border-line bg-surface px-1 py-px font-mono text-[10px] text-muted">↵</kbd>Open</span>
+        </span>
+        <span><kbd className="mr-1 rounded border border-line bg-surface px-1 py-px font-mono text-[10px] text-muted">Esc</kbd>Close</span>
       </div>
     </div>
   );
