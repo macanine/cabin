@@ -459,6 +459,38 @@ mod tests {
         assert_eq!(ctx.current_turn(), late.id);
         Ok(())
     }
+
+    #[test]
+    fn initial_prompt_sends_while_starting_without_premature_ready_conflict() -> crate::error::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let ctx = context(dir.path())?;
+        assert_eq!(ctx.state().state, ChatRunState::Starting);
+        let chat = Arc::new(ChatSession {
+            ctx: ctx.clone(),
+            runtime: Mutex::new(None),
+            model: Mutex::new(None),
+            prompt: Mutex::new(()),
+        });
+        struct FakeRuntime;
+        impl LiveSession for FakeRuntime {
+            fn pid(&self) -> u32 { 1 }
+            fn send(&self, _: TurnInput) -> Result<()> { Ok(()) }
+            fn steer(&self, _: TurnInput) -> Result<context::SteerOutcome> { Ok(context::SteerOutcome::Delivered) }
+            fn respond(&self, _: &str, _: &str, _: &serde_json::Value) -> Result<()> { Ok(()) }
+            fn respond_plan(&self, _: &PlanReview, _: PlanDecision, _: Option<&str>) -> Result<()> { Ok(()) }
+            fn interrupt(&self) -> Result<()> { Ok(()) }
+            fn set_permission(&self, _: ChatPermissionMode) -> Result<()> { Ok(()) }
+            fn set_model(&self, _: Option<String>) -> Result<()> { Ok(()) }
+            fn set_option(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+            fn stop_task(&self, _: &str) -> Result<bool> { Ok(false) }
+            fn goal_control(&self, _: &str) -> Result<()> { Ok(()) }
+            fn stop(&self) {}
+        }
+        *chat.runtime.locked() = Some(Arc::new(FakeRuntime));
+        chat.send_prepared("hello", None, vec![], ChatRunState::Starting)?;
+        assert_eq!(ctx.state().state, ChatRunState::Running);
+        Ok(())
+    }
 }
 #[test]
 fn approval_requires_the_exact_offered_option() -> Result<()> {

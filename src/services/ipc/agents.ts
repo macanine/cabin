@@ -12,6 +12,7 @@ import type {
   CodexAccounts,
   CodexResetResult,
   HealthReport,
+  Session,
   SkillFile,
 } from "./generated/core";
 import { invokeGuest } from "./common";
@@ -20,6 +21,8 @@ const claudeUsageRequests = new Map<string, Promise<ClaudeUsage>>();
 let lastClaudeUsage: { accountId: string; usage: ClaudeUsage; receivedAt: number } | null = null;
 
 export const agentsIpc = {
+  openTerminal: (kind: AgentKind, login: boolean, cols = 100, rows = 30) =>
+    invokeGuest<Session>("agent_terminal_open", { kind, login, cols, rows }),
   /** MCP servers and skills on disk (project skills too with a workspace). */
   extensions: (kind: AgentKind, workspaceId: string | null = null) =>
     invokeGuest<AgentExtensions>("agent_extensions", { kind, workspaceId }),

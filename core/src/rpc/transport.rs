@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions, Permissions, TryLockError};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
@@ -6,7 +7,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak, mpsc};
+use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -20,9 +21,10 @@ use crate::util::LockExt;
 
 use super::{PROTOCOL, VERSION, build_id, handle_line};
 
-const OUTPUT_QUEUE: usize = 256;
+const OUTPUT_QUEUE: usize = 2048;
 const MAX_INFLIGHT: usize = 64;
 const MAX_CLIENTS: usize = 16;
+const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 // Four 8 MiB chat attachments use about 43 MiB with base64 encoding.
 const MAX_REQUEST_LINE: u64 = 48 * 1024 * 1024;
 // Charge large requests separately so they leave slots available for small ones.
@@ -121,12 +123,100 @@ impl Drop for CloseSocket {
     }
 }
 
+struct RequestJob {
+    app: Arc<App>,
+    request: Arc<str>,
+    reply: Out,
+    _permits: (OwnedSemaphorePermit, Option<OwnedSemaphorePermit>),
+}
+
+#[derive(Default)]
+struct PoolState {
+    queue: VecDeque<RequestJob>,
+    workers: usize,
+    idle: usize,
+}
+
+/// Reusable on-demand worker pool capped at `MAX_INFLIGHT`, eliminating
+/// per-keystroke OS thread creation while keeping long RPCs concurrent.
+#[derive(Default)]
+struct RequestPool {
+    state: Mutex<PoolState>,
+    ready: Condvar,
+}
+
+impl RequestPool {
+    fn submit(self: &Arc<Self>, job: RequestJob) -> bool {
+        let spawn = {
+            let mut state = self.state.locked();
+            state.queue.push_back(job);
+            if state.idle > 0 {
+                self.ready.notify_one();
+                false
+            } else if state.workers < MAX_INFLIGHT {
+                state.workers += 1;
+                true
+            } else {
+                false
+            }
+        };
+        if !spawn {
+            return true;
+        }
+        let pool = self.clone();
+        if thread::Builder::new()
+            .name("rpc-worker".into())
+            .spawn(move || pool.run_worker())
+            .is_err()
+        {
+            let mut state = self.state.locked();
+            state.workers -= 1;
+            if state.workers == 0 {
+                state.queue.pop_back();
+                return false;
+            }
+        }
+        true
+    }
+
+    fn run_worker(&self) {
+        loop {
+            let job = {
+                let mut state = self.state.locked();
+                loop {
+                    if let Some(job) = state.queue.pop_front() {
+                        break job;
+                    }
+                    state.idle += 1;
+                    let (next, timed_out) = self
+                        .ready
+                        .wait_timeout(state, WORKER_IDLE_TIMEOUT)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state = next;
+                    state.idle -= 1;
+                    if let Some(job) = state.queue.pop_front() {
+                        break job;
+                    }
+                    if timed_out.timed_out() {
+                        state.workers -= 1;
+                        return;
+                    }
+                }
+            };
+            if let Some(response) = handle_line(&job.app, &job.request) {
+                job.reply.send(line_of(response));
+            }
+        }
+    }
+}
+
 struct Server {
     app: Arc<App>,
     clients: Arc<Clients>,
     client_slots: Arc<Semaphore>,
     request_slots: Arc<Semaphore>,
     request_bytes: Arc<Semaphore>,
+    pool: Arc<RequestPool>,
     next_id: AtomicU64,
     hello: Arc<str>,
 }
@@ -139,6 +229,7 @@ impl Server {
             client_slots: Arc::new(Semaphore::new(MAX_CLIENTS)),
             request_slots: Arc::new(Semaphore::new(MAX_INFLIGHT)),
             request_bytes: Arc::new(Semaphore::new(LARGE_REQUEST_BYTES)),
+            pool: Arc::new(RequestPool::default()),
             next_id: AtomicU64::new(1),
             hello: line_of(json!({
                 "hello": { "version": VERSION, "protocol": PROTOCOL, "build": build_id() }
@@ -233,21 +324,16 @@ impl Server {
             None
         };
         let line: Arc<str> = line.into();
-        let request = line.clone();
-        let app = self.app.clone();
-        let reply = out.clone();
-        let worker = thread::Builder::new()
-            .name("rpc-request".into())
-            .spawn(move || {
-                let _permits = (permit, large_request);
-                if let Some(response) = handle_line(&app, &request) {
-                    reply.send(line_of(response));
-                }
-            });
-        // Builder drops the closure and its permits if the OS refuses the spawn.
-        match worker {
-            Ok(_) => true,
-            Err(_) => unavailable(out, &line, "could not start the request worker"),
+        let job = RequestJob {
+            app: self.app.clone(),
+            request: line.clone(),
+            reply: out.clone(),
+            _permits: (permit, large_request),
+        };
+        if self.pool.submit(job) {
+            true
+        } else {
+            unavailable(out, &line, "could not start the request worker")
         }
     }
 }
@@ -431,6 +517,11 @@ pub fn connect(socket: &Path) -> Result<()> {
         .try_clone_to_owned()
         .map(File::from)
         .map_err(|error| Error::io("duplicate RPC input", error))?;
+    let mut stdout = io::stdout()
+        .as_fd()
+        .try_clone_to_owned()
+        .map(File::from)
+        .map_err(|error| Error::io("duplicate RPC output", error))?;
     let (done, notify) =
         UnixStream::pair().map_err(|error| Error::io("open RPC output notification", error))?;
     let reader = thread::Builder::new()
@@ -438,9 +529,16 @@ pub fn connect(socket: &Path) -> Result<()> {
         .spawn(move || {
             let _notify = notify;
             let close = CloseSocket(Arc::new(stream));
-            let mut stdout = io::stdout().lock();
-            io::copy(&mut &*close.0, &mut stdout)?;
-            stdout.flush()
+            let mut source = &*close.0;
+            let mut buffer = [0u8; 32 * 1024];
+            loop {
+                match source.read(&mut buffer) {
+                    Ok(0) => return Ok(()),
+                    Ok(count) => stdout.write_all(&buffer[..count])?,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(error),
+                }
+            }
         })
         .map_err(|error| Error::io("start the RPC output worker", error))?;
     let input = copy_input(stdin, &to_daemon, &done);

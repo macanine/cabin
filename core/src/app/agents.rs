@@ -15,6 +15,7 @@ impl App {
     pub fn agent_models(&self, workspace_id: &str, agent: AgentKind) -> Result<Vec<AgentModel>> {
         let workspace = self.ctx.store.workspace(workspace_id)?;
         let mut env = environment::child_env(&self.ctx);
+        env.extend(agents::adapter(agent).launch_env());
         env.push(("PATH".into(), self.ctx.paths.child_path()));
         // OpenCode's runtime is its CLI; the others are asked through their own CLI.
         let cli = if agent == AgentKind::Opencode {
@@ -390,7 +391,7 @@ impl App {
         )?)
     }
 
-    fn ensure_codex_idle(&self) -> Result<()> {
+    pub(super) fn ensure_codex_idle(&self) -> Result<()> {
         for session in self.ctx.store.sessions()? {
             if session.agent != Some(AgentKind::Codex) {
                 continue;

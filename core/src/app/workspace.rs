@@ -24,11 +24,15 @@ impl App {
     }
 
     pub fn create_workspace(&self, name: &str, path: &str) -> Result<Workspace> {
+        self.register_workspace(clean_name(name, "workspace")?, self.resolve_folder(path)?)
+    }
+
+    fn register_workspace(&self, name: String, path: String) -> Result<Workspace> {
         let now = now_millis();
         let workspace = Workspace {
             id: new_id("ws"),
-            name: clean_name(name, "workspace")?,
-            path: self.resolve_folder(path)?,
+            name,
+            path,
             model_overrides: Vec::new(),
             archived: false,
             created_at: now,
@@ -37,6 +41,17 @@ impl App {
         self.ctx.store.insert_workspace(&workspace)?;
         self.emit_library()?;
         Ok(workspace)
+    }
+
+    /// Called under the terminal lifecycle lock to serialize default workspace creation.
+    pub(super) fn default_workspace(&self) -> Result<Workspace> {
+        let path = self.resolve_folder("~/workspace")?;
+        if let Some(workspace) = self.ctx.store.workspaces()?.into_iter()
+            .find(|workspace| !workspace.archived && workspace.path == path)
+        {
+            return Ok(workspace);
+        }
+        self.register_workspace("Workspace".into(), path)
     }
 
     pub fn update_workspace(&self, id: &str, patch: WorkspacePatch) -> Result<Workspace> {

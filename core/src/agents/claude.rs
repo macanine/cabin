@@ -29,6 +29,10 @@ impl AgentAdapter for Claude {
         &SPEC
     }
 
+    fn login_args(&self) -> &'static [&'static str] {
+        &["auth", "login"]
+    }
+
     fn mcp(&self) -> Option<&'static dyn McpCodec> {
         Some(&Mcp)
     }

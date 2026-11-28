@@ -19,16 +19,16 @@ pub struct Antigravity;
 
 /// The app's model picker leaves the native model selection in effect.
 pub const DEFAULT_MODEL: &str = "default";
-const VERSION: &str = "1.5.14";
+const VERSION: &str = "1.5.18";
 const ARCHIVE_ARCH: &str = if cfg!(target_arch = "x86_64") {
     "x64"
 } else {
     "arm64"
 };
 const ARCHIVE_SHA256: &str = if cfg!(target_arch = "x86_64") {
-    "d58386322d2073e96b33f7cc32b4e9ae2db6228f58440369725967b2de48c7b5"
+    "a4960723ed9cf5b5ac72ed541db8df4d62741795261eb93a4681006ccb23d5ad"
 } else {
-    "e5f69a3123fac66974b303d9a201f381a0fb32b3ef869d9139da85d5caf67a2a"
+    "97799abac91ba0b29b77598b62f903b866461da17680263a182fef2cb796ab0d"
 };
 const OAUTH_FILE: &str = ".gemini/antigravity-cli/antigravity-oauth-token";
 
@@ -46,6 +46,10 @@ static SPEC: AgentSpec = AgentSpec {
 impl AgentAdapter for Antigravity {
     fn spec(&self) -> &'static AgentSpec {
         &SPEC
+    }
+
+    fn login_args(&self) -> &'static [&'static str] {
+        &["acp", "--login"]
     }
 
     fn requires_node(&self) -> bool {

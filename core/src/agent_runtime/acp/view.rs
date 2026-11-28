@@ -14,6 +14,7 @@ use std::time::Instant;
 use serde_json::{Value, json};
 
 use super::super::context::{ChatContext, blank_item, file_changes, system_item};
+use super::dialect::{AcpDialect, ChildScopeHint};
 use super::terminal::Terminals;
 use crate::model::{
     ChatAsyncTask, ChatCommand, ChatConfigChoice, ChatConfigOption, ChatContextUse, ChatControls,
@@ -21,11 +22,13 @@ use crate::model::{
     SubagentTask, ToolAction,
 };
 
-/// Where an update belongs: the chat itself or one subagent task.
+/// Where an update belongs: the chat itself, one subagent task, or an
+/// unmapped background child update that should not split the parent stream.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 enum Scope {
     Main,
     Task(String),
+    Ignore,
 }
 
 struct Segment {
@@ -73,6 +76,7 @@ struct State {
 
 pub struct View {
     root: PathBuf,
+    dialect: Arc<dyn AcpDialect>,
     session_id: Mutex<Option<String>>,
     state: Mutex<State>,
     terminals: Mutex<Option<Arc<Terminals>>>,
@@ -137,9 +141,15 @@ fn goal_snapshot(update: &Value, actions: &[String]) -> Option<Option<ChatGoal>>
 }
 
 impl View {
+    #[cfg(test)]
     pub fn new(root: &Path) -> Self {
+        Self::with_dialect(root, super::dialect::generic())
+    }
+
+    pub(super) fn with_dialect(root: &Path, dialect: Arc<dyn AcpDialect>) -> Self {
         Self {
             root: root.to_path_buf(),
+            dialect,
             session_id: Mutex::new(None),
             state: Mutex::new(State::default()),
             terminals: Mutex::new(None),
@@ -162,6 +172,10 @@ impl View {
 
     pub fn set_session(&self, id: &str) {
         *self.session_id.locked() = Some(id.to_string());
+    }
+
+    pub fn session_id(&self) -> Option<String> {
+        self.session_id.locked().clone()
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -300,38 +314,54 @@ impl View {
                 }
                 let _ = ctx.upsert_subagent_item(task, item);
             }
+            Scope::Ignore => {}
         }
     }
 
-    /// Route an update to its scope: a known child session, an OpenCode
-    /// child-session tag, or the chat itself.
+    /// Route an update to its scope: a known child session, a dialect child
+    /// clue (such as parent tool ID, child-session tag, or external UUID), or
+    /// the main chat itself.
     fn scope_of(&self, ctx: &ChatContext, params: &Value, update: &Value) -> Scope {
         let main = self.session_id.locked().clone();
-        if let Some(parent_tool) = update
-            .pointer("/_meta/claudeCode/parentToolUseId")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-        {
-            let task_id = self
-                .state()
-                .subagent_tools
-                .get(parent_tool)
-                .cloned()
-                .unwrap_or_else(|| {
-                    self.child_task(ctx, &format!("tool:{parent_tool}"), "Subagent", "", None)
-                });
-            return Scope::Task(task_id);
-        }
         let session = params["sessionId"].as_str().unwrap_or_default();
-        let child = update
-            .pointer("/_meta/opencode~1child-session")
-            .filter(|child| child.is_object());
-        if let Some(child) = child {
-            let id = child["id"].as_str().unwrap_or_default();
-            if !id.is_empty() && main.as_deref() != Some(id) {
-                let title = child["title"].as_str().unwrap_or_default();
-                return Scope::Task(self.child_task(ctx, id, title, "", None));
+        match self.dialect.child_scope_hint(update, main.as_deref()) {
+            Some(ChildScopeHint::ParentTool { tool_call_id }) => {
+                let task_id = self
+                    .state()
+                    .subagent_tools
+                    .get(tool_call_id)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        self.child_task(ctx, &format!("tool:{tool_call_id}"), "Subagent", "", None)
+                    });
+                return Scope::Task(task_id);
             }
+            Some(ChildScopeHint::ChildSession { session_id, title }) => {
+                return Scope::Task(self.child_task(ctx, session_id, title, "", None));
+            }
+            Some(ChildScopeHint::ExternalChildUuid { child_uuid }) => {
+                if main
+                    .as_deref()
+                    .is_some_and(|main| !session.is_empty() && main != session)
+                {
+                    return Scope::Task(self.child_task(ctx, session, "", "", None));
+                }
+                if let Some(task_id) = self.state().children.get(child_uuid).cloned() {
+                    return Scope::Task(task_id);
+                }
+                if let Some(native_id) = main.as_deref()
+                    && let Some(task_id) =
+                        self.dialect
+                            .resolve_external_child(native_id, child_uuid, ctx, &self.root)
+                {
+                    self.state()
+                        .children
+                        .insert(child_uuid.to_string(), task_id.clone());
+                    return Scope::Task(task_id);
+                }
+                return Scope::Ignore;
+            }
+            None => {}
         }
         if main
             .as_deref()
@@ -540,24 +570,11 @@ impl View {
                 self.edit_controls(ctx, |controls| merge_options(controls, options));
             }
             "session_info_update" => {
-                if let Some(state) = update
-                    .pointer("/_meta/cabin~1child-status/status")
-                    .and_then(Value::as_str)
-                    && let Some(child) = update.pointer("/_meta/opencode~1child-session")
-                {
-                    let id = child["id"].as_str().unwrap_or_default();
-                    if !id.is_empty() {
-                        let title = child["title"].as_str().unwrap_or_default();
-                        let task_id = self.child_task(ctx, id, title, "", None);
-                        let terminal = match state {
-                            "completed" => Some(SubagentState::Completed),
-                            "failed" => Some(SubagentState::Failed),
-                            "stopped" => Some(SubagentState::Stopped),
-                            _ => None,
-                        };
-                        if let Some(state) = terminal {
-                            let _ = ctx.finish_subagent(&task_id, state, None);
-                        }
+                if let Some(settlement) = self.dialect.child_settlement(update) {
+                    let task_id =
+                        self.child_task(ctx, &settlement.session_id, &settlement.title, "", None);
+                    if let Some(state) = settlement.state {
+                        let _ = ctx.finish_subagent(&task_id, state, None);
                     }
                 }
                 let actions = self.goal_actions.locked().clone();
@@ -745,20 +762,40 @@ impl View {
     }
 
     fn subagent_update(&self, ctx: &ChatContext, update: &Value) {
-        let Some(child) = update["sessionId"].as_str() else {
+        let Some(child) = update["sessionId"]
+            .as_str()
+            .or_else(|| update["subagentId"].as_str())
+            .or_else(|| update["subagent_id"].as_str())
+            .filter(|id| !id.is_empty())
+        else {
             return;
         };
-        let label = update["title"].as_str().unwrap_or_default();
+        let label = update["title"]
+            .as_str()
+            .or_else(|| update["label"].as_str())
+            .or_else(|| update["role"].as_str())
+            .unwrap_or_default();
         let detail = update["description"].as_str().unwrap_or_default();
+        let kind = update["subagentType"]
+            .as_str()
+            .or_else(|| update["subagent_type"].as_str())
+            .or_else(|| update["typeName"].as_str());
         let task_id = self
             .state()
             .subagent_tools
             .get(child)
             .cloned()
-            .unwrap_or_else(|| self.child_task(ctx, child, label, detail, None));
-        let state = match update.pointer("/state/state").and_then(Value::as_str) {
-            Some("idle") => Some(SubagentState::Completed),
-            Some("running") | Some("requires_action") => None,
+            .unwrap_or_else(|| self.child_task(ctx, child, label, detail, kind));
+        let raw_state = update
+            .pointer("/state/state")
+            .and_then(Value::as_str)
+            .or_else(|| update["state"].as_str())
+            .or_else(|| update["status"].as_str());
+        let state = match raw_state {
+            Some("idle" | "completed" | "done" | "success") => Some(SubagentState::Completed),
+            Some("failed" | "error") => Some(SubagentState::Failed),
+            Some("stopped" | "cancelled" | "canceled" | "killed") => Some(SubagentState::Stopped),
+            Some("running" | "requires_action" | "pending" | "working") => None,
             _ => None,
         };
         if let Some(state) = state {
@@ -835,7 +872,7 @@ impl View {
             // Chunks extend the message with the same id.
             if let Some(task) = match &scope {
                 Scope::Task(task) => ctx.subagent(task),
-                Scope::Main => None,
+                Scope::Main | Scope::Ignore => None,
             } && let Some(existing) = task.items.iter().find(|existing| existing.id == id)
             {
                 item.text = format!("{}{}", existing.text, item.text);
@@ -849,6 +886,9 @@ impl View {
             return;
         };
         let scope = self.scope_of(ctx, params, update);
+        if scope == Scope::Ignore {
+            return;
+        }
         if scope == Scope::Main {
             self.settle_idle_children(ctx);
         }
@@ -870,18 +910,20 @@ impl View {
             self.write(ctx, &scope, closed.item);
         }
         // A subagent tool names the child session it started.
-        if let Some(child) = tool
-            .raw_output
-            .pointer("/metadata/sessionID")
-            .or_else(|| tool.raw_output.pointer("/sessionId"))
-            .and_then(Value::as_str)
+        if let Some(child) = child_session(&tool) {
+            let label = subagent_label(&tool);
+            let detail = subagent_detail(&tool);
+            let kind = subagent_kind(&tool);
+            let task_id = self.child_task(ctx, child, label, detail, kind);
+            self.state()
+                .subagent_tools
+                .insert(tool.id.clone(), task_id);
+        }
+        if let Some(steps) =
+            self.dialect
+                .extract_tool_plan(tool.name.as_deref(), &tool.title, &tool.raw_input)
         {
-            let label = tool.raw_input["description"].as_str().unwrap_or_default();
-            let detail = tool.raw_input["prompt"].as_str().unwrap_or_default();
-            let kind = tool.raw_input["agent"]
-                .as_str()
-                .or(tool.raw_input["subagent_type"].as_str());
-            self.child_task(ctx, child, label, detail, kind);
+            self.plan(ctx, Some(&steps));
         }
         self.render(ctx, &tool);
     }
@@ -929,18 +971,84 @@ impl View {
         tool
     }
 
+    fn is_subagent_launch(&self, tool: &Tool) -> bool {
+        self.dialect.is_subagent_launch(
+            tool.kind.as_deref(),
+            tool.name.as_deref(),
+            &tool.title,
+            &tool.meta,
+            &tool.raw_input,
+        )
+    }
+
     pub fn render(&self, ctx: &ChatContext, tool: &Tool) {
         let scope = tool.scope.clone().unwrap_or(Scope::Main);
+        let mut resolved_task_id: Option<String> = None;
         if scope == Scope::Main {
-            if subagent_launch(tool) {
+            if let Some(child) = child_session(tool) {
                 let label = subagent_label(tool);
-                let task_id = self.child_task(ctx, &format!("tool:{}", tool.id), label, "", None);
-                self.state().subagent_tools.insert(tool.id.clone(), task_id);
-            } else if let Some(child) = child_session(tool) {
-                self.child_task(ctx, child, "", "", None);
+                let detail = subagent_detail(tool);
+                let kind = subagent_kind(tool);
+                let task_id = self.child_task(ctx, child, label, detail, kind);
+                self.state()
+                    .subagent_tools
+                    .insert(tool.id.clone(), task_id.clone());
+                resolved_task_id = Some(task_id);
+            } else if self.is_subagent_launch(tool) {
+                let label = subagent_label(tool);
+                let detail = subagent_detail(tool);
+                let kind = subagent_kind(tool);
+                let task_id =
+                    self.child_task(ctx, &format!("tool:{}", tool.id), label, detail, kind);
+                self.state()
+                    .subagent_tools
+                    .insert(tool.id.clone(), task_id.clone());
+                let async_launch = self.dialect.is_async_subagent_launch(
+                    tool.name.as_deref(),
+                    &tool.title,
+                    &tool.raw_input,
+                );
+                if !tool.waiting && matches!(tool.status.as_str(), "completed" | "failed") {
+                    let output = if !tool.text.is_empty() {
+                        tool.text.join("\n")
+                    } else {
+                        raw_output_text(&tool.raw_output)
+                    };
+                    if !output.trim().is_empty() {
+                        let has_reply = ctx.subagent(&task_id).is_some_and(|task| {
+                            task.items
+                                .iter()
+                                .any(|item| item.kind == ChatItemKind::AssistantMessage)
+                        });
+                        if !has_reply {
+                            let mut reply = blank_item(
+                                &format!("acp-subagent-reply:{}", tool.id),
+                                ChatItemKind::AssistantMessage,
+                                ChatItemStatus::Completed,
+                            );
+                            reply.text = output.clone();
+                            self.write(ctx, &Scope::Task(task_id.clone()), reply);
+                        }
+                    }
+                    // Antigravity's `invoke_subagent` returns immediately after launching
+                    // the background child; leave it Active unless it failed or carried output.
+                    if tool.status == "failed" || !async_launch || !output.trim().is_empty() {
+                        let final_state = if tool.status == "failed" {
+                            SubagentState::Failed
+                        } else {
+                            SubagentState::Completed
+                        };
+                        let _ = ctx.finish_subagent(&task_id, final_state, None);
+                        self.state().active_children.remove(&task_id);
+                    }
+                }
+                resolved_task_id = Some(task_id);
             }
         }
-        let item = self.tool_item(tool);
+        let mut item = self.tool_item(tool);
+        if item.task_id.is_none() {
+            item.task_id = resolved_task_id;
+        }
         self.write(ctx, &scope, item);
     }
 
@@ -1029,10 +1137,12 @@ impl View {
         if item.subject.is_empty() && tool.title != item.title {
             item.subject = tool.title.clone();
         }
-        item.task_id = if subagent_launch(tool) {
+        item.task_id = if let Some(child) = child_session(tool) {
+            Some(format!("{TASK_PREFIX}{child}"))
+        } else if self.is_subagent_launch(tool) {
             Some(format!("{TASK_PREFIX}tool:{}", tool.id))
         } else {
-            child_session(tool).map(|child| format!("{TASK_PREFIX}{child}"))
+            None
         };
         if let Some(code) = exit.filter(|code| *code != 0) {
             output.push_str(&format!("\n[exit code {code}]"));
@@ -1043,27 +1153,49 @@ impl View {
 }
 
 const LEGACY_MODE: &str = "__mode";
-
-fn subagent_launch(tool: &Tool) -> bool {
-    tool.meta
-        .pointer("/claudeCode/subagent")
-        .and_then(Value::as_bool)
-        == Some(true)
-        || tool.kind.as_deref() == Some("agent")
-}
+const LEGACY_MODEL: &str = "__model";
 
 fn subagent_label(tool: &Tool) -> &str {
-    ["description", "prompt", "subagent_type", "title"]
+    [
+        "Role",
+        "description",
+        "title",
+        "subagent_type",
+        "TypeName",
+        "agent",
+        "Prompt",
+        "prompt",
+    ]
+    .iter()
+    .find_map(|key| tool.raw_input.get(*key).and_then(Value::as_str))
+    .map(str::trim)
+    .filter(|text| !text.is_empty())
+    .unwrap_or(&tool.title)
+}
+
+fn subagent_detail(tool: &Tool) -> &str {
+    ["Prompt", "prompt", "description"]
         .iter()
         .find_map(|key| tool.raw_input.get(*key).and_then(Value::as_str))
-        .filter(|text| !text.trim().is_empty())
-        .unwrap_or(&tool.title)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("")
+}
+
+fn subagent_kind(tool: &Tool) -> Option<&str> {
+    ["subagent_type", "TypeName", "agent"]
+        .iter()
+        .find_map(|key| tool.raw_input.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
 }
 
 fn child_session(tool: &Tool) -> Option<&str> {
     tool.raw_output
         .pointer("/metadata/sessionID")
         .or_else(|| tool.raw_output.pointer("/sessionId"))
+        .or_else(|| tool.raw_output.pointer("/conversationId"))
+        .or_else(|| tool.raw_output.pointer("/subagent_id"))
         .and_then(Value::as_str)
         .filter(|child| !child.is_empty())
 }
@@ -1204,7 +1336,10 @@ fn command_text(input: &Value) -> Option<String> {
                 .collect::<Vec<_>>()
                 .join(" "),
         ),
-        _ => input["cmd"].as_str().map(str::to_string),
+        _ => ["CommandLine", "command_line", "commandLine", "cmd"]
+            .iter()
+            .find_map(|key| input[*key].as_str())
+            .map(str::to_string),
     }
     .map(|command| crate::chat_view::unwrap_shell(&command))
 }
@@ -1212,14 +1347,22 @@ fn command_text(input: &Value) -> Option<String> {
 fn raw_output_text(output: &Value) -> String {
     match output {
         Value::String(text) => text.clone(),
-        Value::Object(object) => ["output", "stdout", "result", "content", "text"]
-            .iter()
-            .find_map(|key| object.get(*key))
-            .map(|value| match value {
-                Value::String(text) => text.clone(),
-                other => content_text(other),
-            })
-            .unwrap_or_default(),
+        Value::Object(object) => [
+            "combinedOutput",
+            "combined_output",
+            "output",
+            "stdout",
+            "result",
+            "content",
+            "text",
+        ]
+        .iter()
+        .find_map(|key| object.get(*key))
+        .map(|value| match value {
+            Value::String(text) => text.clone(),
+            other => content_text(other),
+        })
+        .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -1289,11 +1432,19 @@ pub fn config_options(value: &Value) -> Vec<ChatConfigOption> {
                     choices.push(choice);
                 }
             }
+            let id = option["id"].as_str()?.to_string();
+            let category = option["category"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| match id.as_str() {
+                    "model" | "mode" | "thought_level" => Some(id.clone()),
+                    _ => None,
+                });
             Some(ChatConfigOption {
-                id: option["id"].as_str()?.to_string(),
+                id,
                 name: option["name"].as_str().unwrap_or_default().to_string(),
                 description: option["description"].as_str().map(str::to_string),
-                category: option["category"].as_str().map(str::to_string),
+                category,
                 kind,
                 current,
                 choices,
@@ -1362,21 +1513,76 @@ pub fn is_legacy_mode(option: &str) -> bool {
     option == LEGACY_MODE
 }
 
-/// Config options replace the whole set; a legacy mode selector stays
-/// unless the agent now sends its own mode option.
-pub fn merge_options(controls: &mut ChatControls, options: Vec<ChatConfigOption>) {
-    let legacy = controls
-        .options
+/// Legacy `models` (before config options) shown as one model selector.
+pub fn legacy_models(models: &Value) -> Option<ChatConfigOption> {
+    let available = models["availableModels"].as_array()?;
+    if available.is_empty() {
+        return None;
+    }
+    let choices: Vec<ChatConfigChoice> = available
         .iter()
-        .find(|option| option.id == LEGACY_MODE)
-        .cloned()
-        .filter(|_| {
-            !options
-                .iter()
-                .any(|option| option.category.as_deref() == Some("mode"))
-        });
+        .filter_map(|entry| {
+            let value = entry["modelId"]
+                .as_str()
+                .or_else(|| entry["id"].as_str())?
+                .to_string();
+            let name = entry["name"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .unwrap_or(&value)
+                .to_string();
+            Some(ChatConfigChoice {
+                value,
+                name,
+                description: entry["description"].as_str().map(str::to_string),
+                group: None,
+            })
+        })
+        .collect();
+    if choices.is_empty() {
+        return None;
+    }
+    Some(ChatConfigOption {
+        id: LEGACY_MODEL.into(),
+        name: "Model".into(),
+        description: None,
+        category: Some("model".into()),
+        kind: "select".into(),
+        current: models["currentModelId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        choices,
+        hidden: false,
+    })
+}
+
+pub fn is_legacy_model(option: &str) -> bool {
+    option == LEGACY_MODEL
+}
+
+/// Config options replace the whole set; legacy mode/model selectors stay
+/// unless the agent now sends its own config option for that category.
+pub fn merge_options(controls: &mut ChatControls, options: Vec<ChatConfigOption>) {
+    let keep = |legacy_id: &str, category: &str| {
+        controls
+            .options
+            .iter()
+            .find(|option| option.id == legacy_id)
+            .cloned()
+            .filter(|_| {
+                !options
+                    .iter()
+                    .any(|option| option.category.as_deref() == Some(category))
+            })
+    };
+    let legacy_model = keep(LEGACY_MODEL, "model");
+    let legacy_mode = keep(LEGACY_MODE, "mode");
     controls.options = options;
-    if let Some(legacy) = legacy {
+    if let Some(legacy) = legacy_model {
+        controls.options.push(legacy);
+    }
+    if let Some(legacy) = legacy_mode {
         controls.options.push(legacy);
     }
 }
@@ -1735,7 +1941,10 @@ mod tests {
         stop: impl Fn(&Value) -> bool,
     ) -> (Arc<ChatContext>, View) {
         let ctx = context();
-        let view = View::new(Path::new("/workspace"));
+        let view = View::with_dialect(
+            Path::new("/workspace"),
+            crate::agent_runtime::acp::dialect::for_agent(crate::model::AgentKind::Opencode),
+        );
         let mut turn = 0;
         for line in text.lines() {
             let record: Value = serde_json::from_str(line).unwrap();
@@ -1995,5 +2204,240 @@ mod tests {
         assert_eq!(options[0].choices[1].group.as_deref(), Some("Group 2"));
         assert_eq!(options[1].kind, "boolean");
         assert_eq!(options[1].current, "true");
+    }
+
+    #[test]
+    fn antigravity_legacy_models_command_fields_and_update_steps_are_supported() {
+        let legacy = legacy_models(&json!({
+            "currentModelId": "gemini-4-neon-high",
+            "availableModels": [
+                {"modelId": "gemini-4-neon-high", "name": "Gemini 4 Neon (High)"},
+                {"modelId": "claude-opus-5-5-high", "name": "Claude Opus 5.5 (High)"}
+            ]
+        }))
+        .unwrap();
+        assert!(is_legacy_model(&legacy.id));
+        assert_eq!(legacy.category.as_deref(), Some("model"));
+        assert_eq!(legacy.current, "gemini-4-neon-high");
+        assert_eq!(legacy.choices.len(), 2);
+
+        let mut controls = ChatControls::default();
+        controls.options.push(legacy.clone());
+        merge_options(
+            &mut controls,
+            config_options(&json!([{
+                "id": "thought_level",
+                "name": "Thinking Level",
+                "type": "select",
+                "currentValue": "high",
+                "options": [{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}]
+            }])),
+        );
+        assert!(controls.options.iter().any(|o| is_legacy_model(&o.id)));
+        assert!(
+            controls
+                .options
+                .iter()
+                .any(|o| o.category.as_deref() == Some("thought_level"))
+        );
+
+        let ctx = context();
+        let view = View::with_dialect(
+            Path::new("/workspace"),
+            crate::agent_runtime::acp::dialect::for_agent(crate::model::AgentKind::Antigravity),
+        );
+        view.update(
+            &ctx,
+            &json!({
+                "sessionId": "s1",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "cmd-1",
+                    "kind": "execute",
+                    "title": "Run command",
+                    "status": "completed",
+                    "rawInput": {"CommandLine": "cargo test"},
+                    "rawOutput": {"combinedOutput": "ok 42 passed"}
+                }
+            }),
+        );
+        let items = ctx.store.chat_items("s1").unwrap();
+        let cmd = items
+            .iter()
+            .find(|item| item.kind == ChatItemKind::CommandExecution)
+            .unwrap();
+        assert_eq!(cmd.text, "cargo test");
+        assert_eq!(cmd.detail, "ok 42 passed");
+
+        view.update(
+            &ctx,
+            &json!({
+                "sessionId": "s1",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "steps-1",
+                    "title": "Run update_steps",
+                    "status": "completed",
+                    "rawInput": {
+                        "steps": [
+                            {"title": "Inspect ACP", "status": "done"},
+                            {"title": "Run tests", "status": "in_progress"}
+                        ]
+                    }
+                }
+            }),
+        );
+        let plan = view.controls().plan;
+        assert_eq!(plan.len(), 2);
+        assert_eq!((plan[0].content.as_str(), plan[0].status.as_str()), ("Inspect ACP", "completed"));
+        assert_eq!((plan[1].content.as_str(), plan[1].status.as_str()), ("Run tests", "in_progress"));
+    }
+
+    #[test]
+    fn antigravity_invoke_subagent_and_claude_agent_tools_create_and_finish_subagents() {
+        let ctx = context();
+        let view = View::with_dialect(
+            Path::new("/workspace"),
+            crate::agent_runtime::acp::dialect::for_agent(crate::model::AgentKind::Antigravity),
+        );
+        view.update(
+            &ctx,
+            &json!({
+                "sessionId": "s1",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "sub-1",
+                    "name": "invoke_subagent",
+                    "title": "Run invoke_subagent",
+                    "kind": "other",
+                    "status": "in_progress",
+                    "rawInput": {
+                        "TypeName": "research",
+                        "Role": "Codebase Researcher",
+                        "Prompt": "Inspect src/worker.ts"
+                    }
+                }
+            }),
+        );
+        let tasks = ctx.store.chat_subagents("s1").unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].label, "Codebase Researcher");
+        assert_eq!(tasks[0].subagent_type.as_deref(), Some("research"));
+        assert_eq!(tasks[0].detail, "Inspect src/worker.ts");
+        assert_eq!(tasks[0].state, SubagentState::Active);
+
+        view.update(
+            &ctx,
+            &json!({
+                "sessionId": "s1",
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "sub-1",
+                    "status": "completed",
+                    "content": [{"type": "content", "content": {"type": "text", "text": "Found 3 endpoints."}}]
+                }
+            }),
+        );
+        let tasks = ctx.store.chat_subagents("s1").unwrap();
+        assert_eq!(tasks[0].state, SubagentState::Completed);
+        assert_eq!(tasks[0].items.len(), 1);
+        assert_eq!(tasks[0].items[0].text, "Found 3 endpoints.");
+
+        let items = ctx.store.chat_items("s1").unwrap();
+        let launch_item = items.iter().find(|i| i.id == "acp-tool:sub-1").unwrap();
+        assert_eq!(launch_item.task_id.as_deref(), Some("acp-agent:tool:sub-1"));
+    }
+
+    #[test]
+    fn antigravity_child_prefixed_tool_calls_do_not_split_main_message() {
+        let ctx = context();
+        let view = View::with_dialect(
+            Path::new("/workspace"),
+            crate::agent_runtime::acp::dialect::for_agent(crate::model::AgentKind::Antigravity),
+        );
+        view.set_session("parent-uuid");
+        view.update(
+            &ctx,
+            &json!({
+                "sessionId": "parent-uuid",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "已启动 3 个子代理"}
+                }
+            }),
+        );
+        view.update(
+            &ctx,
+            &json!({
+                "sessionId": "parent-uuid",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "727f665c-9285-4f84-87ff-e66a40e2f2b5:call_1",
+                    "kind": "execute",
+                    "title": "uname -a",
+                    "status": "in_progress"
+                }
+            }),
+        );
+        view.update(
+            &ctx,
+            &json!({
+                "sessionId": "parent-uuid",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "，正在收集实时系统数据："}
+                }
+            }),
+        );
+        let items = ctx.store.chat_items("s1").unwrap();
+        let messages: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == ChatItemKind::AssistantMessage)
+            .collect();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text, "已启动 3 个子代理，正在收集实时系统数据：");
+        assert!(!items.iter().any(|i| i.id.contains("727f665c")));
+    }
+
+    #[test]
+    fn generic_view_isolates_provider_extensions() {
+        let ctx = context();
+        let view = View::new(Path::new("/workspace"));
+        view.set_session("main-1");
+        view.update(
+            &ctx,
+            &json!({
+                "sessionId": "main-1",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "steps-1",
+                    "title": "Run update_steps",
+                    "status": "completed",
+                    "rawInput": {
+                        "steps": [{"title": "Should stay tool-only", "status": "done"}]
+                    }
+                }
+            }),
+        );
+        // Generic dialect must not translate Antigravity `update_steps` into plan controls.
+        assert!(view.controls().plan.is_empty());
+
+        // Generic dialect still handles standard ACP `Agent` subagent tool launches.
+        view.update(
+            &ctx,
+            &json!({
+                "sessionId": "main-1",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "agent-1",
+                    "name": "Agent",
+                    "title": "Researcher",
+                    "status": "in_progress"
+                }
+            }),
+        );
+        let tasks = ctx.store.chat_subagents("s1").unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].label, "Researcher");
     }
 }

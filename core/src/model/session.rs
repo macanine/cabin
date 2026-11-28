@@ -46,6 +46,7 @@ pub enum SessionMode {
     #[default]
     Terminal,
     Ui,
+    Login,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

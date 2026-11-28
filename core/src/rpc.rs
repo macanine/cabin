@@ -143,6 +143,17 @@ pub fn dispatch(app: &App, method: &str, raw: Value) -> Result<Value> {
                 p.rows,
             )?)
         }
+        "agent_terminal_open" => {
+            #[derive(Deserialize)]
+            struct P {
+                kind: AgentKind,
+                login: bool,
+                cols: u16,
+                rows: u16,
+            }
+            let p: P = params(raw)?;
+            ok(app.open_agent_terminal(p.kind, p.login, p.cols, p.rows)?)
+        }
         "terminal_paste_image" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase")]

@@ -80,6 +80,11 @@ pub trait AgentAdapter: Send + Sync {
         Vec::new()
     }
 
+    /// Arguments for the native sign-in flow. Interactive CLIs can use a slash command.
+    fn login_args(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Text the composer inserts to reference a skill in this agent.
     fn skill_insert(&self, skill: &SkillEntry) -> Option<String> {
         Some(format!("/{} ", skill.name))

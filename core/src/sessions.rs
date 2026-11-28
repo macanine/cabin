@@ -7,8 +7,9 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, mpsc};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, mpsc};
+use std::time::{Duration, Instant};
 
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
@@ -19,6 +20,15 @@ use crate::util::{Utf8Stream, sha256_text};
 const SCROLLBACK_LIMIT: usize = 512 * 1024;
 const TRIM_HEADROOM: usize = 64 * 1024;
 const TRIM_SEARCH: usize = 8 * 1024;
+// Coalesce burst PTY reads to reduce JSON/SSH/IPC framing overhead while
+// delivering single-keystroke echoes with zero added delay.
+const OUTPUT_BATCH_MAX: usize = 32 * 1024;
+const OUTPUT_BATCH_WINDOW: Duration = Duration::from_millis(6);
+const OUTPUT_BATCH_POLL_MS: i32 = 2;
+const OUTPUT_BURST_THRESHOLD: usize = 256;
+// Debounce persisted history writes off the live PTY hot path so fsync never
+// stalls interactive input or output.
+const HISTORY_FLUSH_DELAY: Duration = Duration::from_millis(500);
 // Cancel any unfinished escape, leave the alternate screen, and reset modes
 // and attributes while keeping the normal screen and its scrollback.
 const SHELL_BOUNDARY: &str = "\x18\x1b[?1049l\x1b[?1047l\x1b[?47l\x1b[!p\x1b[0m\r\n";
@@ -69,11 +79,28 @@ pub struct LaunchSpec {
     pub rows: u16,
 }
 
+enum FlushOp {
+    Rewrite {
+        path: PathBuf,
+        data: String,
+        revision: u64,
+    },
+    Append {
+        path: PathBuf,
+        data: String,
+        revision: u64,
+    },
+}
+
 struct History {
     data: String,
     end_offset: u64,
     path: Option<PathBuf>,
-    rewrite: bool,
+    revision: u64,
+    flushed_revision: u64,
+    pending_append: String,
+    needs_rewrite: bool,
+    forgotten: bool,
 }
 
 impl History {
@@ -95,32 +122,67 @@ impl History {
                 .then(|| String::from_utf8(bytes).ok())
                 .flatten()
         });
-        let rewrite = restored.is_none();
+        let needs_rewrite = restored.is_none();
         let data = restored.unwrap_or_default();
         Self {
             end_offset: data.len() as u64,
             data,
             path,
-            rewrite,
+            revision: 0,
+            flushed_revision: 0,
+            pending_append: String::new(),
+            needs_rewrite,
+            forgotten: false,
         }
     }
 
-    fn push(&mut self, data: &str) {
+    fn push(&mut self, data: &str) -> bool {
         self.end_offset += data.len() as u64;
-        self.rewrite |= push_scrollback(&mut self.data, data);
-        if let Some(path) = &self.path {
-            // Appends are cheap between compactions. Replace atomically at
-            // the bound (or after any incomplete append).
-            self.rewrite = if self.rewrite {
-                crate::fsx::atomic_write(path, self.data.as_bytes(), Some(0o600)).is_err()
+        let trimmed = push_scrollback(&mut self.data, data);
+        self.revision += 1;
+        if self.path.is_some() && !self.forgotten {
+            if trimmed || self.needs_rewrite {
+                self.needs_rewrite = true;
+                self.pending_append.clear();
             } else {
-                OpenOptions::new()
-                    .append(true)
-                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                    .open(path)
-                    .and_then(|mut file| file.write_all(data.as_bytes()))
-                    .is_err()
-            };
+                self.pending_append.push_str(data);
+            }
+            return true;
+        }
+        false
+    }
+
+    fn take_flush(&mut self) -> Option<FlushOp> {
+        if self.forgotten || self.revision == self.flushed_revision {
+            return None;
+        }
+        let path = self.path.clone()?;
+        if self.needs_rewrite {
+            self.needs_rewrite = false;
+            self.pending_append.clear();
+            Some(FlushOp::Rewrite {
+                path,
+                data: self.data.clone(),
+                revision: self.revision,
+            })
+        } else if !self.pending_append.is_empty() {
+            Some(FlushOp::Append {
+                path,
+                data: std::mem::take(&mut self.pending_append),
+                revision: self.revision,
+            })
+        } else {
+            self.flushed_revision = self.revision;
+            None
+        }
+    }
+
+    fn finish_flush(&mut self, revision: u64, ok: bool) {
+        if ok {
+            self.flushed_revision = self.flushed_revision.max(revision);
+        } else {
+            self.needs_rewrite = true;
+            self.pending_append.clear();
         }
     }
 }
@@ -182,9 +244,9 @@ impl State {
         );
     }
 
-    fn output(&mut self, id: &str, sink: &EventSink, data: String) {
+    fn output(&mut self, id: &str, sink: &EventSink, data: String) -> bool {
         let offset = self.history.end_offset;
-        self.history.push(&data);
+        let dirty = self.history.push(&data);
         emit(
             sink,
             SessionEvent::Output {
@@ -194,12 +256,164 @@ impl State {
                 data,
             },
         );
+        dirty
     }
 }
 
-type Slot = Arc<Mutex<State>>;
+/// Lock ordering is strictly `Supervisor::slots` -> `SessionSlot::io` -> `SessionSlot::state`
+/// -> `Live::writer`. Disk I/O runs only under `io`, never under `state`.
+struct SessionSlot {
+    io: Mutex<()>,
+    state: Mutex<State>,
+}
+
+impl SessionSlot {
+    fn new(state: State) -> Arc<Self> {
+        Arc::new(Self {
+            io: Mutex::new(()),
+            state: Mutex::new(state),
+        })
+    }
+
+    fn flush(&self) {
+        let _io = lock(&self.io);
+        self.flush_with_io(&_io);
+    }
+
+    fn flush_with_io(&self, _io: &MutexGuard<'_, ()>) {
+        loop {
+            let op = { lock(&self.state).history.take_flush() };
+            let Some(op) = op else { return };
+            let (revision, ok) = match op {
+                FlushOp::Rewrite {
+                    path,
+                    data,
+                    revision,
+                } => (
+                    revision,
+                    crate::fsx::atomic_write(&path, data.as_bytes(), Some(0o600)).is_ok(),
+                ),
+                FlushOp::Append {
+                    path,
+                    data,
+                    revision,
+                } => (
+                    revision,
+                    OpenOptions::new()
+                        .append(true)
+                        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                        .open(&path)
+                        .and_then(|mut file| file.write_all(data.as_bytes()))
+                        .is_ok(),
+                ),
+            };
+            let mut state = lock(&self.state);
+            state.history.finish_flush(revision, ok);
+            if !ok {
+                // Retry once via atomic rewrite when a plain append failed (e.g. missing file).
+                if let Some(FlushOp::Rewrite {
+                    path,
+                    data,
+                    revision,
+                }) = state.history.take_flush()
+                {
+                    drop(state);
+                    let recovered =
+                        crate::fsx::atomic_write(&path, data.as_bytes(), Some(0o600)).is_ok();
+                    lock(&self.state).history.finish_flush(revision, recovered);
+                }
+                return;
+            }
+        }
+    }
+}
+
+type Slot = Arc<SessionSlot>;
 type Sink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
 type EventSink = RwLock<Option<Sink>>;
+
+/// Single background flusher that coalesces disk persistence for all persisted
+/// terminals off the PTY read/write hot path.
+struct HistoryFlusher {
+    pending: Mutex<HashMap<String, (Slot, Instant)>>,
+    ready: Condvar,
+    stop: AtomicBool,
+}
+
+impl HistoryFlusher {
+    fn start() -> Arc<Self> {
+        let flusher = Arc::new(Self {
+            pending: Mutex::new(HashMap::new()),
+            ready: Condvar::new(),
+            stop: AtomicBool::new(false),
+        });
+        let worker = flusher.clone();
+        let _ = std::thread::Builder::new()
+            .name("pty-history-flush".into())
+            .spawn(move || worker.run());
+        flusher
+    }
+
+    fn schedule(&self, id: &str, slot: &Slot) {
+        let mut pending = lock(&self.pending);
+        let entry = pending.entry(id.to_string());
+        if matches!(entry, std::collections::hash_map::Entry::Vacant(_)) {
+            entry.or_insert_with(|| (slot.clone(), Instant::now() + HISTORY_FLUSH_DELAY));
+            self.ready.notify_one();
+        }
+    }
+
+    fn cancel(&self, id: &str) {
+        lock(&self.pending).remove(id);
+    }
+
+    fn shutdown(&self) {
+        self.stop.store(true, Ordering::Release);
+        self.ready.notify_one();
+    }
+
+    fn run(&self) {
+        loop {
+            let due = {
+                let mut pending = lock(&self.pending);
+                loop {
+                    if self.stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let now = Instant::now();
+                    let ready_ids: Vec<String> = pending
+                        .iter()
+                        .filter(|(_, (_, deadline))| *deadline <= now)
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    if !ready_ids.is_empty() {
+                        break ready_ids
+                            .into_iter()
+                            .filter_map(|id| pending.remove(&id).map(|(slot, _)| slot))
+                            .collect::<Vec<_>>();
+                    }
+                    let next = pending.values().map(|(_, deadline)| *deadline).min();
+                    pending = match next {
+                        Some(deadline) => {
+                            let wait = deadline.saturating_duration_since(now);
+                            self.ready
+                                .wait_timeout(pending, wait)
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .0
+                        }
+                        None => self
+                            .ready
+                            .wait(pending)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                    };
+                }
+            };
+            for slot in due {
+                slot.flush();
+            }
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct Supervisor {
@@ -207,6 +421,15 @@ pub struct Supervisor {
     sink: Arc<EventSink>,
     next_generation: AtomicU32,
     history_dir: Option<PathBuf>,
+    flusher: Mutex<Option<Arc<HistoryFlusher>>>,
+}
+
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        if let Some(flusher) = lock(&self.flusher).take() {
+            flusher.shutdown();
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -236,14 +459,19 @@ struct Process {
 
 impl Supervisor {
     pub fn new(history_dir: PathBuf) -> Self {
-        Self {
-            history_dir: Some(history_dir),
-            ..Self::default()
-        }
+        let mut supervisor = Self::default();
+        supervisor.history_dir = Some(history_dir);
+        supervisor
     }
 
     pub fn set_sink(&self, sink: impl Fn(SessionEvent) + Send + Sync + 'static) {
         *self.sink.write_lock() = Some(Arc::new(sink));
+    }
+
+    fn flusher(&self) -> Option<Arc<HistoryFlusher>> {
+        self.history_dir.as_ref()?;
+        let mut guard = lock(&self.flusher);
+        Some(guard.get_or_insert_with(HistoryFlusher::start).clone())
     }
 
     fn history_path(&self, id: &str) -> Option<PathBuf> {
@@ -257,12 +485,12 @@ impl Supervisor {
             .entry(id.into())
             .or_insert_with(|| {
                 let path = if persist { self.history_path(id) } else { None };
-                Arc::new(Mutex::new(State {
+                SessionSlot::new(State {
                     generation: 0,
                     status: SessionStatus::Stopped,
                     history: History::load(path),
                     live: None,
-                }))
+                })
             })
             .clone()
     }
@@ -273,11 +501,11 @@ impl Supervisor {
 
     pub fn status(&self, id: &str) -> SessionStatus {
         self.existing_slot(id)
-            .map_or(SessionStatus::Stopped, |slot| lock(&slot).status.clone())
+            .map_or(SessionStatus::Stopped, |slot| lock(&slot.state).status.clone())
     }
 
     pub fn snapshot(&self, id: &str, persist: bool) -> TerminalSnapshot {
-        lock(&self.slot(id, persist)).snapshot()
+        lock(&self.slot(id, persist).state).snapshot()
     }
 
     /// Start only from the state the caller observed. Repeated attach requests
@@ -291,7 +519,7 @@ impl Supervisor {
         spec: impl FnOnce() -> Result<LaunchSpec>,
     ) -> (TerminalSnapshot, bool) {
         let slot = self.slot(id, true);
-        let mut state = lock(&slot);
+        let mut state = lock(&slot.state);
         let can_start = match state.status {
             SessionStatus::Stopped | SessionStatus::Exited { .. } => true,
             SessionStatus::Failed { .. } => retry,
@@ -305,7 +533,7 @@ impl Supervisor {
 
     pub fn start(&self, id: &str, spec: impl FnOnce() -> Result<LaunchSpec>) -> Result<()> {
         let slot = self.slot(id, false);
-        let mut state = lock(&slot);
+        let mut state = lock(&slot.state);
         if state.status.is_live() {
             return Err(Error::Conflict("This session is already running".into()));
         }
@@ -367,11 +595,16 @@ impl Supervisor {
         let generation = state.generation;
         let worker_slot = slot.clone();
         let sink = self.sink.clone();
+        let flusher = if state.history.path.is_some() {
+            self.flusher()
+        } else {
+            None
+        };
         std::thread::Builder::new()
             .name(format!("pty-{id}"))
             .spawn(move || {
                 if let Ok(process) = receive.recv() {
-                    supervise(&worker_id, generation, &worker_slot, &sink, process);
+                    supervise(&worker_id, generation, &worker_slot, &sink, flusher, process);
                 }
             })
             .map_err(|error| Error::io("start terminal supervisor", error))?;
@@ -397,8 +630,10 @@ impl Supervisor {
             pid,
         });
         if state.history.path.is_some() {
-            if !state.history.data.is_empty() {
-                state.history.push(SHELL_BOUNDARY);
+            if !state.history.data.is_empty() && state.history.push(SHELL_BOUNDARY)
+                && let Some(flusher) = self.flusher()
+            {
+                flusher.schedule(id, slot);
             }
         } else {
             state.history = History::load(None);
@@ -413,7 +648,7 @@ impl Supervisor {
         let writer = self
             .existing_slot(id)
             .and_then(|slot| {
-                let state = lock(&slot);
+                let state = lock(&slot.state);
                 state
                     .live
                     .as_ref()
@@ -432,7 +667,7 @@ impl Supervisor {
 
     pub fn resize(&self, id: &str, generation: u32, cols: u16, rows: u16) -> Result<()> {
         if let Some(slot) = self.existing_slot(id) {
-            let state = lock(&slot);
+            let state = lock(&slot.state);
             if let Some(live) = state
                 .live
                 .as_ref()
@@ -448,7 +683,7 @@ impl Supervisor {
 
     pub fn stop(&self, id: &str) -> Result<()> {
         if let Some(slot) = self.existing_slot(id)
-            && let Some(killer) = lock(&slot)
+            && let Some(killer) = lock(&slot.state)
                 .live
                 .as_mut()
                 .and_then(|live| live.killer.as_mut())
@@ -463,21 +698,40 @@ impl Supervisor {
     /// Archive a terminal without discarding its saved history.
     pub fn deactivate(&self, id: &str) {
         if let Some(slot) = self.existing_slot(id) {
-            let mut state = lock(&slot);
-            terminate(&mut state);
-            if state.history.path.is_none() {
-                state.history = History::load(None);
+            let io_guard = lock(&slot.io);
+            {
+                let mut state = lock(&slot.state);
+                terminate(&mut state);
+                if state.history.path.is_none() {
+                    state.history = History::load(None);
+                }
+                state.generation = self.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
+                state.set_status(id, &self.sink, SessionStatus::Stopped);
             }
-            state.generation = self.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
-            state.set_status(id, &self.sink, SessionStatus::Stopped);
+            slot.flush_with_io(&io_guard);
         }
     }
 
-    /// Retire the process before deleting its history, so a late read cannot
-    /// recreate the file after deletion.
+    /// Retire the process before deleting its history, so a late read or
+    /// background flush cannot recreate the file after deletion.
     pub fn forget(&self, id: &str) -> Result<()> {
+        if let Some(flusher) = lock(&self.flusher).as_ref().cloned() {
+            flusher.cancel(id);
+        }
         if let Some(slot) = lock(&self.slots).remove(id) {
-            terminate(&mut lock(&slot));
+            let _io = lock(&slot.io);
+            {
+                let mut state = lock(&slot.state);
+                state.history.forgotten = true;
+                terminate(&mut state);
+            }
+            if let Some(path) = self.history_path(id)
+                && let Err(error) = fs::remove_file(&path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                return Err(Error::path("remove terminal history", &path, error));
+            }
+            return Ok(());
         }
         if let Some(path) = self.history_path(id)
             && let Err(error) = fs::remove_file(&path)
@@ -489,8 +743,14 @@ impl Supervisor {
     }
 
     pub fn stop_all(&self) {
-        for (_, slot) in lock(&self.slots).drain() {
-            terminate(&mut lock(&slot));
+        if let Some(flusher) = lock(&self.flusher).take() {
+            flusher.shutdown();
+        }
+        let slots: Vec<Slot> = lock(&self.slots).drain().map(|(_, slot)| slot).collect();
+        for slot in slots {
+            let io_guard = lock(&slot.io);
+            terminate(&mut lock(&slot.state));
+            slot.flush_with_io(&io_guard);
         }
     }
 }
@@ -510,19 +770,27 @@ fn terminate(state: &mut State) {
 /// Poll the master so we can reap the shell even if another process still
 /// has the slave open. After exit, drain the remaining output before the
 /// exit event, within the same generation.
-fn supervise(id: &str, generation: u32, slot: &Slot, sink: &EventSink, process: Process) {
+fn supervise(
+    id: &str,
+    generation: u32,
+    slot: &Slot,
+    sink: &EventSink,
+    flusher: Option<Arc<HistoryFlusher>>,
+    process: Process,
+) {
     let Process {
         mut child,
         mut reader,
     } = process;
     let mut decoder = Utf8Stream::default();
     let mut buffer = [0; 16 * 1024];
+    let mut batch = Vec::with_capacity(OUTPUT_BATCH_MAX);
     let mut reader_open = true;
     let mut exit = None;
     let mut tail = 0;
     loop {
-        {
-            let mut state = lock(slot);
+        let finished = {
+            let mut state = lock(&slot.state);
             let current = state.generation == generation;
             let Some(live) = state.live.as_mut().filter(|_| current) else {
                 drop(state);
@@ -543,13 +811,21 @@ fn supervise(id: &str, generation: u32, slot: &Slot, sink: &EventSink, process: 
                     live.killer = None;
                 }
             }
-            if (!reader_open || tail >= 128)
-                && let Some(status) = exit
-            {
+            if !reader_open || tail >= 128 {
+                exit.take()
+            } else {
+                None
+            }
+        };
+        if let Some(status) = finished {
+            // Ensure persisted scrollback is durable on disk before announcing exit.
+            slot.flush();
+            let mut state = lock(&slot.state);
+            if state.generation == generation {
                 state.live = None;
                 state.set_status(id, sink, status);
-                return;
             }
+            return;
         }
         let mut fd = libc::pollfd {
             fd: if reader_open { reader.as_raw_fd() } else { -1 },
@@ -566,20 +842,65 @@ fn supervise(id: &str, generation: u32, slot: &Slot, sink: &EventSink, process: 
             }
             continue;
         }
-        match reader.read(&mut buffer) {
-            Ok(0) => reader_open = false,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => reader_open = false,
-            Ok(count) => {
-                let data = decoder.push(&buffer[..count]);
-                if exit.is_some() {
-                    tail += 1;
+        batch.clear();
+        let started = Instant::now();
+        let mut first = true;
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => {
+                    reader_open = false;
+                    break;
                 }
-                let mut state = lock(slot);
-                if !data.is_empty() && state.generation == generation && state.live.is_some() {
-                    state.output(id, sink, data);
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                    if first {
+                        continue;
+                    }
+                    break;
+                }
+                Err(_) => {
+                    reader_open = false;
+                    break;
+                }
+                Ok(count) => {
+                    batch.extend_from_slice(&buffer[..count]);
+                    if exit.is_some() {
+                        tail += 1;
+                    }
+                    if batch.len() >= OUTPUT_BATCH_MAX || tail >= 128 {
+                        break;
+                    }
+                    let timeout_ms = if first && count < OUTPUT_BURST_THRESHOLD {
+                        // Interactive echo: check for immediately queued bytes only (0 ms latency).
+                        0
+                    } else if started.elapsed() >= OUTPUT_BATCH_WINDOW {
+                        break;
+                    } else {
+                        OUTPUT_BATCH_POLL_MS
+                    };
+                    first = false;
+                    fd.revents = 0;
+                    let more = unsafe { libc::poll(&mut fd, 1, timeout_ms) };
+                    if more <= 0 {
+                        break;
+                    }
                 }
             }
+        }
+        if batch.is_empty() {
+            continue;
+        }
+        let data = decoder.push(&batch);
+        if data.is_empty() {
+            continue;
+        }
+        let dirty = {
+            let mut state = lock(&slot.state);
+            state.generation == generation
+                && state.live.is_some()
+                && state.output(id, sink, data)
+        };
+        if dirty && let Some(flusher) = &flusher {
+            flusher.schedule(id, slot);
         }
     }
 }

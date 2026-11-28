@@ -221,6 +221,11 @@ impl ChatSupervisor {
         if matches!(state.state, ChatRunState::Stopped | ChatRunState::Error) {
             settle_inactive(&self.store, &self.sink, id);
         }
+        let parent_running = matches!(
+            state.state,
+            ChatRunState::Running | ChatRunState::Waiting | ChatRunState::Starting
+        );
+        crate::agent_runtime::acp::enrich_stored(&self.store, &self.sink, id, parent_running);
         Ok(ChatSnapshot {
             items: self.store.chat_items(id)?,
             plans: self.store.chat_plans(id)?,

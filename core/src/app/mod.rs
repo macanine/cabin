@@ -167,11 +167,10 @@ fn pasted_image_extension(mime_type: &str, encoded_len: usize) -> Result<&'stati
 fn chat_permission_modes(agent: AgentKind) -> Vec<ChatPermissionMode> {
     use ChatPermissionMode::*;
     match agent {
-        AgentKind::Claude | AgentKind::Codex => {
+        AgentKind::Claude | AgentKind::Codex | AgentKind::Antigravity => {
             vec![ApprovalRequired, AutoAcceptEdits, Auto, Plan, FullAccess]
         }
         AgentKind::Opencode => vec![ApprovalRequired, AutoAcceptEdits, FullAccess],
-        AgentKind::Antigravity => vec![ApprovalRequired, AutoAcceptEdits, Plan],
         // Pi has no permission system: it never asks.
         AgentKind::Pi => vec![],
     }
@@ -433,6 +432,55 @@ mod tests {
             "{output}"
         );
         app.stop_session(&terminal.id)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_login_reuses_the_guest_workspace_and_terminal() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let app = app(dir.path());
+        let home = app.ctx.paths.home();
+        let binary = home.join(".local/bin/codex");
+        std::fs::create_dir_all(home.join(".local/bin"))?;
+        std::fs::write(&binary, "#!/bin/sh\nprintf 'cwd:%s args:%s\\n' \"$PWD\" \"$*\"\nread ignored\n")?;
+        std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o700))?;
+        let project_path = dir.path().join("project");
+        let project = app.create_workspace("Project", &project_path.display().to_string())?;
+        let session = app.open_agent_terminal(AgentKind::Codex, true, 80, 24)?;
+        assert_ne!(session.workspace_id, project.id);
+        assert_eq!(session.mode, crate::model::SessionMode::Login);
+        assert!(session.status.is_live());
+
+        let workspace = app.ctx.store.workspace(&session.workspace_id)?;
+        assert_eq!(Path::new(&workspace.path), home.join("workspace"));
+        let reused = app.open_agent_terminal(AgentKind::Codex, true, 80, 24)?;
+        assert_eq!(reused.id, session.id);
+        assert_eq!(app.ctx.store.workspaces()?.len(), 2);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let command = "args:login --device-auth";
+        loop {
+            let terminal = app.terminal_snapshot(&session.id)?;
+            if terminal.data.contains(command) {
+                assert!(terminal.data.contains("/home/workspace args:"), "{}", terminal.data);
+                break;
+            }
+            assert!(Instant::now() < deadline, "{}", terminal.data);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let generation = app.terminal_snapshot(&session.id)?.generation;
+        app.write_session(&session.id, generation, "done\n")?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.session(&session.id)?.status.is_live() {
+            assert!(Instant::now() < deadline, "login command did not exit");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let regular = app.open_agent_terminal(AgentKind::Codex, false, 80, 24)?;
+        assert_eq!(regular.workspace_id, workspace.id);
+        assert_eq!(regular.mode, crate::model::SessionMode::Terminal);
+        assert!(app.open_agent_terminal(AgentKind::Codex, true, 80, 24).is_err());
+        app.stop_session(&regular.id)?;
         Ok(())
     }
 

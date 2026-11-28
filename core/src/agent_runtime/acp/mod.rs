@@ -7,10 +7,15 @@
 //!
 //! Protocol reference: <https://agentclientprotocol.com> (Apache-2.0).
 
+mod antigravity_subagents;
+mod dialect;
 mod launch;
-mod rpc;
+pub(super) mod rpc;
 mod terminal;
 mod view;
+
+pub use self::dialect::enrich_stored;
+pub(super) use self::view::config_options;
 
 use crate::util::LockExt;
 use std::collections::HashMap;
@@ -18,17 +23,18 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde_json::{Value, json};
 
+use self::dialect::{AcpDialect, DialectCaps};
 use self::rpc::{Handler, Peer, RpcError};
 use self::terminal::Terminals;
 use self::view::View;
 use super::context::{
-    ChatContext, LiveSession, RuntimeSpec, SteerOutcome, TurnInput, announce_ready, approval_item,
-    error_item, question_item, system_item,
+    ChatContext, LiveSession, RuntimeSpec, SteerOutcome, TurnInput, approval_item, error_item,
+    question_item, system_item,
 };
 use super::stdio::StdioSpec;
 use crate::error::{Error, Result};
@@ -121,7 +127,7 @@ struct Field {
 
 /// The client half: answers the agent's requests and applies its updates.
 struct Client {
-    agent: AgentKind,
+    dialect: Arc<dyn AcpDialect>,
     ctx: Arc<ChatContext>,
     view: Arc<View>,
     terminals: Arc<Terminals>,
@@ -132,6 +138,8 @@ struct Client {
     stopping: AtomicBool,
     /// Set while the client itself changes the permission options.
     applying: AtomicBool,
+    /// Throttle out-of-band subagent syncs during a turn.
+    last_subagent_sync: Mutex<Option<Instant>>,
 }
 
 impl Client {
@@ -151,9 +159,24 @@ impl Client {
         };
         let tool = self.view.tool_waiting(&self.ctx, params, tool_call, false);
         let tool_kind = tool.kind.clone().unwrap_or_else(|| "other".into());
-        if !launch::native_permissions(self.agent)
-            && launch::auto_allows(self.ctx.permission(), &tool_kind)
-            && let Some(option) = pick(&["allow_once", "allow_always"])
+        let plan = tool.raw_input["plan"]
+            .as_str()
+            .filter(|plan| !plan.trim().is_empty())
+            .map(str::to_string);
+        let rendered = self.view.tool_item(&tool);
+        let command_text = if rendered.kind == crate::model::ChatItemKind::CommandExecution {
+            rendered.text.as_str()
+        } else if !rendered.subject.is_empty() {
+            rendered.subject.as_str()
+        } else {
+            tool.title.as_str()
+        };
+        if self.dialect.auto_allows_request(
+            self.ctx.permission(),
+            &tool_kind,
+            command_text,
+            plan.is_some(),
+        ) && let Some(option) = pick(&["allow_once", "allow_always"])
         {
             return Ok(json!({"outcome": {"outcome": "selected", "optionId": option}}));
         }
@@ -189,10 +212,6 @@ impl Client {
         }
         let request_id = self.next_request();
         let item_id = format!("acp-approval:{request_id}");
-        let plan = tool.raw_input["plan"]
-            .as_str()
-            .filter(|plan| !plan.trim().is_empty())
-            .map(str::to_string);
         let (approval_kind, title) = match tool_kind.as_str() {
             _ if plan.is_some() => ("plan", "Ready to implement this plan?"),
             "execute" => ("command", "Run this command?"),
@@ -206,7 +225,6 @@ impl Client {
             .iter()
             .map(|(decision, label)| (decision.as_str(), label.as_str()))
             .collect();
-        let rendered = self.view.tool_item(&tool);
         let text = match &plan {
             Some(plan) => plan.clone(),
             None if rendered.subject.is_empty() => tool.title.clone(),
@@ -300,8 +318,10 @@ impl Client {
                         .as_str()
                         .filter(|text| !text.is_empty())
                         .or_else(|| {
-                            (questions.is_empty() && !message.is_empty())
-                                .then_some(message.as_str())
+                            (questions.is_empty()
+                                && !message.is_empty()
+                                && !(header.is_some() && is_generic_question_count(&message)))
+                            .then_some(message.as_str())
                         });
                     let question = match (header, body) {
                         (Some(header), Some(body)) if header != body => format!("{header}\n{body}"),
@@ -442,29 +462,42 @@ impl Client {
 
 impl Handler for Client {
     fn notification(&self, method: &str, params: &Value) {
-        match method {
-            "session/update" => {
-                self.view.update(&self.ctx, params);
-                let kind = params
-                    .pointer("/update/sessionUpdate")
-                    .and_then(Value::as_str);
-                if matches!(kind, Some("current_mode_update" | "config_option_update"))
-                    && !self.applying.load(Ordering::Acquire)
-                    && let Some(permission) =
-                        launch::permission_from(self.agent, &self.view.controls().options)
+        if let Some(("session/update", update)) = self.dialect.translate_notification(method, params)
+        {
+            self.view.update(&self.ctx, update.as_ref());
+            let kind = update
+                .pointer("/update/sessionUpdate")
+                .and_then(Value::as_str);
+            if matches!(kind, Some("current_mode_update" | "config_option_update"))
+                && !self.applying.load(Ordering::Acquire)
+            {
+                let options = self.view.controls().options;
+                if !self
+                    .dialect
+                    .mode_matches_permission(&options, self.ctx.permission())
+                    && let Some(permission) = self.dialect.permission_from(&options)
                 {
                     self.ctx.persist_permission(permission);
                 }
             }
-            "opencode/session/child_update" => {
-                if let Some(update) = opencode_child_update(params) {
-                    self.view.update(&self.ctx, &update);
+            if let Some(native_id) = self.view.session_id() {
+                let due = {
+                    let mut last = self.last_subagent_sync.locked();
+                    let ok = last.is_none_or(|t| t.elapsed() >= Duration::from_secs(1));
+                    if ok {
+                        *last = Some(Instant::now());
+                    }
+                    ok
+                };
+                if due {
+                    self.dialect
+                        .sync_subagents(&native_id, &self.root, &self.ctx, true);
                 }
             }
-            // URL elicitation finished on the agent's side.
-            "elicitation/complete" => {}
-            _ => {}
+            return;
         }
+        // URL elicitation finished on the agent's side.
+        let _ = method == "elicitation/complete";
     }
 
     fn request(&self, method: &str, params: &Value) -> std::result::Result<Value, RpcError> {
@@ -495,7 +528,7 @@ impl Handler for Client {
             .map(str::trim)
             .find(|line| !line.is_empty())
             .unwrap_or_default();
-        let agent = crate::agents::adapter(self.agent).spec().name;
+        let agent = agent_display_name(self.dialect.as_ref());
         self.ctx.fail(match (code, tail.is_empty()) {
             (_, false) => format!("{agent} stopped: {tail}"),
             (Some(code), true) => format!("{agent} stopped (exit code {code})"),
@@ -505,7 +538,6 @@ impl Handler for Client {
 }
 
 pub struct AcpSession {
-    agent: AgentKind,
     ctx: Arc<ChatContext>,
     peer: Arc<Peer>,
     client: Arc<Client>,
@@ -523,8 +555,9 @@ impl AcpSession {
         if !ctx.is_active() {
             return Err(Error::Cancelled);
         }
+        let dialect = dialect::for_agent(agent);
         let launch = launch::launch(agent, &spec)?;
-        let view = Arc::new(View::new(&spec.cwd));
+        let view = Arc::new(View::with_dialect(&spec.cwd, dialect.clone()));
         let terminal_view = Arc::downgrade(&view);
         let terminal_ctx = Arc::downgrade(&ctx);
         let terminals = Arc::new(Terminals::new(Arc::new(move |terminal: &str| {
@@ -534,7 +567,7 @@ impl AcpSession {
         })));
         view.set_terminals(terminals.clone());
         let client = Arc::new(Client {
-            agent,
+            dialect: dialect.clone(),
             ctx: ctx.clone(),
             view: view.clone(),
             terminals,
@@ -545,7 +578,8 @@ impl AcpSession {
             stopping: AtomicBool::new(false),
             // Initial native mode updates describe the agent's default until
             // the client's stored permission has been applied.
-            applying: AtomicBool::new(launch::native_permissions(agent)),
+            applying: AtomicBool::new(dialect.native_permissions()),
+            last_subagent_sync: Mutex::new(None),
         });
         let peer = Peer::spawn(
             StdioSpec {
@@ -561,7 +595,7 @@ impl AcpSession {
             }
             other => other,
         })?;
-        match Self::open(agent, &spec, &ctx, &peer, &client) {
+        match Self::open(&dialect, &spec, &ctx, &peer, &client) {
             Ok(session) => Ok(session),
             Err(error) => {
                 client.stopping.store(true, Ordering::Release);
@@ -574,43 +608,14 @@ impl AcpSession {
     }
 
     fn open(
-        agent: AgentKind,
+        dialect: &Arc<dyn AcpDialect>,
         spec: &RuntimeSpec,
         ctx: &Arc<ChatContext>,
         peer: &Arc<Peer>,
         client: &Arc<Client>,
     ) -> Result<Arc<Self>> {
-        let mut client_capabilities = json!({
-            "fs": {"readTextFile": true, "writeTextFile": true},
-            "terminal": true,
-            "elicitation": {"form": {}, "url": {}},
-        });
-        if matches!(agent, AgentKind::Claude | AgentKind::Codex) {
-            // The AIR async-task channel is additive. It is the only source
-            // that can say a background shell/monitor is still alive and that
-            // offers its stop request.
-            client_capabilities["_meta"] = json!({
-                "subagent-transcript": agent == AgentKind::Claude,
-                "jetbrains": {
-                    "air": {
-                        "version": 1,
-                        "capabilities": ["asyncTasks"]
-                    }
-                }
-            });
-            // We already render both ACP Session Notice and compaction updates.
-            client_capabilities["session"] = json!({
-                "notices": {},
-                "compaction": {}
-            });
-        } else if agent == AgentKind::Opencode {
-            // OpenCode 2 forwards child-session lifecycle and transcript
-            // updates after the client opts in.
-            client_capabilities["_meta"] = json!({"opencode/child-session-updates": true});
-            // OpenCode 2 reports compaction on the standard ACP channel only
-            // after the client opts in.
-            client_capabilities["session"] = json!({"compaction": {}});
-        }
+        let dialect_caps: DialectCaps = dialect.caps();
+        let client_capabilities = dialect_caps.client_capabilities();
         let init = peer.request(
             "initialize",
             json!({
@@ -649,24 +654,18 @@ impl AcpSession {
                 .pointer("/promptCapabilities/embeddedContext")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            plans: matches!(agent, AgentKind::Claude | AgentKind::Codex),
-            subagents: matches!(
-                agent,
-                AgentKind::Claude | AgentKind::Codex | AgentKind::Opencode
-            ),
-            async_tasks: matches!(agent, AgentKind::Claude | AgentKind::Codex),
-            notices: matches!(agent, AgentKind::Claude | AgentKind::Codex),
-            compaction: matches!(
-                agent,
-                AgentKind::Claude | AgentKind::Codex | AgentKind::Opencode
-            ),
+            plans: dialect_caps.plans,
+            subagents: dialect_caps.subagents,
+            async_tasks: dialect_caps.air_async_tasks,
+            notices: dialect_caps.notices,
+            compaction: dialect_caps.compaction,
             goal: goal.is_some(),
             goal_control_method,
             goal_actions,
         };
         let cwd = spec.cwd.display().to_string();
         let base = json!({"cwd": cwd, "mcpServers": []});
-        client.view.set_owned(launch::owned_categories(agent));
+        client.view.set_owned(dialect.owned_categories());
         client.view.set_goal_actions(caps.goal_actions.clone());
         let reopened = match spec.native_ref.as_deref() {
             Some(native) if caps.resume || caps.load => {
@@ -684,13 +683,13 @@ impl AcpSession {
                 match result {
                     Ok(result) => Some((native.to_string(), result)),
                     Err(error) => {
-                        notice_new_session(ctx, agent, Some(&error.to_string()));
+                        notice_new_session(ctx, dialect.as_ref(), Some(&error.to_string()));
                         None
                     }
                 }
             }
             Some(_) => {
-                notice_new_session(ctx, agent, None);
+                notice_new_session(ctx, dialect.as_ref(), None);
                 None
             }
             None => None,
@@ -740,13 +739,21 @@ impl AcpSession {
                 async_tasks: caps.async_tasks,
                 notices: caps.notices,
                 compaction: caps.compaction,
-                file_read: true,
-                file_write: true,
-                terminals: true,
+                file_read: dialect_caps.client_fs,
+                file_write: dialect_caps.client_fs,
+                terminals: dialect_caps.client_terminal,
                 goal: caps.goal,
             };
             if result["configOptions"].is_array() {
                 view::merge_options(controls, view::config_options(&result["configOptions"]));
+            }
+            if let Some(models) = view::legacy_models(&result["models"])
+                && !controls
+                    .options
+                    .iter()
+                    .any(|option| option.category.as_deref() == Some("model"))
+            {
+                controls.options.push(models);
             }
             if let Some(modes) = view::legacy_modes(&result["modes"])
                 && !controls
@@ -758,7 +765,6 @@ impl AcpSession {
             }
         });
         let session = Arc::new(Self {
-            agent,
             ctx: ctx.clone(),
             peer: peer.clone(),
             client: client.clone(),
@@ -778,10 +784,9 @@ impl AcpSession {
             ));
         }
         let permission = session.apply_permission(spec.permission);
-        if launch::native_permissions(agent) {
+        if dialect.native_permissions() {
             permission?;
         }
-        announce_ready(ctx);
         Ok(session)
     }
 
@@ -799,6 +804,21 @@ impl AcpSession {
             self.peer.request(
                 "session/set_mode",
                 json!({"sessionId": self.session_id, "modeId": value}),
+                Some(REQUEST_TIMEOUT),
+            )?;
+            self.client.view.edit_controls(&self.ctx, |controls| {
+                for option in &mut controls.options {
+                    if option.id == option_id {
+                        option.current = value.to_string();
+                    }
+                }
+            });
+            return Ok(());
+        }
+        if view::is_legacy_model(option_id) {
+            self.peer.request(
+                "session/set_model",
+                json!({"sessionId": self.session_id, "modelId": value}),
                 Some(REQUEST_TIMEOUT),
             )?;
             self.client.view.edit_controls(&self.ctx, |controls| {
@@ -843,21 +863,39 @@ impl AcpSession {
     }
 
     fn apply_model(&self, model: &str) -> Result<()> {
-        if launch::use_agent_default(self.agent, model) {
+        if self.client.dialect.use_agent_default(model) {
             return Ok(());
         }
         let Some(option) = self.option("model") else {
             return Ok(());
         };
-        let Some(value) = match_choice(&option, model) else {
-            return Err(Error::invalid(format!(
-                "{model} is not offered by this agent"
-            )));
+        let (value, inferred_effort) = match match_choice(&option, model) {
+            Some(value) => (value, None),
+            None => match self
+                .client
+                .dialect
+                .split_model_effort(model)
+                .and_then(|(family, effort)| Some((match_choice(&option, family)?, effort)))
+            {
+                Some((value, effort)) => (value, Some(effort)),
+                None => {
+                    return Err(Error::invalid(format!(
+                        "{model} is not offered by this agent"
+                    )));
+                }
+            },
         };
-        if option.current == value {
-            return Ok(());
+        if option.current != value {
+            self.set_option_value(&option.id, &value)?;
         }
-        self.set_option_value(&option.id, &value)
+        if let Some(effort) = inferred_effort
+            && let Some(thought) = self.option("thought_level")
+            && thought.current != effort
+            && thought.choices.iter().any(|choice| choice.value == effort)
+        {
+            self.set_option_value(&thought.id, effort)?;
+        }
+        Ok(())
     }
 
     /// Set the options that carry the permission choice. Mode updates the
@@ -865,8 +903,8 @@ impl AcpSession {
     fn apply_permission(&self, permission: ChatPermissionMode) -> Result<()> {
         self.client.applying.store(true, Ordering::Release);
         let result = (|| {
-            let settings = launch::settings_for(self.agent, permission);
-            let native = launch::native_permissions(self.agent);
+            let settings = self.client.dialect.settings_for(permission);
+            let native = self.client.dialect.native_permissions();
             let unavailable =
                 || Error::Unavailable("The agent does not offer this permission mode".into());
             if native && settings.is_empty() {
@@ -959,6 +997,12 @@ impl AcpSession {
         )?;
         match reply {
             Ok(result) => {
+                self.client.dialect.sync_subagents(
+                    &self.session_id,
+                    &self.client.root,
+                    &self.ctx,
+                    false,
+                );
                 self.client
                     .view
                     .end_turn(&self.ctx, &turn.id, result.get("usage"));
@@ -1021,7 +1065,7 @@ impl LiveSession for AcpSession {
         if !self.caps.steer {
             return Err(Error::Conflict(format!(
                 "{} cannot take a message while it works. Queue it instead.",
-                crate::agents::adapter(self.agent).spec().name
+                agent_display_name(self.client.dialect.as_ref())
             )));
         }
         self.client.view.close_segments(&self.ctx);
@@ -1260,10 +1304,16 @@ fn is_text(mime: &str, bytes: &[u8]) -> bool {
         || (std::str::from_utf8(bytes).is_ok() && !bytes.contains(&0))
 }
 
+fn agent_display_name(dialect: &dyn AcpDialect) -> &'static str {
+    dialect
+        .kind()
+        .map_or("Agent", |agent| crate::agents::adapter(agent).spec().name)
+}
+
 /// The conversation could not be reopened: say so in the timeline and carry on
 /// in a new agent session. The messages stay; the agent does not remember them.
-fn notice_new_session(ctx: &ChatContext, agent: AgentKind, reason: Option<&str>) {
-    let name = crate::agents::adapter(agent).spec().name;
+fn notice_new_session(ctx: &ChatContext, dialect: &dyn AcpDialect, reason: Option<&str>) {
+    let name = agent_display_name(dialect);
     let mut text = format!(
         "{name} started a new session: the earlier conversation could not be reopened, so it does not remember the messages above."
     );
@@ -1275,6 +1325,17 @@ fn notice_new_session(ctx: &ChatContext, agent: AgentKind, reason: Option<&str>)
         &text,
         ChatItemStatus::Completed,
     ));
+}
+
+fn is_generic_question_count(message: &str) -> bool {
+    let trimmed = message.trim();
+    if trimmed == "The agent has a question." {
+        return true;
+    }
+    trimmed
+        .strip_prefix("The agent has ")
+        .and_then(|rest| rest.strip_suffix(" questions."))
+        .is_some_and(|count| !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The choice a model selection names: the exact value, then the same value
@@ -1303,65 +1364,6 @@ fn match_choice(option: &crate::model::ChatConfigOption, wanted: &str) -> Option
             })
         })
         .map(|choice| choice.value.clone())
-}
-
-/// Turn OpenCode 2's child-session notification into the same
-/// `session/update` shape the parent session uses. Status frames carry a
-/// private, client-owned marker so the view can settle the subagent without
-/// treating lifecycle metadata as transcript content.
-fn opencode_child_update(params: &Value) -> Option<Value> {
-    let root = params["rootSessionId"]
-        .as_str()
-        .filter(|id| !id.is_empty())?;
-    let child = params["childSessionId"]
-        .as_str()
-        .filter(|id| !id.is_empty())?;
-    let parent = params["parentSessionId"].as_str().unwrap_or(root);
-    let title = params["title"].as_str().unwrap_or_default();
-    let child_meta = json!({
-        "opencode/child-session": {
-            "id": child,
-            "parentID": parent,
-            "depth": params["depth"].as_u64().unwrap_or(1),
-            "title": title,
-        }
-    });
-    match params["type"].as_str()? {
-        "update" => {
-            let mut update = params["update"].as_object()?.clone();
-            // A child compaction belongs to the child, not to the root
-            // transcript. Its durable items remain visible in the subagent.
-            if update.get("sessionUpdate").and_then(Value::as_str) == Some("compaction_update") {
-                return None;
-            }
-            let meta = update
-                .entry("_meta")
-                .or_insert_with(|| json!({}))
-                .as_object_mut()?;
-            meta.entry("opencode/child-session")
-                .or_insert(child_meta["opencode/child-session"].clone());
-            Some(json!({"sessionId": root, "update": Value::Object(update)}))
-        }
-        "status" => {
-            let state = match params["status"].as_str().unwrap_or_default() {
-                "completed" | "done" | "idle" => "completed",
-                "failed" | "error" => "failed",
-                "cancelled" | "canceled" | "aborted" | "stopped" => "stopped",
-                "created" | "running" | "active" | "started" => "active",
-                _ => return None,
-            };
-            let mut meta = child_meta;
-            meta["cabin/child-status"] = json!({"status": state});
-            Some(json!({
-                "sessionId": root,
-                "update": {
-                    "sessionUpdate": "session_info_update",
-                    "_meta": meta,
-                },
-            }))
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -1404,6 +1406,9 @@ mod tests {
             Some("openai/gpt-5")
         );
         assert_eq!(match_choice(&option, "sonnet"), None);
+        assert!(is_generic_question_count("The agent has a question."));
+        assert!(is_generic_question_count("The agent has 2 questions."));
+        assert!(!is_generic_question_count("Choose a target branch."));
     }
 
     #[test]

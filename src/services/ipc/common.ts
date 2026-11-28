@@ -52,7 +52,7 @@ export type GuestMethod =
   | "app_snapshot" | "clock" | "machine_observation" | "monitor_processes"
   | "workspace_create" | "workspace_update" | "workspace_duplicate" | "workspace_delete"
   | "terminal_create" | "terminal_snapshot" | "terminal_attach" | "terminal_paste_image"
-  | "session_create" | "session_start" | "session_stop" | "session_write" | "session_resize"
+  | "agent_terminal_open" | "session_create" | "session_start" | "session_stop" | "session_write" | "session_resize"
   | "session_update" | "session_duplicate" | "session_delete"
   | "worktree_refs" | "worktree_remove"
   | "chat_create" | "chat_snapshot" | "chat_attachment" | "chat_send" | "chat_steer" | "chat_set_option" | "chat_stop_task" | "chat_goal_control" | "chat_respond" | "chat_plan_respond" | "chat_interrupt" | "chat_retry"

@@ -189,6 +189,7 @@ fn session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         },
         mode: match row.get::<_, String>("mode")?.as_str() {
             "ui" => SessionMode::Ui,
+            "login" => SessionMode::Login,
             _ => SessionMode::Terminal,
         },
         archived: row.get::<_, i64>("archived")? != 0,
@@ -324,7 +325,11 @@ impl Store {
                 session.updated_at,
                 session.last_started_at,
                 session.starred as i64,
-                if session.mode == SessionMode::Ui { "ui" } else { "terminal" },
+                match session.mode {
+                    SessionMode::Terminal => "terminal",
+                    SessionMode::Ui => "ui",
+                    SessionMode::Login => "login",
+                },
                 session.worktree.as_ref().map(json).transpose()?,
             ],
         )?;

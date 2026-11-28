@@ -100,7 +100,9 @@ pub fn watch(root: &Path, rules: &SyncRules) -> notify::Result<Batches> {
                 event.kind,
                 EventKind::Access(
                     AccessKind::Read
-                        | AccessKind::Open(AccessMode::Read)
+                        // Inotify cannot distinguish read and write on open. A scan or
+                        // reloading the ignore file can otherwise trigger itself again.
+                        | AccessKind::Open(_)
                         | AccessKind::Close(AccessMode::Read)
                 ) | EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime))
             ) {
@@ -285,5 +287,26 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("a batch");
         assert!(batch == ["src"] || batch == [""], "{batch:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reading_ignore_rules_does_not_trigger_another_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let ignore = dir.path().join(IGNORE_FILE);
+        std::fs::write(&ignore, "*.tmp\n").unwrap();
+        let Batches { watcher, batches } = watch(dir.path(), &SyncRules::default()).unwrap();
+        std::fs::read(&ignore).unwrap();
+        assert_eq!(
+            batches.recv_timeout(MAX_HOLD + SETTLE),
+            Err(RecvTimeoutError::Timeout)
+        );
+        std::fs::write(&ignore, "*.log\n").unwrap();
+        assert_eq!(batches.recv_timeout(Duration::from_secs(5)).unwrap(), [""]);
+        assert_eq!(
+            batches.recv_timeout(MAX_HOLD + SETTLE),
+            Err(RecvTimeoutError::Timeout)
+        );
+        drop(watcher);
     }
 }

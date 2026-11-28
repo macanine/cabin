@@ -747,12 +747,6 @@ fn whole_file_patch(path: &str, old: &str, new: &str) -> String {
     out
 }
 
-pub fn announce_ready(ctx: &ChatContext) {
-    if ctx.state().state == ChatRunState::Starting && ctx.is_active() {
-        ctx.set_state(ChatRunState::Ready, None);
-    }
-}
-
 pub fn provider_missing(provider: &str, error: std::io::Error) -> Error {
     Error::Unavailable(format!(
         "Could not start {provider}: {error}. Install it from Setup and check its login."

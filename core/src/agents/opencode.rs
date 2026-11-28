@@ -39,6 +39,10 @@ impl AgentAdapter for OpenCode {
         &SPEC
     }
 
+    fn login_args(&self) -> &'static [&'static str] {
+        &["auth", "login"]
+    }
+
     /// The OpenCode TUI takes its first prompt as `--prompt`.
     fn prompt_args(&self, prompt: &str) -> Vec<String> {
         vec!["--prompt".into(), prompt.into()]

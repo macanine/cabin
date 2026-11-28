@@ -85,9 +85,12 @@ pub fn settings_for(
             match permission {
                 ApprovalRequired => &["default"],
                 AutoAcceptEdits => &["accept-edits"],
-                Auto => &["auto"],
+                // `agy acp` 1.5.x offers `default`, `accept-edits`, and `plan`.
+                // Use native `auto` if a newer CLI advertises it; otherwise run
+                // in `accept-edits` and auto-approve routine requests client-side.
+                Auto => &["auto", "accept-edits"],
                 Plan => &["plan"],
-                FullAccess => return vec![],
+                FullAccess => &["auto", "accept-edits"],
             },
         )],
         AgentKind::Opencode | AgentKind::Pi => vec![],
@@ -149,15 +152,106 @@ pub fn permission_from(
     }
 }
 
+/// Whether the agent's current options already satisfy `permission` (including
+/// fallback native modes such as Antigravity `accept-edits` for `Auto` and
+/// `FullAccess`), so routine `config_option_update` frames do not downgrade
+/// the user's chosen permission mode.
+pub fn mode_matches_permission(
+    agent: AgentKind,
+    options: &[ChatConfigOption],
+    permission: ChatPermissionMode,
+) -> bool {
+    let settings = settings_for(agent, permission);
+    if settings.is_empty() {
+        return false;
+    }
+    settings.iter().all(|(category, wanted)| {
+        options
+            .iter()
+            .find(|option| option.category.as_deref() == Some(*category))
+            .is_some_and(|option| wanted.contains(&option.current.as_str()))
+    })
+}
+
+/// Shell commands that remain gated behind user approval even in `Auto` mode.
+fn is_risky_command(command: &str) -> bool {
+    let lower = command.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    let normalized = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    const RISKY_TOKENS: &[&str] = &[
+        "sudo ",
+        "su -",
+        "rm -rf",
+        "rm -fr",
+        "mkfs",
+        "dd if=",
+        "shutdown",
+        "reboot",
+        "poweroff",
+        "halt",
+        "chmod -r 777",
+        "chown -r",
+        "git push --force",
+        "git push -f",
+        "git reset --hard",
+        "git clean -fd",
+        "git clean -fx",
+        "> /dev/",
+        "| sh",
+        "| bash",
+        "| zsh",
+        "kill -9",
+        "killall",
+        "pkill -9",
+        "docker system prune",
+        "drop table",
+        "drop database",
+    ];
+    RISKY_TOKENS.iter().any(|pattern| normalized.contains(pattern))
+}
+
 /// Whether the client answers a permission request itself under this mode.
-pub fn auto_allows(permission: ChatPermissionMode, tool_kind: &str) -> bool {
+pub fn auto_allows_request(
+    agent: AgentKind,
+    permission: ChatPermissionMode,
+    tool_kind: &str,
+    command_text: &str,
+    is_plan: bool,
+) -> bool {
+    if is_plan || tool_kind == "switch_mode" {
+        return false;
+    }
     match permission {
-        ChatPermissionMode::FullAccess => true,
-        ChatPermissionMode::AutoAcceptEdits | ChatPermissionMode::Auto => matches!(
-            tool_kind,
-            "read" | "search" | "edit" | "delete" | "move" | "think"
-        ),
         ChatPermissionMode::ApprovalRequired | ChatPermissionMode::Plan => false,
+        ChatPermissionMode::FullAccess => true,
+        ChatPermissionMode::AutoAcceptEdits => {
+            if native_permissions(agent) {
+                false
+            } else {
+                matches!(
+                    tool_kind,
+                    "read" | "search" | "edit" | "delete" | "move" | "think"
+                )
+            }
+        }
+        ChatPermissionMode::Auto => {
+            if agent == AgentKind::Antigravity {
+                if tool_kind == "execute" {
+                    !is_risky_command(command_text)
+                } else {
+                    true
+                }
+            } else if native_permissions(agent) {
+                false
+            } else {
+                matches!(
+                    tool_kind,
+                    "read" | "search" | "edit" | "delete" | "move" | "think"
+                )
+            }
+        }
     }
 }
 
@@ -217,17 +311,68 @@ mod tests {
     #[test]
     fn antigravity_permission_modes_use_the_cli_ids() {
         use ChatPermissionMode::*;
-        for (permission, value) in [
-            (ApprovalRequired, "default"),
-            (AutoAcceptEdits, "accept-edits"),
-            (Auto, "auto"),
-            (Plan, "plan"),
+        for (permission, expected) in [
+            (ApprovalRequired, &["default"][..]),
+            (AutoAcceptEdits, &["accept-edits"][..]),
+            (Auto, &["auto", "accept-edits"][..]),
+            (Plan, &["plan"][..]),
+            (FullAccess, &["auto", "accept-edits"][..]),
         ] {
             let agent = AgentKind::Antigravity;
-            assert_eq!(settings_for(agent, permission), vec![("mode", &[value][..])]);
-            assert_eq!(permission_from(agent, &[option("mode", value)]), Some(permission));
+            assert_eq!(settings_for(agent, permission), vec![("mode", expected)]);
+            assert!(mode_matches_permission(
+                agent,
+                &[option("mode", expected.last().unwrap())],
+                permission
+            ));
         }
-        assert!(settings_for(AgentKind::Antigravity, FullAccess).is_empty());
+        // Fallback `accept-edits` keeps `Auto` / `FullAccess`, while leaving `Plan` syncs back.
+        assert!(mode_matches_permission(
+            AgentKind::Antigravity,
+            &[option("mode", "accept-edits")],
+            Auto
+        ));
+        assert!(!mode_matches_permission(
+            AgentKind::Antigravity,
+            &[option("mode", "accept-edits")],
+            Plan
+        ));
+        // Auto approves routine commands/tools on Antigravity and gates risky commands + plans.
+        assert!(auto_allows_request(
+            AgentKind::Antigravity,
+            Auto,
+            "execute",
+            "git status",
+            false
+        ));
+        assert!(!auto_allows_request(
+            AgentKind::Antigravity,
+            Auto,
+            "execute",
+            "sudo rm -rf /tmp/foo",
+            false
+        ));
+        assert!(!auto_allows_request(
+            AgentKind::Antigravity,
+            Auto,
+            "other",
+            "",
+            true
+        ));
+        assert!(auto_allows_request(
+            AgentKind::Antigravity,
+            FullAccess,
+            "execute",
+            "sudo rm -rf /tmp/foo",
+            false
+        ));
+        assert!(!auto_allows_request(
+            AgentKind::Antigravity,
+            ApprovalRequired,
+            "execute",
+            "ls",
+            false
+        ));
     }
 
     #[test]

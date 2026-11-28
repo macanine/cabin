@@ -44,6 +44,10 @@ impl AgentAdapter for Codex {
         &SPEC
     }
 
+    fn login_args(&self) -> &'static [&'static str] {
+        &["login", "--device-auth"]
+    }
+
     fn launch_args(&self, options: &LaunchOptions) -> Vec<String> {
         let mut args = Vec::new();
         if let Some(model) = options.model.as_deref().filter(|m| !m.is_empty()) {

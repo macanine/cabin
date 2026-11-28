@@ -7,7 +7,7 @@ use crate::environment;
 use crate::error::{Error, Result};
 use crate::model::{
     AgentKind, ChatAttachment, ChatAttachmentInput, ChatPermissionMode, Session, SessionMode,
-    TerminalSnapshot,
+    SessionStatus, TerminalSnapshot, Workspace,
 };
 use crate::sessions::LaunchSpec;
 use crate::util::{LockExt, clean_name, new_id, now_millis};
@@ -164,6 +164,65 @@ impl App {
         })
     }
 
+    /// Open the CLI from Agents independently of any selected project.
+    pub fn open_agent_terminal(
+        &self,
+        agent: AgentKind,
+        login: bool,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Session> {
+        let guard = self.lock_terminal_lifecycle();
+        if login {
+            let sessions = self.ctx.store.sessions()?;
+            if let Some(session) = sessions.iter().find(|session| {
+                session.agent == Some(agent) && session.mode == SessionMode::Login
+                    && self.sessions.status(&session.id).is_live()
+            }) {
+                return self.session(&session.id);
+            }
+            if agent == AgentKind::Codex {
+                self.ensure_codex_idle()?;
+            }
+            let workspace = self.default_workspace()?;
+            let mut session = if let Some(session) = sessions.into_iter().find(|session| {
+                !session.archived && session.agent == Some(agent) && session.mode == SessionMode::Login
+                    && session.workspace_id == workspace.id
+            }) {
+                session
+            } else {
+                let now = now_millis();
+                let session = Session {
+                    id: new_id("ses"),
+                    workspace_id: workspace.id.clone(),
+                    name: format!("{} CLI login", agents::adapter(agent).spec().name),
+                    worktree: None,
+                    agent: Some(agent),
+                    mode: SessionMode::Login,
+                    archived: false,
+                    starred: false,
+                    created_at: now,
+                    updated_at: now,
+                    last_started_at: None,
+                    status: SessionStatus::Stopped,
+                };
+                self.ctx.store.insert_session(&session)?;
+                session
+            };
+            // A spawn failure is shown in the same terminal with its retry action.
+            return match self.launch_agent_terminal(&mut session, &workspace, false, None, cols, rows) {
+                Err(_) if matches!(self.sessions.status(&session.id), SessionStatus::Failed { .. }) => {
+                    self.emit_library()?;
+                    self.session(&session.id)
+                }
+                result => result,
+            };
+        }
+        let workspace = self.default_workspace()?;
+        drop(guard);
+        self.create_session(&workspace.id, agent, None, None, cols, rows)
+    }
+
     pub fn create_chat(&self, chat: NewChat) -> Result<Session> {
         self.create_session_mode(NewSession {
             workspace_id: &chat.workspace_id,
@@ -243,7 +302,7 @@ impl App {
             created_at: now,
             updated_at: now,
             last_started_at: None,
-            status: crate::model::SessionStatus::Stopped,
+            status: SessionStatus::Stopped,
         };
         if let Err(error) = self.ctx.store.insert_session(&session) {
             if let Some(worktree) = &session.worktree {
@@ -316,7 +375,7 @@ impl App {
             created_at: now,
             updated_at: now,
             last_started_at: None,
-            status: crate::model::SessionStatus::Stopped,
+            status: SessionStatus::Stopped,
         };
         self.ctx.store.insert_session(&session)?;
         self.emit_library()?;
@@ -330,7 +389,7 @@ impl App {
     pub fn terminal_snapshot(&self, id: &str) -> Result<TerminalSnapshot> {
         let _guard = self.lock_terminal_lifecycle();
         let session = self.ctx.store.session(id)?;
-        if session.mode != SessionMode::Terminal {
+        if session.mode == SessionMode::Ui {
             return Err(Error::invalid("This session does not have a terminal"));
         }
         Ok(self.sessions.snapshot(id, session.agent.is_none()))
@@ -496,9 +555,25 @@ impl App {
         // Refresh the row under the lifecycle lock so a concurrent rename,
         // archive or deletion cannot be overwritten by the start timestamp.
         let mut session = self.ctx.store.session(id)?;
+        if session.mode == SessionMode::Login && session.agent == Some(AgentKind::Codex) {
+            self.ensure_codex_idle()?;
+        }
+        self.launch_agent_terminal(&mut session, &workspace, resume, prompt, cols, rows)
+    }
+
+    fn launch_agent_terminal(
+        &self,
+        session: &mut Session,
+        workspace: &Workspace,
+        resume: bool,
+        prompt: Option<&str>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Session> {
         let Some(agent) = session.agent else {
             return Err(Error::invalid("Open the terminal to attach its shell"));
         };
+        let id = &session.id;
         self.sessions.start(id, || {
             let adapter = agents::adapter(agent);
             let binary = agents::find_binary(&self.ctx, agent).ok_or_else(|| {
@@ -508,11 +583,15 @@ impl App {
                 ))
             })?;
             let mut argv = vec![binary.display().to_string()];
-            argv.extend(adapter.launch_args(&LaunchOptions {
-                model: workspace.model_for(agent).map(str::to_string),
-                resume,
-                prompt: prompt.map(str::to_string),
-            }));
+            if session.mode == SessionMode::Login {
+                argv.extend(adapter.login_args().iter().map(|arg| (*arg).into()));
+            } else {
+                argv.extend(adapter.launch_args(&LaunchOptions {
+                    model: workspace.model_for(agent).map(str::to_string),
+                    resume,
+                    prompt: prompt.map(str::to_string),
+                }));
+            }
             let mut env = environment::child_env(&self.ctx);
             env.push(("PATH".into(), self.ctx.paths.child_path()));
             env.extend(adapter.launch_env());
@@ -525,7 +604,7 @@ impl App {
             })
         })?;
         session.last_started_at = Some(now_millis());
-        self.ctx.store.update_session(&session)?;
+        self.ctx.store.update_session(session)?;
         self.emit_library()?;
         self.session(id)
     }
