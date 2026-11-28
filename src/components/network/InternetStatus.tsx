@@ -31,11 +31,13 @@ function useInternetDisplay() {
   // The Network page already shows the observation in its exit card.
   const showExit = useUi(({ view }) => view.kind !== "settings" || view.tab !== "network");
   const countryCode = showExit ? flag(value?.countryCode) : null;
-  const country = showExit ? value?.country || countryCode : null;
+  const country = showExit ? countryCode || value?.country : null;
+  const fullCountry = showExit ? value?.country || countryCode : null;
   const displayTitle = holding ? t("network.holding") : tone === "ok" ? t("network.internet") : title;
   const sub = holding ? detail : country;
   const label = sub ? `${displayTitle} · ${sub}` : displayTitle;
-  return { tone, title: displayTitle, sub, holding, countryCode, pending: showExit && loading, label };
+  const tooltip = holding ? `${displayTitle} · ${detail}` : fullCountry ? `${displayTitle} · ${fullCountry}` : displayTitle;
+  return { tone, title: displayTitle, sub, holding, countryCode, pending: showExit && loading, label, tooltip };
 }
 
 type InternetDisplay = ReturnType<typeof useInternetDisplay>;
@@ -58,12 +60,12 @@ export function InternetMark() {
 
 export function InternetStatus() {
   const display = useInternetDisplay();
-  const { tone, title, sub, label } = display;
+  const { tone, title, sub, label, tooltip } = display;
   return (
     <div className="grid h-9 min-w-0 grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-2.5 pr-2 pl-[7px]">
       <StatusMark display={display} />
       <button type="button" className="press -ml-1 flex h-7 min-w-0 cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent px-1 py-0 text-left text-sm font-medium hover:bg-hover"
-        onClick={uiActions.openNetworkCheck} aria-label={`Network check: ${label}`} aria-haspopup="dialog">
+        onClick={uiActions.openNetworkCheck} title={tooltip} aria-label={`Network check: ${label}`} aria-haspopup="dialog">
         <span className={`shrink-0 ${TONE[tone]}`}>{title}</span>
         {sub && <span className="truncate text-muted">· {sub}</span>}
       </button>

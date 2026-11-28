@@ -1,6 +1,6 @@
 // Mantine shares the app's type scale, colour palette and short transitions.
 import {
-  Alert, Badge, Combobox, createTheme, Drawer, Menu, Modal, Popover, SegmentedControl, Select, Switch, Tooltip,
+  Alert, Autocomplete, Badge, Combobox, createTheme, Drawer, Menu, Modal, Popover, SegmentedControl, Select, Switch, Tooltip,
   type MantineColorsTuple,
 } from "@mantine/core";
 
@@ -84,6 +84,11 @@ export const theme = createTheme({
       defaultProps: {
         checkIconPosition: "right",
         withCheckIcon: true,
+        scrollAreaProps: { type: "auto", scrollbarSize: 6, offsetScrollbars: false, scrollbars: "y" },
+      },
+    }),
+    Autocomplete: Autocomplete.extend({
+      defaultProps: {
         scrollAreaProps: { type: "auto", scrollbarSize: 6, offsetScrollbars: false, scrollbars: "y" },
       },
     }),

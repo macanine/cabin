@@ -250,33 +250,53 @@
 .wb-markdown { padding: 16px 20px; user-select: text; }
 
 .wb-code {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  min-width: max-content;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.6;
+}
+/* Separate non-selectable gutter column so dragging or triple-clicking code in
+   WebKit/Safari can never highlight or copy line numbers. */
+.wb-code-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 14px 24px 10px;
+  min-width: calc(var(--wb-gutter, 3ch) + 24px);
+  background: var(--bg);
+  color: var(--faint);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  pointer-events: none;
+}
+.wb-code-num {
+  display: block;
+  height: 1.6em;
+  line-height: 1.6;
+}
+.wb-code-body {
+  min-width: 0;
   user-select: text;
   -webkit-user-select: text;
 }
 .wb-code pre {
   margin: 0;
-  padding: 8px 0 24px;
+  padding: 8px 16px 24px 2px;
   background: transparent !important;
-  counter-reset: wb-line;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
   tab-size: 4;
 }
 .wb-code code { display: block; min-width: max-content; }
-.wb-code .line { display: inline-block; width: 100%; padding-right: 16px; }
-.wb-code .line::before {
-  counter-increment: wb-line;
-  content: counter(wb-line);
-  display: inline-block;
-  width: var(--wb-gutter, 4ch);
-  margin-right: 16px;
-  padding-left: 8px;
-  color: var(--faint);
-  text-align: right;
-  user-select: none;
-  -webkit-user-select: none;
-}
+.wb-code .line { display: inline-block; width: 100%; }
 .wb-code .line:hover { background: var(--hover); }
 .wb-code-shiki span { color: var(--shiki-light); }
 @media (prefers-color-scheme: dark) {

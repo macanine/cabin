@@ -3,6 +3,8 @@ import type { ChatAsyncTask, ChatUsage, SubagentTask } from "../../services/ipc/
 
 export interface ChatContextValue {
   sessionId: string;
+  /** Active workspace or worktree POSIX path inside the guest, for resolving `file://` links. */
+  workspacePath?: string | null;
   /** Usage per turn (keyed by the user message that started it). */
   usage: ReadonlyMap<string, ChatUsage>;
   /** Tool calls per turn. */

@@ -23,9 +23,6 @@ export function ClaudeAccount({ status, hideLimits = false }: { status: AgentSta
         </div>
         {account?.plan && <Badge size="xs" color="gray" variant="light">{account.plan}</Badge>}
       </div>
-      {!account && !status.authenticated && !unavailable && (
-        <p className="m-0 text-xs text-muted">Run <code>/login</code> inside Claude Code, or <code>claude auth login</code> in a terminal.</p>
-      )}
       {!account && (unavailable || status.authenticated) && <p className="m-0 text-xs text-muted" role="status">{status.authDetail}</p>}
       {account?.method === "subscription" && !account.usageBased && !account.id && (
         <p className="m-0 text-xs text-muted">Limits appear once Claude Code reports the account identity.</p>

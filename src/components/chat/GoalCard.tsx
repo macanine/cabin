@@ -21,7 +21,7 @@ export function GoalCard({ goal, onControl }: { goal: ChatGoal; onControl: (acti
   const T = { live: "text-accent bg-accent-soft", ok: "text-ok bg-ok/12", bad: "text-bad bg-bad/12" }[tone as "live" | "ok" | "bad"] ?? "text-muted bg-hover";
   const act = "press inline-flex cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-1.5 py-1 text-xs text-muted hover:bg-hover hover:text-fg";
   return (
-    <section className="flex items-center gap-2.5 border-b border-line px-3 py-2" aria-label="Agent goal">
+    <section className="mb-2 flex items-center gap-2.5 rounded-xl border border-line bg-surface/90 px-3 py-2" aria-label="Agent goal">
       <span className={`grid size-[26px] shrink-0 place-items-center rounded-lg ${T}`} aria-hidden><IconTargetArrow size={15} /></span>
       <div className="grid min-w-0 flex-1 gap-1">
         <div className="flex min-w-0 items-center gap-2">

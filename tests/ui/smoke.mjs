@@ -77,6 +77,57 @@ try {
       assert(!errors.length, errors[0]);
     });
   }
+  await test("machine settings style and switch their three tabs", async () => {
+    await open("settings:machine", "Diagnostics and recovery");
+    const tabs = 'nav[aria-label="Machine"] > button';
+    const styles = await run(`[...document.querySelectorAll(${JSON.stringify(tabs)})].map((tab) => {
+      const { appearance, borderInlineStartWidth, borderBottomWidth, borderBottomColor } = getComputedStyle(tab);
+      return { appearance, borderInlineStartWidth, borderBottomWidth, borderBottomColor };
+    })`);
+    assert(styles.length === 3 && styles.every((style) => style.appearance === "none" && style.borderInlineStartWidth === "0px" && style.borderBottomWidth === "2px"), "machine tabs have native button styling");
+    assert(styles[0].borderBottomColor !== styles[1].borderBottomColor && styles[1].borderBottomColor === styles[2].borderBottomColor, "the selected machine tab has no distinct underline");
+    for (const [index, label, panel] of [[1, "Details", "Saved machine configuration is unavailable"], [2, "Diagnostics and recovery", "Startup and diagnostics"], [0, "Resources", "Waiting for a live sample"]]) {
+      await run(`document.querySelectorAll(${JSON.stringify(tabs)})[${index}].click()`);
+      await until(() => run(`document.querySelector(${JSON.stringify(`${tabs}[aria-current="page"]`)})?.textContent.trim() === ${JSON.stringify(label)} && document.body.innerText.includes(${JSON.stringify(panel)})`), label);
+    }
+    assert(!errors.length, errors[0]);
+  });
+  await test("CLI sign-in opens a terminal directly on a fresh machine", async () => {
+    await open("agents:login", "Sign in via CLI");
+    await run(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Sign in via CLI').click()`);
+    await until(() => run(`document.body.innerText.includes('one-time code shown in the terminal') && !!document.querySelector('.terminal-host')`), "sign-in terminal");
+    assert(await run(`__cliRequests.length === 1 && __cliRequests[0].kind === 'codex' && __cliRequests[0].login && !('workspaceId' in __cliRequests[0])`), "the CLI request depends on a chosen workspace");
+    assert(await run(`!document.querySelector('[role=dialog]')`), "sign-in opened a dialog");
+    await run(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Return to Account').click()`);
+    await until(() => run(`document.body.innerText.includes('Cabin opens the Codex CLI in the virtual machine')`), "Codex account");
+    assert(!errors.length, errors[0]);
+  });
+  await test("terminal scroll reuse matches a full redraw in both directions", async () => {
+    const result = await run(`(async () => {
+      const { loadGhostty } = await import('/src/lib/terminal/engine.ts');
+      const { TerminalCanvasRenderer } = await import('/src/lib/terminal/renderer.ts');
+      const { terminalColors, TERMINAL_FONT, toWasmTerminalConfig } = await import('/src/lib/terminal/theme.ts');
+      const canvas = document.createElement('canvas');
+      const colors = terminalColors('dark');
+      const renderer = new TerminalCanvasRenderer(canvas, { fontSize: 13, fontFamily: TERMINAL_FONT, colors });
+      const term = (await loadGhostty()).createTerminal(72, 12, toWasmTerminalConfig(colors, 100));
+      const overlay = { viewportY: 0, focused: true, selection: null, matches: [], activeMatchIndex: -1, hoveredUrl: null };
+      const pixels = () => canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      try {
+        term.write('\\x1bc' + Array.from({length:60}, (_, i) => i + ' 中文 e\\u0301 👩‍💻 ├─ ▓ \\x1b[4;32munderline\\x1b[0m\\r\\n').join(''));
+        for (const offset of [30, 33, 31, 3, 1, 0]) {
+          overlay.viewportY = offset;
+          renderer.render(term, overlay);
+          const actual = pixels();
+          renderer.render(term, overlay, true);
+          const expected = pixels();
+          if (actual.some((value, index) => value !== expected[index])) return 'pixel mismatch at offset ' + offset;
+        }
+        return 'ok';
+      } finally { term.free(); }
+    })()`);
+    assert(result === "ok", result ?? "terminal comparison failed");
+  });
   for (const [at, text, action] of [["install", "Set up your agent machine", "Install Ubuntu"], ["failed", "The machine did not start", "Try again"], ["stopped", "Your machine is stopped", "Start machine"]]) {
     await test(`${at} keeps "${action}" in view`, async () => {
       await open(at, text);

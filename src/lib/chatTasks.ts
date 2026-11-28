@@ -2,6 +2,7 @@
 // here reads the guest's records (ChatAsyncTask, SubagentTask, ChatGoal); none
 // of it looks at which agent produced them.
 import type { ChatAsyncTask, ChatGoal, ChatItem, SubagentTask } from "../services/ipc/generated/core";
+import type { TimelineRow } from "./chatTimeline";
 
 export type Tone = "live" | "ok" | "bad" | "idle";
 
@@ -63,6 +64,67 @@ export function latestStep(items: ChatItem[]): string | null {
 /** Steps a subagent took: its tool calls. */
 export const subagentSteps = (items: ChatItem[]) =>
   items.filter((item) => item.kind !== "user_message" && item.kind !== "assistant_message" && item.kind !== "reasoning").length;
+
+/**
+ * Attribute every session subagent to its turn:
+ * 1. Exact link via a turn item's `taskId`.
+ * 2. Fallback by `startedAt` falling inside a turn's window (handles subagents
+ *    created by `subagent_update` or child sessions before/without a tool `taskId`).
+ * 3. Any remaining unmatched subagents attach to the latest turn so none vanish.
+ */
+export function subagentsByTurn(
+  rows: readonly TimelineRow[],
+  tasks: readonly SubagentTask[],
+): Map<string, SubagentTask[]> {
+  const byTurn = new Map<string, SubagentTask[]>();
+  if (!tasks.length) return byTurn;
+  const turns = rows.filter((row): row is Extract<TimelineRow, { kind: "turn" }> => row.kind === "turn");
+  if (!turns.length) return byTurn;
+
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const assigned = new Set<string>();
+  const add = (turnId: string, task: SubagentTask) => {
+    const list = byTurn.get(turnId) ?? [];
+    if (!list.some((entry) => entry.id === task.id)) list.push(task);
+    byTurn.set(turnId, list);
+    assigned.add(task.id);
+  };
+
+  for (const row of turns) {
+    for (const item of row.items) {
+      if (!item.taskId) continue;
+      const task = taskById.get(item.taskId);
+      if (task) add(row.turn, task);
+    }
+  }
+
+  // Build turn start timestamps from the user message or earliest body item.
+  const userStart = new Map<string, number>();
+  for (const row of rows) {
+    if (row.kind === "user" && row.item.startedAt > 0) userStart.set(row.turn, row.item.startedAt);
+  }
+  const windows = turns.map((row) => {
+    const start = userStart.get(row.turn)
+      ?? row.items.find((item) => item.startedAt > 0)?.startedAt
+      ?? 0;
+    return { turn: row.turn, start };
+  });
+
+  for (const task of tasks) {
+    if (assigned.has(task.id)) continue;
+    let target = windows[windows.length - 1].turn;
+    if (task.startedAt > 0) {
+      for (let i = windows.length - 1; i >= 0; i--) {
+        if (windows[i].start > 0 && windows[i].start <= task.startedAt) {
+          target = windows[i].turn;
+          break;
+        }
+      }
+    }
+    add(target, task);
+  }
+  return byTurn;
+}
 
 const GOAL_LABEL: Record<string, string> = {
   active: "Active",

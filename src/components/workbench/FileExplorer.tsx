@@ -14,7 +14,7 @@ import { fileGlyph, formatBytes, fuzzyFilter, splitPath, type Decoration } from 
 import { uiActions } from "../../state/ui";
 import { Markdown } from "../chat/Markdown";
 import { CodeView } from "./CodeView";
-import { mention } from "./mention";
+import { mention, OPEN_FILE_EVENT, type OpenFileDetail } from "./mention";
 
 /** A file's icon from the Symbols set, chosen by its name. */
 export function FileIcon({ path }: { path: string }) {
@@ -44,6 +44,16 @@ export function FileExplorer({ root, decorations, sessionId, revision, visible }
   const key = `${root.workspaceId}:${root.sessionId ?? ""}`;
   const [selected, setSelected] = useState<string | null>(null);
   useEffect(() => setSelected(null), [key]);
+  useEffect(() => {
+    const onOpenFile = (event: Event) => {
+      const detail = (event as CustomEvent<OpenFileDetail>).detail;
+      if (!detail.path) return;
+      if (sessionId && detail.sessionId && detail.sessionId !== sessionId) return;
+      setSelected(detail.path);
+    };
+    window.addEventListener(OPEN_FILE_EVENT, onOpenFile);
+    return () => window.removeEventListener(OPEN_FILE_EVENT, onOpenFile);
+  }, [sessionId]);
   if (selected) return <FileViewer key={`${key}:${selected}`} root={root} path={selected} sessionId={sessionId} visible={visible} onBack={() => setSelected(null)} />;
   return <Explorer key={key} root={root} decorations={decorations} revision={revision} visible={visible} onOpen={setSelected} />;
 }

@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   ANSI, BASE, clampTerminalFontSize, contrast, getTerminalFontSize,
   setTerminalFontSize, stepTerminalFontSize, subscribeTerminalFontSize,
-  TERMINAL_FONT_DEFAULT, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN,
+  TERMINAL_FONT, TERMINAL_FONT_DEFAULT, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN,
   terminalColors, toWasmTerminalConfig,
 } from "../src/lib/terminal/theme.ts";
 
@@ -59,5 +59,19 @@ test("terminal font size clamps, steps, resets, and notifies subscribers", () =>
   } finally {
     off();
     setTerminalFontSize(TERMINAL_FONT_DEFAULT);
+  }
+});
+
+test("terminal font stack checks monospace fallbacks before CJK fonts", () => {
+  const families = TERMINAL_FONT.split(",").map((name) => name.trim().replace(/^"|"$/g, ""));
+  const firstCjk = Math.min(
+    ...["PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans Mono CJK SC"].map((name) =>
+      families.indexOf(name),
+    ),
+  );
+  assert.ok(firstCjk > 0, "CJK fallbacks should be present");
+  for (const mono of ["JetBrains Mono", "SF Mono", "Menlo", "Cascadia Mono", "Consolas", "Liberation Mono"]) {
+    const idx = families.indexOf(mono);
+    assert.ok(idx >= 0 && idx < firstCjk, `${mono} (${idx}) must precede CJK fallbacks (${firstCjk})`);
   }
 });

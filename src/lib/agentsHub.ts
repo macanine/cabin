@@ -42,6 +42,11 @@ export function agentState(agent: AgentStatus | undefined): AgentState {
   return { tone: "warn", label: "Sign-in needed", needsSetup: false };
 }
 
+export function needsCliLogin(agent: AgentStatus): boolean {
+  const state = agentState(agent);
+  return state.tone === "warn" || (agent.kind === "opencode" && state.tone === "info" && !agent.authenticated);
+}
+
 /** Agents that need the person's attention (broken, or not signed in). */
 export function attentionCount(agents: readonly AgentStatus[]): number {
   return agents.filter((agent) => {

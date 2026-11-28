@@ -14,6 +14,7 @@ import { useChat } from "./context";
 import { FileChanges } from "./FileChanges";
 import { Markdown } from "./Markdown";
 import { ActivityRow, CopyAction, DetailBox, PRE, RailMark } from "./ActivityRow";
+import { SweepText } from "./LiveLine";
 import { Stat } from "../diff/Stat";
 
 const ICONS: Record<ToolAction, typeof IconEye> = {
@@ -234,8 +235,8 @@ function ToolRow({ item }: { item: ChatItem }) {
 
 function ReasoningRow({ item }: { item: ChatItem }) {
   const running = item.status === "running";
-  // While the thought is being written, the newest line is what matters; a
-  // settled thought keeps its first meaningful line as the gist.
+  // While the thought is being written, auto-open a compact rolling thought
+  // window (dsh-claude-style reasoning-stream) and fold into a clean gist once done.
   const gist = running
     ? latestThought(item.text)
     : thoughtLine(item.text) || "Thought";
@@ -246,15 +247,16 @@ function ReasoningRow({ item }: { item: ChatItem }) {
       title={item.text}
       label={
         <>
-          <span className="shrink-0 font-medium">{running ? "Thinking" : "Thought"}</span>
-          {gist && <span className="min-w-0 truncate text-muted">{gist}</span>}
+          <SweepText text={running ? "Thinking" : "Thought"} active={running} className="shrink-0 font-medium" />
+          {!running && gist && <span className="min-w-0 truncate text-muted">{gist}</span>}
         </>
       }
       trailing={<Duration item={item} live={running} />}
       expandable={Boolean(item.text)}
+      defaultOpen={running}
     >
-      <div className="markdown text-muted">
-        <Markdown text={item.text || "…"} streaming={running} />
+      <div className={`markdown text-[12.5px] text-muted ${running ? "chat-reason-window" : ""}`}>
+        <Markdown text={item.text || "…"} streaming={running} compact />
       </div>
     </ActivityRow>
   );
@@ -268,8 +270,8 @@ function ProseRow({ item }: { item: ChatItem }) {
   return (
     <li className="relative min-w-0 pl-8 before:absolute before:top-4 before:bottom-[-4px] before:left-[9.5px] before:w-px before:bg-line last:before:hidden" data-status={item.status}>
       <span className="absolute top-1 left-0 grid size-5 place-items-center"><RailMark status={item.status} dot /></span>
-      <div className="markdown py-0.5 text-[13px] text-muted" dir="auto">
-        <Markdown text={item.text} streaming={running} />
+      <div className="markdown py-0.5 text-[12.5px] text-muted" dir="auto">
+        <Markdown text={item.text} streaming={running} compact />
       </div>
     </li>
   );

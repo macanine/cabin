@@ -58,7 +58,10 @@ function viewing(id: string): boolean {
 /** Output arrived for a session. */
 export function noteOutput(id: string) {
   const now = Date.now();
-  if (viewing(id)) times.seen[id] = now;
+  if (viewing(id)) {
+    if (!unread.has(id) && now - (times.output[id] ?? 0) < 1000) return;
+    times.seen[id] = now;
+  }
   times.output[id] = now;
   changed();
 }

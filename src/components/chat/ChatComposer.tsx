@@ -139,7 +139,7 @@ export function ChatComposer({
         onSelect={(event) => onCaret(event.currentTarget.selectionStart ?? 0)}
         placeholder={placeholder}
         aria-label="Message"
-        classNames={{ input: "!min-h-[34px] !border-0 !bg-transparent !px-0.5 !pt-0.5 !pb-1 !text-[15px] !leading-[1.5] !shadow-none !outline-none" }}
+        classNames={{ input: "!min-h-[32px] !border-0 !bg-transparent !px-0.5 !pt-0.5 !pb-1 !text-[14px] !leading-[1.55] !shadow-none !outline-none" }}
         onCompositionStart={() => { composing.current = true; }}
         onCompositionEnd={() => { composing.current = false; }}
         onPaste={(event) => {
@@ -169,7 +169,11 @@ export function ChatComposer({
           <ModelPicker
             workspaceId={workspaceId}
             agent={agent}
-            value={model ?? live?.current ?? null}
+            value={
+              live && (!model || (model === "default" && !live.choices.some((choice) => choice.value === "default")))
+                ? live.current
+                : (model ?? live?.current ?? null)
+            }
             live={live}
             reasoning={reasoning}
             onSelect={onModel}

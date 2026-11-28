@@ -6,16 +6,26 @@ import { libraryIpc } from "../services/ipc/library";
 import { useApp } from "../state/store";
 import { markSeen, useActivity } from "../state/unread";
 import { attempt } from "../lib/operations";
-import { CircleButton, SessionPill } from "../components/common";
+import { AGENT_NAMES, CircleButton, SessionPill } from "../components/common";
 import { SessionTerminal, type TerminalSize } from "../components/Terminal";
 import { SessionMenuItems } from "../components/SessionMenu";
 import { InlineRename } from "../components/Sidebar";
 import { Chat } from "../components/Chat";
 import { PanelToggles, WorkbenchPanel } from "../components/workbench/WorkbenchPanel";
 import { useGitStatus } from "../components/workbench/useGitStatus";
-import { useUi } from "../state/ui";
+import { uiActions, useUi } from "../state/ui";
+import { useI18n } from "../i18n";
+
+const LOGIN_GUIDANCE = {
+  antigravity: "agents.loginBrowser",
+  claude: "agents.loginBrowser",
+  codex: "agents.loginDevice",
+  opencode: "agents.loginProvider",
+  pi: "agents.loginPi",
+} as const;
 
 export function SessionView({ id }: { id: string }) {
+  const { t } = useI18n();
   const session = useApp((state) => state.sessions.find((s) => s.id === id));
   const workspace = useApp((state) => state.workspaces.find((w) => w.id === session?.workspaceId));
   const size = useRef<TerminalSize>({ cols: 100, rows: 30 });
@@ -24,7 +34,8 @@ export function SessionView({ id }: { id: string }) {
   const activity = useActivity().get(id);
   const panelOpen = useUi((ui) => ui.panel.open);
   const root = { workspaceId: session?.workspaceId ?? "", sessionId: session ? id : null };
-  const git = useGitStatus(root, panelOpen);
+  const loginAgent = session?.mode === "login" ? session.agent : null;
+  const git = useGitStatus(root, panelOpen && loginAgent == null);
 
   if (!session || !workspace) {
     return (
@@ -76,18 +87,30 @@ export function SessionView({ id }: { id: string }) {
             {activity === "waiting" ? "Needs you" : "Working"}
           </span>
         )}
-        <PanelToggles git={git} />
+        {loginAgent == null && <PanelToggles git={git} />}
         {!chat && !terminal && <SessionPill status={session.status} />}
         {!chat && !terminal && (live ? (
           <CircleButton label="Stop" onClick={() => attempt(libraryIpc.stopSession(session.id))}><IconPlayerStopFilled size={13} /></CircleButton>
         ) : (
-          <CircleButton label={session.lastStartedAt != null ? "Continue the most recent conversation in this folder" : "Start"} primary onClick={() => start(session.lastStartedAt != null)}>
+          <CircleButton label={loginAgent ? t("agents.retryLogin") : session.lastStartedAt != null ? "Continue the most recent conversation in this folder" : "Start"}
+            primary onClick={() => start(loginAgent == null && session.lastStartedAt != null)}>
             <IconPlayerPlayFilled size={13} />
           </CircleButton>
         ))}
       </TitleBarContent>
       <div className="session-body">
-      {chat && session.agent ? <Chat key={session.id} sessionId={session.id} workspaceId={workspace.id} agent={session.agent} /> : <div className="terminal-wrap">
+      {chat && session.agent ? <Chat key={session.id} sessionId={session.id} workspaceId={workspace.id} agent={session.agent} /> : <div className={loginAgent ? "terminal-wrap flex-col" : "terminal-wrap"}>
+        {loginAgent && (
+          <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <strong className="text-sm">{t("agents.signIn")} · {AGENT_NAMES[loginAgent]}</strong>
+              <p className="m-0 text-sm text-muted">{t(LOGIN_GUIDANCE[loginAgent])}</p>
+            </div>
+            <Button size="xs" variant="default" onClick={() => uiActions.navigate({ kind: "agents", agent: loginAgent, section: "account" })}>
+              {t("agents.checkAccount")}
+            </Button>
+          </div>
+        )}
         <SessionTerminal
           sessionId={session.id}
           plain={terminal}
@@ -98,22 +121,23 @@ export function SessionView({ id }: { id: string }) {
             <span>
               {session.status.state === "failed"
                 ? session.status.message
+                : loginAgent ? t(session.status.state === "exited" ? "agents.loginExited" : "agents.loginStopped")
                 : session.status.state === "exited"
                   ? `The agent exited${session.status.code != null ? ` with code ${session.status.code}` : ""}.`
                   : "This session is not running."}
             </span>
-            {session.lastStartedAt != null && (
+            {loginAgent == null && session.lastStartedAt != null && (
               <Button size="xs" leftSection={<IconPlayerPlay size={14} />} onClick={() => start(true)}>
                 Continue conversation
               </Button>
             )}
             <Button size="xs" variant="default" leftSection={<IconRefresh size={14} />} onClick={() => start(false)}>
-              Start fresh
+              {loginAgent ? t("agents.retryLogin") : "Start fresh"}
             </Button>
           </> : null}
         />
       </div>}
-      <WorkbenchPanel root={root} git={git} />
+      {loginAgent == null && <WorkbenchPanel root={root} git={git} />}
       </div>
     </>
   );

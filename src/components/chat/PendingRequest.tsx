@@ -88,7 +88,7 @@ export function PendingRequest({ sessionId, item }: { sessionId: string; item: C
   // card; clicking back into the box types again. A draft keeps its focus.
   useEffect(() => {
     const field = document.activeElement;
-    if (field instanceof HTMLTextAreaElement && field.closest("[data-chat-dock]") && !field.value) card.current?.focus({ preventScroll: true });
+    if (field instanceof HTMLTextAreaElement && field.closest(".chat-view") && !field.value) card.current?.focus({ preventScroll: true });
   }, [item.id]);
 
   // One-key approvals: Y allows, N denies, A/S remember, as the buttons show.
@@ -131,12 +131,19 @@ export function PendingRequest({ sessionId, item }: { sessionId: string; item: C
   const complete = questions.every((question) => (answers[question.id]?.length ?? 0) > 0);
 
   return (
-    <div ref={card} tabIndex={-1} className={`animate-fade rounded-t-[15px] border-b border-line px-4 pt-3.5 pb-3 outline-none ${isQuestion ? "bg-info/[0.04]" : "bg-warn/[0.04]"}`} data-request role="region" aria-label={isQuestion ? "Question from the agent" : "Approval needed"}>
-      <div className="mb-2.5 flex items-center gap-2.5">
-        <span className={`grid size-7 shrink-0 place-items-center rounded-lg ${isQuestion ? "bg-info/13 text-info" : "bg-warn/14 text-warn"}`}>
-          {isQuestion ? <IconMessageQuestion size={16} /> : <IconShieldCheck size={16} />}
+    <div
+      ref={card}
+      tabIndex={-1}
+      className="animate-fade min-w-0 rounded-xl border border-line bg-surface/85 px-3.5 py-3 outline-none"
+      data-request
+      role="region"
+      aria-label={isQuestion ? "Question from the agent" : "Approval needed"}
+    >
+      <div className="mb-2 flex items-center gap-2">
+        <span className={`grid size-6 shrink-0 place-items-center rounded-md ${isQuestion ? "bg-info/12 text-info" : "bg-hover text-muted"}`}>
+          {isQuestion ? <IconMessageQuestion size={14} /> : <IconShieldCheck size={14} />}
         </span>
-        <strong className="min-w-0 flex-1 text-[13.5px] font-semibold">{item.title || (isQuestion ? "The agent has a question" : "Approval needed")}</strong>
+        <strong className="min-w-0 flex-1 text-[13px] font-semibold text-fg">{item.title || (isQuestion ? "The agent has a question" : "Approval needed")}</strong>
         {item.detail && !isQuestion && (
           <button
             type="button"
@@ -150,12 +157,16 @@ export function PendingRequest({ sessionId, item }: { sessionId: string; item: C
           </button>
         )}
       </div>
-      <div className="grid gap-2.5">
+      <div className="grid min-w-0 gap-2.5">
         {item.text && (item.approval?.kind === "plan"
-          ? <div className="markdown selectable max-h-60 overflow-auto rounded-xl border border-line bg-surface/60 px-3.5 py-2.5"><Markdown text={item.text} /></div>
-          : <pre className="selectable m-0 max-h-40 overflow-auto rounded-xl bg-hover px-3 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-fg [overflow-wrap:anywhere]">{item.text}</pre>)}
-        {item.changes.length > 0 && <FileChanges changes={item.changes} title="Proposed change" open />}
-        {details && <pre className="selectable m-0 max-h-40 animate-fade overflow-auto rounded-xl bg-hover px-3 py-2 font-mono text-xs whitespace-pre-wrap text-muted [overflow-wrap:anywhere]">{item.detail}</pre>}
+          ? <div className="markdown selectable max-h-60 min-w-0 overflow-auto rounded-xl border border-line bg-bg/50 px-3.5 py-2.5"><Markdown text={item.text} /></div>
+          : <pre className="selectable m-0 max-h-40 min-w-0 overflow-auto rounded-xl bg-hover px-3 py-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-fg [overflow-wrap:anywhere]">{item.text}</pre>)}
+        {item.changes.length > 0 && (
+          <div className="max-h-[320px] min-w-0 overflow-y-auto rounded-xl">
+            <FileChanges changes={item.changes} title="Proposed change" open />
+          </div>
+        )}
+        {details && <pre className="selectable m-0 max-h-40 min-w-0 animate-fade overflow-auto rounded-xl bg-hover px-3 py-2 font-mono text-xs whitespace-pre-wrap text-muted [overflow-wrap:anywhere]">{item.detail}</pre>}
         {questions.map((question) => (
           <Question key={question.id} question={question} value={answers[question.id] ?? []} onChange={(value) => setAnswers((old) => ({ ...old, [question.id]: value }))} />
         ))}

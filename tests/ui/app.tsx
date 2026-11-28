@@ -1,5 +1,6 @@
 // The real <App/> over a fake Tauri bridge. `?at=` picks the screen.
 import { createRoot } from "react-dom/client";
+import type { AgentStatus, Session, Workspace } from "../../src/services/ipc/generated/core";
 import type { View } from "../../src/state/ui";
 
 const at = new URLSearchParams(location.search).get("at") ?? "new";
@@ -7,7 +8,21 @@ const at = new URLSearchParams(location.search).get("at") ?? "new";
 localStorage.setItem("cabin.locale", "en");
 const now = Date.now();
 const sent: unknown[] = [];
-Object.assign(window, { __sent: sent });
+const cliRequests: Record<string, unknown>[] = [];
+Object.assign(window, { __sent: sent, __cliRequests: cliRequests });
+
+const codex: AgentStatus = {
+  kind: "codex", name: "Codex", package: "@openai/codex", requiresNode: false, installed: true,
+  binary: "/usr/bin/codex", version: "0.0.1", cliChecked: true, authenticated: false, authDetail: "Signed out",
+  configPath: "/home/dev/.codex/config.toml", configExists: false, configError: null, modelKey: "model", model: null, claudeLogin: null,
+};
+const defaultWorkspace: Workspace = {
+  id: "default", name: "Workspace", path: "/home/dev/workspace", modelOverrides: [], archived: false, createdAt: now, updatedAt: now,
+};
+const loginSession: Session = {
+  id: "login", workspaceId: defaultWorkspace.id, agent: "codex", mode: "login", name: "Codex CLI login", worktree: null,
+  archived: false, starred: false, createdAt: now, updatedAt: now, lastStartedAt: now, status: { state: "running", pid: 2 },
+};
 
 const item = (id: string, kind: string, over: object) => ({
   id, ordinal: Number(id.slice(1)), revision: 1, turnId: "i1", kind, status: "completed", title: "", text: "", detail: "", requestId: null,
@@ -25,6 +40,14 @@ const replies: Record<string, (params: Record<string, unknown>) => unknown> = {
       capabilities: { prompt: {} } },
   }),
   chat_respond: (params) => { sent.push(params); return null; },
+  agents_refresh: () => at === "agents:login" ? [codex] : [],
+  agent_extensions: ({ kind }) => ({ kind, mcpPath: null, mcpCanDisable: false, mcpServers: [], mcpError: null, skillsPath: "", skills: [] }),
+  agent_terminal_open: (params) => {
+    cliRequests.push(params);
+    patchState((state) => ({ ...state, workspaces: [defaultWorkspace], sessions: [loginSession] }));
+    return loginSession;
+  },
+  terminal_snapshot: () => ({ generation: 1, status: loginSession.status, startOffset: 0, endOffset: 0, data: "" }),
   agent_chat_capabilities: () => [],
   acp_runtimes: () => [],
   mcp_library: () => ({ agents: [], rows: [] }),
@@ -62,10 +85,11 @@ const session = { id: "s1", workspaceId: "w1", name: "Fix the build", worktree: 
 // Only the fields the screens read; the shapes are the backend's.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 patchState((state: any) => ({
-  ...state, ready: true, guestReady: !down, networkLoaded: true, dataDir: "/data", agents: [],
+  ...state, ready: true, guestReady: !down, networkLoaded: true, dataDir: "/data", agents: at === "agents:login" ? [codex] : [],
   settings: { defaultAgent: "claude", latencyTarget: "1.1.1.1:443", checkTarget: "example.com:443" },
   machine: { ...state.machine, state: install ? "notInstalled" : stopped ? "stopped" : "running", connection: down ? "offline" : "connected", busy: null, username: "dev", hostname: "dev-vm", error: failed ? "SSH did not answer" : null, os: "ubuntu-24.04", guestVersion: "0", cpus: 4, memoryMb: 8192, diskSize: "40G" },
-  workspaces: [{ id: "w1", name: "cabin", path: "/w", modelOverrides: [], archived: false, createdAt: now, updatedAt: now }], sessions: [session],
+  workspaces: at === "agents:login" ? [] : [{ id: "w1", name: "cabin", path: "/w", modelOverrides: [], archived: false, createdAt: now, updatedAt: now }],
+  sessions: at === "agents:login" ? [] : [session],
   start: failed ? { state: "failed", startedAt: now - 9000, finishedAt: now, error: "SSH did not answer", facts: [], logPath: "/l", logTail: Array(40).fill("ssh: retrying"), serialPath: null, serialTail: [], phases: [{ id: "ssh", title: "Connect to the machine", state: "failed", startedAt: now - 9000, finishedAt: now, detail: "SSH did not answer" }] } : state.start,
 }));
 if (!down) {

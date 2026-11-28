@@ -273,8 +273,10 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
     if (outcome !== "conflict" && review.status !== "deferred") setResumedPlan(null);
   }
 
+  const workspacePath = session?.worktree?.path ?? workspace?.path ?? null;
   const context: ChatContextValue = useMemo(() => ({
     sessionId,
+    workspacePath,
     usage: usageMap,
     tools: tools.byTurn,
     subagents: subagentMap,
@@ -282,7 +284,7 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
     openSubagent: (taskId: string) => { setSubagentOpen(false); setSubagentSelected(taskId); },
     edit: (turn: string) => void editTurn(turn),
     now,
-  }), [sessionId, usageMap, tools, subagentMap, taskMap, now, items]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [sessionId, workspacePath, usageMap, tools, subagentMap, taskMap, now, items]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const canSend = (text.trim().length > 0 || attachments.files.length > 0) && !attachments.loading
     && (idle || busy) && hasModel && !pending && !planLocked && !queue.sending;
@@ -296,8 +298,18 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
               {items.length === 0 && (
                 <ChatEmpty agent={agent} workspace={workspace?.name ?? "Workspace"} path={session?.worktree?.path ?? workspace?.path ?? null} starting={state.state === "starting"} />
               )}
-              <TimelineRows rows={rows} waiting={state.state === "waiting"} />
+              <TimelineRows rows={rows} waiting={state.state === "waiting"} activeTurn={pending ? null : turn} />
               <PlanHistory plans={planHistory} onResume={(plan) => setResumedPlan(planKey(plan))} />
+              {dockPlan && (
+                <div className="mt-3 min-w-0">
+                  <PlanReviewDock sessionId={sessionId} plan={dockPlan} conflict={conflictPlan != null} onPlan={applyPlanDecision} onDismiss={() => setConflictPlan(null)} />
+                </div>
+              )}
+              {pending && (
+                <div className="mt-3 min-w-0">
+                  <PendingRequest sessionId={sessionId} item={pending} />
+                </div>
+              )}
               {state.state === "error" && state.message && (
                 <div className="mt-3 flex animate-fade items-center gap-3 rounded-xl border border-bad/30 bg-bad/8 px-3.5 py-2.5 text-sm text-bad" role="status">
                   <span className="grid min-w-0 flex-1 gap-0.5 [overflow-wrap:anywhere]">{state.message}<span className="text-xs text-muted">Your conversation is saved. Send a message to reconnect the agent.</span></span>
@@ -321,22 +333,22 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
             {idle && !pending && !text && (
               <Suggestions items={controls.suggestions} onPick={(next) => { setText(next); input.current?.focus(); }} />
             )}
+            <SessionStrip
+              plan={controls.plan}
+              subagents={subagents}
+              tasks={tasks}
+              onStopTask={stopTask}
+              now={now}
+              open={subagentOpen}
+              onOpenChange={setSubagentOpen}
+              onSelect={(id) => { setSubagentOpen(false); setSubagentSelected(id); }}
+            />
+            {controls.goal && (
+              <GoalCard goal={controls.goal} onControl={(action) => {
+                void libraryIpc.chatGoalControl(sessionId, action).catch((error) => uiActions.toast(toIpcError(error).message, "error"));
+              }} />
+            )}
             <div ref={dock} className="chat-dock" data-chat-dock>
-              {controls.goal && (
-                <GoalCard goal={controls.goal} onControl={(action) => {
-                  void libraryIpc.chatGoalControl(sessionId, action).catch((error) => uiActions.toast(toIpcError(error).message, "error"));
-                }} />
-              )}
-              <SessionStrip
-                turn={turn}
-                plan={controls.plan} rows={rows} subagents={subagents} tasks={tasks} onStopTask={stopTask} now={now} session={session} agent={agent}
-                open={subagentOpen} onOpenChange={setSubagentOpen}
-                onSelect={(id) => { setSubagentOpen(false); setSubagentSelected(id); }}
-              />
-              {dockPlan && (
-                <PlanReviewDock sessionId={sessionId} plan={dockPlan} conflict={conflictPlan != null} onPlan={applyPlanDecision} onDismiss={() => setConflictPlan(null)} />
-              )}
-              {pending && <PendingRequest sessionId={sessionId} item={pending} />}
               <ChatComposer
                 input={input}
                 text={text}
@@ -371,6 +383,15 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
               />
             </div>
           </div>
+          {selectedSubagent && (
+            <SubagentConversation
+              task={selectedSubagent}
+              tasks={subagents}
+              onSelect={setSubagentSelected}
+              onQuote={quoteSelection}
+              onClose={() => setSubagentSelected(null)}
+            />
+          )}
         </div>
         {commandDialog && (
           <SessionCommandDialog
@@ -381,9 +402,6 @@ export function Chat({ sessionId, workspaceId, agent }: { sessionId: string; wor
             model={live?.choices.find((choice) => choice.value === (model ?? live.current))?.name ?? model ?? live?.current ?? null}
             permission={permission} context={controls.context}
           />
-        )}
-        {selectedSubagent && (
-          <SubagentConversation task={selectedSubagent} onQuote={quoteSelection} onClose={() => setSubagentSelected(null)} />
         )}
       </div>
     </ChatContext.Provider>

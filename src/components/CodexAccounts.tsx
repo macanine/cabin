@@ -319,9 +319,8 @@ export function CodexAccountsPanel({ status, hideLimits = false }: { status: Age
         </div>
       ) : data.accounts.length === 0 ? (
         <Alert color="gray" mt="md">
-          No Codex login is saved yet. Sign in with <span className="mono">codex login</span>,
-          then choose “Save current”, or import an existing Codex, CLIProxyAPI or
-          Sub2API credential file.
+          No Codex login is saved yet. After signing in through the CLI, choose “Save current”,
+          or import an existing Codex, CLIProxyAPI or Sub2API credential file.
         </Alert>
       ) : (
         <div className="list" style={{ marginTop: 14 }}>

@@ -27,3 +27,16 @@
 .diff-card .diff-tailwindcss-wrapper[data-theme] [data-state="plain"],
 .diff-card .diff-tailwindcss-wrapper[data-theme] [data-state="hunk"] { color: var(--text); }
 .diff-card .diff-line-num { font-variant-numeric: tabular-nums; }
+/* @git-diff-view omits -webkit-user-select: none; enforce it so macOS WKWebView
+   never selects line numbers or +/- operators when copying diff lines. */
+.diff-card .select-none,
+.diff-card .diff-line-num,
+.diff-card .diff-line-old-num,
+.diff-card .diff-line-new-num,
+.diff-card .diff-line-content-operator,
+.diff-card .diff-line-hunk-action,
+.diff-card [data-line-num],
+.diff-card [data-operator] {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}

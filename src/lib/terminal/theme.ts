@@ -151,7 +151,7 @@ export function contrast(a: string, b: string): number {
 // ------------------------------------------------------------ font preference
 
 export const TERMINAL_FONT =
-  '"JetBrains Mono", "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", ui-monospace, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans Mono CJK SC", monospace';
+  '"JetBrains Mono", "SF Mono", Menlo, "Cascadia Mono", Consolas, "Liberation Mono", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans Mono CJK SC", ui-monospace, monospace';
 export const TERMINAL_FONT_DEFAULT = 14;
 export const TERMINAL_FONT_MIN = 10;
 export const TERMINAL_FONT_MAX = 24;

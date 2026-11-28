@@ -19,7 +19,6 @@ import { AGENT_KINDS } from "../components/AgentPicker";
 import { AgentLogo, AGENT_NAMES } from "../components/common";
 import { AgentExtensionsPanel } from "../components/extensions/AgentExtensionsPanel";
 import { MachineGate } from "../components/MachineGate";
-import { NewWorkspaceModal } from "../components/NewWorkspaceModal";
 import { PaceMeter } from "../components/PaceMeter";
 import { QuotaPacingCard } from "../components/QuotaPacingCard";
 import { QuotaTimeline } from "../components/QuotaTimeline";
@@ -29,6 +28,7 @@ import {
   agentState,
   attentionCount,
   currentClaudeAccount,
+  needsCliLogin,
   nodeProblem,
   type AgentSection,
   type AgentState,
@@ -40,7 +40,6 @@ import { useMinute } from "../lib/useNow";
 import { agentsIpc } from "../services/ipc/agents";
 import { appIpc } from "../services/ipc/app";
 import type { AcpRuntime, AgentKind, AgentStatus, NodeState } from "../services/ipc/generated/core";
-import { libraryIpc } from "../services/ipc/library";
 import { nodeIpc } from "../services/ipc/node";
 import { useUnifiedQuotas, type AgentQuotaSummary, type UnifiedQuotaWindow } from "../state/quotaStore";
 import { useApp } from "../state/store";
@@ -103,35 +102,27 @@ function useAgentSetup() {
 }
 type Setup = ReturnType<typeof useAgentSetup>;
 
-function useAgentTerminal() {
-  const workspace = useApp((state) => state.workspaces.find((entry) => !entry.archived));
-  const [creating, setCreating] = useState<AgentKind | null>(null);
-  const [starting, setStarting] = useState<AgentKind | null>(null);
+type OpenAgentTerminal = (kind: AgentKind, login: boolean) => void;
 
-  async function open(kind: AgentKind, workspaceId: string) {
+function useAgentTerminal() {
+  const [starting, setStarting] = useState<AgentKind | null>(null);
+  const pending = useRef(false);
+
+  async function open(kind: AgentKind, login: boolean) {
+    if (pending.current) return;
+    pending.current = true;
+    const from = uiActions.getView();
     setStarting(kind);
     try {
-      const session = await attempt(libraryIpc.createSession(workspaceId, kind, null));
-      if (session) uiActions.navigate({ kind: "session", id: session.id });
+      const session = await attempt(agentsIpc.openTerminal(kind, login));
+      if (session && uiActions.getView() === from) uiActions.navigate({ kind: "session", id: session.id });
     } finally {
+      pending.current = false;
       setStarting(null);
     }
   }
 
-  return {
-    starting,
-    open: (kind: AgentKind) => (workspace ? void open(kind, workspace.id) : setCreating(kind)),
-    picker: creating && (
-      <NewWorkspaceModal
-        opened
-        onClose={() => setCreating(null)}
-        onCreated={(created) => {
-          setCreating(null);
-          void open(creating, created.id);
-        }}
-      />
-    ),
-  };
+  return { starting, open };
 }
 
 export function AgentsView({ agent, section }: { agent?: AgentKind; section?: AgentSection }) {
@@ -275,6 +266,7 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
             <AgentCanvas
               key={activeTab}
               kind={activeTab}
+              openAccount={section === "account"}
               openSetup={section === "setup"}
               status={agents.find((entry) => entry.kind === activeTab)}
               quota={quotas.byAgent[activeTab]}
@@ -286,7 +278,6 @@ function AgentsContent({ selected, section }: { selected?: AgentKind; section?: 
           )}
         </div>
       </div>
-      {terminal.picker}
     </>
   );
 }
@@ -305,7 +296,7 @@ function AgentsOverview({
   quotas: ReturnType<typeof useUnifiedQuotas>;
   now: number;
   setup: Setup;
-  onOpenTerminal: (kind: AgentKind) => void;
+  onOpenTerminal: OpenAgentTerminal;
   starting: AgentKind | null;
 }) {
   const { t } = useI18n();
@@ -390,6 +381,7 @@ function AgentsOverview({
             const installed = Boolean(status?.installed && (!status.cliChecked || status.version));
             const needsInstall = Boolean(status && (!status.installed || (status.cliChecked && !status.version)));
             const nodeBlocked = (status?.requiresNode ?? true) && setup.problem != null;
+            const login = status != null && needsCliLogin(status);
 
             return (
               <div key={kind} className="ag-dir-card" data-installed={installed ? "true" : "false"}>
@@ -466,13 +458,13 @@ function AgentsOverview({
                     ) : installed && status?.cliChecked ? (
                       <Button
                         size="compact-xs"
-                        variant={state.tone === "warn" ? "filled" : "default"}
+                        variant={login ? "filled" : "default"}
                         leftSection={<IconTerminal2 size={12} />}
                         loading={starting === kind}
                         disabled={starting != null}
-                        onClick={() => onOpenTerminal(kind)}
+                        onClick={() => onOpenTerminal(kind, login)}
                       >
-                        {state.tone === "warn" ? t("agents.signIn") : t("agents.openTerminal")}
+                        {t(login ? "agents.signIn" : "agents.openTerminal")}
                       </Button>
                     ) : null}
                   </div>
@@ -613,6 +605,7 @@ function AgentQuotaSection({
 
 function AgentCanvas({
   kind,
+  openAccount,
   openSetup,
   status,
   quota,
@@ -622,12 +615,13 @@ function AgentCanvas({
   starting,
 }: {
   kind: AgentKind;
+  openAccount: boolean;
   openSetup: boolean;
   status?: AgentStatus;
   quota: AgentQuotaSummary;
   onRefreshQuota: () => void;
   setup: Setup;
-  onOpenTerminal: (kind: AgentKind) => void;
+  onOpenTerminal: OpenAgentTerminal;
   starting: AgentKind | null;
 }) {
   const { t } = useI18n();
@@ -681,6 +675,16 @@ function AgentCanvas({
     quota.accountLabel ?? account?.email ?? null,
     state.tone !== "ok" ? state.label : null,
   ].filter(Boolean);
+  const login = needsCliLogin(status);
+  const accountPanel = (
+    <section className="ag-block" aria-label={t("agents.account")}>
+      <div className="ag-block-head"><h3>{t("agents.account")}</h3></div>
+      <div className="ag-surface">
+        <AgentAccount kind={kind} status={status} onOpenTerminal={onOpenTerminal} starting={starting} hideLimits />
+      </div>
+    </section>
+  );
+  const accountFirst = openAccount || (login && !openSetup);
 
   return (
     <div className="ag-canvas view-enter">
@@ -694,28 +698,18 @@ function AgentCanvas({
           <p className="ag-header-meta" title={metaParts.join(" · ")}>{metaParts.join(" · ")}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          {canOperate && state.tone === "warn" ? (
+          {canOperate && (
             <Button
               size="xs"
+              variant={login ? "filled" : "default"}
               leftSection={<IconTerminal2 size={14} />}
               loading={starting === kind}
               disabled={starting != null}
-              onClick={() => onOpenTerminal(kind)}
+              onClick={() => onOpenTerminal(kind, login)}
             >
-              {t("agents.signIn")}
+              {t(login ? "agents.signIn" : "agents.openTerminal")}
             </Button>
-          ) : canOperate ? (
-            <Button
-              size="xs"
-              variant="default"
-              leftSection={<IconTerminal2 size={14} />}
-              loading={starting === kind}
-              disabled={starting != null}
-              onClick={() => onOpenTerminal(kind)}
-            >
-              {t("agents.openTerminal")}
-            </Button>
-          ) : null}
+          )}
           <Menu position="bottom-end" withinPortal shadow="md" width={196}>
             <Menu.Target>
               <ActionIcon variant="subtle" color="gray" size="md" aria-label={`More actions for ${AGENT_NAMES[kind]}`}>
@@ -745,16 +739,9 @@ function AgentCanvas({
 
       {status.configError && <p className="callout bad m-0" role="alert">{status.configError}</p>}
 
+      {accountFirst && accountPanel}
       <AgentQuotaSection kind={kind} quota={quota} onRefresh={onRefreshQuota} />
-
-      <section className="ag-block" aria-label={t("agents.account")}>
-        <div className="ag-block-head">
-          <h3>{t("agents.account")}</h3>
-        </div>
-        <div className="ag-surface">
-          <AgentAccount kind={kind} status={status} onOpenTerminal={onOpenTerminal} starting={starting} hideLimits />
-        </div>
-      </section>
+      {!accountFirst && accountPanel}
 
       <section className="ag-block" aria-label={t("agents.runtimeAndExtensions")}>
         <div className="ag-block-head">

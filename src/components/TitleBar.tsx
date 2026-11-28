@@ -6,6 +6,7 @@ import { type ChromeLayout, chromeLayout, createWindowChromeRefresh, MAC_DEFAULT
 import { onWindowGeometryChange, windowChrome } from "../services/ipc/window";
 import { uiActions, useUi } from "../state/ui";
 import { IS_MAC } from "../lib/platform";
+import { CabinMark } from "./CabinMark";
 import { SidebarToggle } from "./Sidebar";
 
 let applied: ChromeLayout | null = null;
@@ -62,7 +63,18 @@ export function WindowStrip({ focus = false, back = true }: { focus?: boolean; b
       <div className="window-strip" data-tauri-drag-region />
       <div className="window-toolbar">
         {!focus ? (
-          <SidebarToggle />
+          <>
+            <SidebarToggle />
+            {IS_MAC && (
+              <span
+                className="cabin-brand-enter ml-1.5 inline-flex items-center gap-1.5 text-fg select-none"
+                data-tauri-drag-region
+              >
+                <CabinMark variant="color" size={21} className="shrink-0" />
+                <span className="text-[13px] font-semibold tracking-[-0.02em]" data-tauri-drag-region>Cabin</span>
+              </span>
+            )}
+          </>
         ) : canGoBack ? (
           <Tooltip label="Back" position="bottom">
             <ActionIcon variant="subtle" color="gray" size="md" onClick={uiActions.back} aria-label="Back">

@@ -352,6 +352,7 @@ export function NetworkDashboard() {
           >
             <Select
               size="xs"
+              className="w-52 max-w-full"
               aria-label={t("network.exitPolicy")}
               data={[
                 { value: "static", label: t("network.exitPolicyStatic") },

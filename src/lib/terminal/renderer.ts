@@ -126,21 +126,196 @@ export function paintTerminalGlyph(
   return true;
 }
 
+// ----------------------------------------------------------------- glyph atlas
+
+interface AtlasSlot {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  padLeft: number;
+}
+
+export type GlyphMeasure = Partial<
+  Pick<TextMetrics, "width" | "actualBoundingBoxLeft" | "actualBoundingBoxRight">
+>;
+
+/**
+ * Compute physical-pixel atlas bounds for a rasterized glyph.
+ *
+ * Keeps vertical bounds strictly at one row (`metrics.height`) so scroll-copy
+ * reuse never bleeds across rows, while expanding horizontal bounds to cover
+ * italic overhang or fallback glyphs (e.g. wide symbols, CJK, emoji) whose
+ * inked extent exceeds `cellCols * metrics.width`.
+ */
+export function atlasSlotBounds(
+  metrics: CellMetrics,
+  cellCols: number,
+  italic: boolean,
+  dpr: number,
+  measured?: GlyphMeasure,
+): { padLeft: number; w: number; h: number } {
+  let padLeft = italic ? Math.max(1, Math.ceil(metrics.width * 0.12 * dpr)) : 0;
+  let contentW =
+    Math.ceil(metrics.width * cellCols * dpr) +
+    Math.ceil(metrics.width * (italic ? 0.35 : 0.15) * dpr);
+
+  if (measured) {
+    const left = typeof measured.actualBoundingBoxLeft === "number" && Number.isFinite(measured.actualBoundingBoxLeft)
+      ? measured.actualBoundingBoxLeft
+      : 0;
+    const right = typeof measured.actualBoundingBoxRight === "number" && Number.isFinite(measured.actualBoundingBoxRight)
+      ? measured.actualBoundingBoxRight
+      : 0;
+    const advance = typeof measured.width === "number" && Number.isFinite(measured.width)
+      ? measured.width
+      : 0;
+    if (left > 0) padLeft = Math.max(padLeft, Math.ceil(left * dpr) + 1);
+    const rightPx = Math.ceil(Math.max(advance, right) * dpr) + 1;
+    if (rightPx > contentW) contentW = rightPx;
+  }
+
+  return {
+    padLeft,
+    w: Math.max(1, padLeft + contentW),
+    h: Math.max(1, Math.ceil(metrics.height * dpr)),
+  };
+}
+
+const ATLAS_SIZE = 1024;
+const ATLAS_MAX_SLOTS = 4096;
+
+/**
+ * Offscreen sprite cache for rasterized terminal glyphs.
+ *
+ * Caching `(codepoint, fontFlags, fgRgb)` as physical-pixel sprites bypasses
+ * per-cell CoreText shaping and font-fallback cascade on macOS WKWebView while
+ * placing every glyph at its exact device-pixel-snapped cell coordinate with
+ * strict vertical row bounds (no inter-row bleed on scroll reuse).
+ */
+class GlyphAtlas {
+  readonly canvas: HTMLCanvasElement;
+  private readonly ctx: CanvasRenderingContext2D;
+  private readonly slots = new Map<string, AtlasSlot>();
+  private nextX = 0;
+  private nextY = 0;
+  private rowH = 0;
+  private lastFont = "";
+  private lastColor = "";
+
+  constructor() {
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = ATLAS_SIZE;
+    this.canvas.height = ATLAS_SIZE;
+    const ctx = this.canvas.getContext("2d");
+    if (!ctx) throw new Error("Could not acquire 2D context for glyph atlas");
+    this.ctx = ctx;
+    this.reset();
+  }
+
+  reset() {
+    this.slots.clear();
+    this.nextX = 0;
+    this.nextY = 0;
+    this.rowH = 0;
+    this.lastFont = "";
+    this.lastColor = "";
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.clearRect(0, 0, ATLAS_SIZE, ATLAS_SIZE);
+    this.ctx.textBaseline = "alphabetic";
+    this.ctx.textAlign = "left";
+  }
+
+  get(
+    codepoint: number,
+    cellCols: number,
+    fontFlags: number,
+    font: string,
+    rgb: number,
+    fgR: number,
+    fgG: number,
+    fgB: number,
+    metrics: CellMetrics,
+    dpr: number,
+  ): AtlasSlot | null {
+    const key = `${codepoint}:${cellCols}:${fontFlags}:${rgb}`;
+    const cached = this.slots.get(key);
+    if (cached) return cached;
+
+    const ch = String.fromCodePoint(codepoint);
+    const ctx = this.ctx;
+    const italic = (fontFlags & CellFlags.ITALIC) !== 0;
+
+    let measured: GlyphMeasure | undefined;
+    if (codepoint > 0x7e) {
+      if (font !== this.lastFont) {
+        ctx.font = font;
+        this.lastFont = font;
+      }
+      measured = ctx.measureText(ch);
+    }
+
+    const { padLeft, w, h } = atlasSlotBounds(metrics, cellCols, italic, dpr, measured);
+    if (w > ATLAS_SIZE || h > ATLAS_SIZE) return null;
+
+    if (this.slots.size >= ATLAS_MAX_SLOTS) this.reset();
+    if (this.nextX + w > ATLAS_SIZE) {
+      this.nextX = 0;
+      this.nextY += this.rowH;
+      this.rowH = 0;
+    }
+    if (this.nextY + h > ATLAS_SIZE) {
+      this.reset();
+    }
+
+    const x = this.nextX;
+    const y = this.nextY;
+    this.nextX += w;
+    if (h > this.rowH) this.rowH = h;
+
+    if (font !== this.lastFont) {
+      ctx.font = font;
+      this.lastFont = font;
+    }
+    const color = `rgb(${fgR},${fgG},${fgB})`;
+    if (color !== this.lastColor) {
+      ctx.fillStyle = color;
+      this.lastColor = color;
+    }
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    ctx.setTransform(dpr, 0, 0, dpr, x + padLeft, y);
+    ctx.fillText(ch, 0, metrics.baseline);
+    ctx.restore();
+
+    const slot: AtlasSlot = { x, y, w, h, padLeft };
+    this.slots.set(key, slot);
+    return slot;
+  }
+}
+
 // ------------------------------------------------------------- canvas renderer
 
 export class TerminalCanvasRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly measureCtx: CanvasRenderingContext2D;
+  private readonly atlas: GlyphAtlas;
   private fontSize: number;
   private fontFamily: string;
+  private fonts: [string, string, string, string];
+  private activeFontFlags = -1;
   private colors: TerminalColors;
   private dpr: number;
   private metrics: CellMetrics;
   private cols = 0;
   private rows = 0;
   private lastViewportY = -1;
-  private lastCursor = { x: -1, y: -1, focused: false };
+  private lastScrollback = -1;
+  private lastPlain = false;
+  private lastCursor = { x: -1, y: -1, visible: false, focused: false };
 
   constructor(canvas: HTMLCanvasElement, options: { fontSize: number; fontFamily: string; colors: TerminalColors }) {
     const ctx = canvas.getContext("2d", { alpha: false });
@@ -148,11 +323,22 @@ export class TerminalCanvasRenderer {
     this.canvas = canvas;
     this.ctx = ctx;
     this.measureCtx = document.createElement("canvas").getContext("2d") ?? ctx;
+    this.atlas = new GlyphAtlas();
     this.fontSize = options.fontSize;
     this.fontFamily = options.fontFamily;
+    this.fonts = this.buildFontStrings(options.fontSize, options.fontFamily);
     this.colors = options.colors;
     this.dpr = this.currentDpr();
     this.metrics = this.measureFont();
+  }
+
+  private buildFontStrings(size: number, family: string): [string, string, string, string] {
+    return [
+      `400 ${size}px ${family}`,
+      `700 ${size}px ${family}`,
+      `italic 400 ${size}px ${family}`,
+      `italic 700 ${size}px ${family}`,
+    ];
   }
 
   private currentDpr(): number {
@@ -170,18 +356,23 @@ export class TerminalCanvasRenderer {
   setFont(fontSize: number, fontFamily = this.fontFamily) {
     this.fontSize = fontSize;
     this.fontFamily = fontFamily;
+    this.fonts = this.buildFontStrings(fontSize, fontFamily);
+    this.activeFontFlags = -1;
     this.dpr = this.currentDpr();
     this.metrics = this.measureFont();
+    this.atlas.reset();
   }
 
   remeasure() {
     this.dpr = this.currentDpr();
     this.metrics = this.measureFont();
+    this.activeFontFlags = -1;
+    this.atlas.reset();
   }
 
   private measureFont(): CellMetrics {
     const ctx = this.measureCtx;
-    ctx.font = `400 ${this.fontSize}px ${this.fontFamily}`;
+    ctx.font = this.fonts[0];
     // Average across 10 cells to avoid rounding drift from a single glyph.
     const sample = ctx.measureText("MMMMMMMMMM");
     const rawWidth = sample.width > 0 ? sample.width / 10 : this.fontSize * 0.6;
@@ -214,10 +405,12 @@ export class TerminalCanvasRenderer {
     if (dpr !== this.dpr) {
       this.dpr = dpr;
       this.metrics = this.measureFont();
+      this.atlas.reset();
     }
 
     this.cols = cols;
     this.rows = rows;
+    this.activeFontFlags = -1;
     const w = cols * this.metrics.width;
     const h = rows * this.metrics.height;
     this.canvas.style.width = `${w}px`;
@@ -241,27 +434,40 @@ export class TerminalCanvasRenderer {
     const scrollback = term.getScrollbackLength();
     const cursor = term.getCursor();
     const defaultColors = term.getColors();
+    const plain = overlay.selection === null && overlay.matches.length === 0 && overlay.hoveredUrl === null;
+    const scrolledHistoryShifted = viewportY > 0 && scrollback !== this.lastScrollback;
 
     const full =
       forceFull ||
       resized ||
       dirtyState === 2 ||
       viewportY !== this.lastViewportY ||
-      overlay.selection !== null ||
-      overlay.matches.length > 0 ||
-      overlay.hoveredUrl !== null;
+      scrolledHistoryShifted ||
+      !plain || !this.lastPlain;
 
     const cursorChanged =
       cursor.x !== this.lastCursor.x ||
       cursor.y !== this.lastCursor.y ||
+      cursor.visible !== this.lastCursor.visible ||
       overlay.focused !== this.lastCursor.focused;
 
     if (!full && dirtyState === 0 && !cursorChanged) {
       return false;
     }
 
-    // Grab the whole active screen in one WASM crossing.
-    const viewport = term.getViewport();
+    const shift = this.lastViewportY - viewportY;
+    // With unchanged cells and no cursor or overlays, keep the rows already
+    // on the canvas. Only expose new rows at the edge of the viewport.
+    const shifted = !forceFull && !resized && dirtyState === 0 && plain && this.lastPlain
+      && scrollback === this.lastScrollback && viewportY > 0 && this.lastViewportY > 0
+      && Number.isInteger(this.metrics.height * this.dpr)
+      && shift !== 0 && Math.abs(shift) < rows;
+    const firstRow = shifted && shift > 0 ? rows - shift : 0;
+    const endRow = shifted && shift < 0 ? -shift : rows;
+    if (shifted) this.shiftRows(shift, rows);
+
+    // Scrollback-only frames need no cells from the active screen.
+    let viewport: GhosttyCell[] | undefined;
 
     // Index search matches by visible row for O(1) lookup.
     const matchesByRow = new Map<number, { startCol: number; endCol: number; active: boolean }[]>();
@@ -283,7 +489,7 @@ export class TerminalCanvasRenderer {
 
     const activeSelection = overlay.selection;
 
-    for (let visRow = 0; visRow < rows; visRow++) {
+    for (let visRow = firstRow; visRow < endRow; visRow++) {
       const absRow = scrollback - viewportY + visRow;
       if (
         !full &&
@@ -301,7 +507,7 @@ export class TerminalCanvasRenderer {
       } else {
         const screenRow = absRow - scrollback;
         if (screenRow >= 0 && screenRow < rows) {
-          cells = viewport;
+          cells = viewport ??= term.getViewport();
           startIndex = screenRow * cols;
         }
       }
@@ -318,6 +524,7 @@ export class TerminalCanvasRenderer {
         activeSelection,
         matchesByRow.get(visRow),
         overlay.hoveredUrl && overlay.hoveredUrl.absRow === absRow ? overlay.hoveredUrl : null,
+        viewportY > 0,
       );
     }
 
@@ -327,9 +534,19 @@ export class TerminalCanvasRenderer {
     }
 
     this.lastViewportY = viewportY;
-    this.lastCursor = { x: cursor.x, y: cursor.y, focused: overlay.focused };
+    this.lastScrollback = scrollback;
+    this.lastPlain = plain;
+    this.lastCursor = { x: cursor.x, y: cursor.y, visible: cursor.visible, focused: overlay.focused };
     term.markClean();
     return true;
+  }
+
+  private shiftRows(shift: number, rows: number) {
+    const height = (rows - Math.abs(shift)) * this.metrics.height;
+    const source = Math.max(0, shift) * this.metrics.height;
+    const target = Math.max(0, -shift) * this.metrics.height;
+    this.ctx.drawImage(this.canvas, 0, source * this.dpr, this.canvas.width, height * this.dpr,
+      0, target, this.canvas.width / this.dpr, height);
   }
 
   private renderRow(
@@ -344,9 +561,11 @@ export class TerminalCanvasRenderer {
     selection: BufferRange | null,
     rowMatches: { startCol: number; endCol: number; active: boolean }[] | undefined,
     hoveredUrl: UrlMatch | null,
+    clipGlyphs: boolean,
   ) {
     const ctx = this.ctx;
     const { width: cellW, height: cellH, baseline } = this.metrics;
+    const dpr = this.dpr;
     const y = visRow * cellH;
 
     // Clear full row with theme background.
@@ -364,12 +583,23 @@ export class TerminalCanvasRenderer {
       selEnd = absRow === selection.end.absRow ? selection.end.col : cols - 1;
     }
 
-    // Pass 1: cell backgrounds.
+    // Pass 1: coalesced cell background runs.
+    let runRgb = -1;
+    let runStart = 0;
+    let runEnd = 0;
+    let paintedRgb = -1;
+    const flushBgRun = () => {
+      if (runRgb < 0) return;
+      if (runRgb !== paintedRgb) {
+        ctx.fillStyle = `rgb(${(runRgb >> 16) & 255},${(runRgb >> 8) & 255},${runRgb & 255})`;
+        paintedRgb = runRgb;
+      }
+      ctx.fillRect(runStart * cellW, y, (runEnd - runStart) * cellW, cellH);
+      runRgb = -1;
+    };
     for (let col = 0; col < limit; col++) {
       const cell = cells[offset + col];
       if (!cell || cell.width === 0) continue;
-      const x = col * cellW;
-      const w = cellW * cell.width;
 
       const inverse = (cell.flags & CellFlags.INVERSE) !== 0;
       const bgR = inverse ? cell.fg_r : cell.bg_r;
@@ -377,10 +607,20 @@ export class TerminalCanvasRenderer {
       const bgB = inverse ? cell.fg_b : cell.bg_b;
 
       if (inverse || bgR !== defaultBg.r || bgG !== defaultBg.g || bgB !== defaultBg.b) {
-        ctx.fillStyle = `rgb(${bgR},${bgG},${bgB})`;
-        ctx.fillRect(x, y, w, cellH);
+        const rgb = (bgR << 16) | (bgG << 8) | bgB;
+        if (rgb === runRgb && col === runEnd) {
+          runEnd = col + cell.width;
+        } else {
+          flushBgRun();
+          runRgb = rgb;
+          runStart = col;
+          runEnd = col + cell.width;
+        }
+      } else {
+        flushBgRun();
       }
     }
+    flushBgRun();
 
     // Pass 1b: search highlights.
     if (rowMatches) {
@@ -398,8 +638,9 @@ export class TerminalCanvasRenderer {
       ctx.fillRect(selStart * cellW, y, (selEnd - selStart + 1) * cellW, cellH);
     }
 
-    // Pass 2: glyphs & decorations.
-    let currentFont = "";
+    // Pass 2: glyphs (via sprite atlas for single-codepoint cells) & decorations.
+    let paint = -1;
+    const decoHeight = Math.max(1, Math.round(dpr) / dpr);
     for (let col = 0; col < limit; col++) {
       const cell = cells[offset + col];
       if (!cell || cell.width === 0 || (cell.flags & CellFlags.INVISIBLE) !== 0) continue;
@@ -418,42 +659,100 @@ export class TerminalCanvasRenderer {
       const fgG = inverse ? cell.bg_g : cell.fg_g;
       const fgB = inverse ? cell.bg_b : cell.fg_b;
       const faint = (cell.flags & CellFlags.FAINT) !== 0;
+      const rgb = (fgR << 16) | (fgG << 8) | fgB;
 
-      ctx.fillStyle = `rgb(${fgR},${fgG},${fgB})`;
       if (faint) ctx.globalAlpha = 0.55;
 
       if (hasGlyph) {
-        const paintedGeometric =
-          cell.grapheme_len === 0 &&
-          paintTerminalGlyph(ctx, cell.codepoint, x, y, w, cellH, this.dpr);
+        const isGeometric = cell.grapheme_len === 0 && cell.codepoint >= 0x2500 && cell.codepoint <= 0x2595;
+        let paintedGeometric = false;
+        if (isGeometric) {
+          if (rgb !== paint) {
+            ctx.fillStyle = `rgb(${fgR},${fgG},${fgB})`;
+            paint = rgb;
+          }
+          paintedGeometric = paintTerminalGlyph(ctx, cell.codepoint, x, y, w, cellH, dpr);
+        }
 
         if (!paintedGeometric) {
-          const italic = (cell.flags & CellFlags.ITALIC) !== 0 ? "italic " : "";
-          const bold = (cell.flags & CellFlags.BOLD) !== 0 ? "700 " : "400 ";
-          const font = `${italic}${bold}${this.fontSize}px ${this.fontFamily}`;
-          if (font !== currentFont) {
-            ctx.font = font;
-            currentFont = font;
+          const fontFlags = cell.flags & (CellFlags.ITALIC | CellFlags.BOLD);
+          const font = this.fonts[fontFlags];
+          const slot =
+            cell.grapheme_len === 0
+              ? this.atlas.get(
+                  cell.codepoint,
+                  cell.width,
+                  fontFlags,
+                  font,
+                  rgb,
+                  fgR,
+                  fgG,
+                  fgB,
+                  this.metrics,
+                  dpr,
+                )
+              : null;
+
+          if (slot) {
+            ctx.drawImage(
+              this.atlas.canvas,
+              slot.x,
+              slot.y,
+              slot.w,
+              slot.h,
+              x - slot.padLeft / dpr,
+              y,
+              slot.w / dpr,
+              slot.h / dpr,
+            );
+          } else {
+            if (rgb !== paint) {
+              ctx.fillStyle = `rgb(${fgR},${fgG},${fgB})`;
+              paint = rgb;
+            }
+            if (fontFlags !== this.activeFontFlags) {
+              ctx.font = font;
+              this.activeFontFlags = fontFlags;
+            }
+            const text =
+              cell.grapheme_len > 0
+                ? absRow < scrollback
+                  ? term.getScrollbackGraphemeString(absRow, col)
+                  : term.getGraphemeString(absRow - scrollback, col)
+                : String.fromCodePoint(cell.codepoint);
+            if (clipGlyphs) {
+              ctx.save();
+              ctx.beginPath();
+              ctx.rect(0, y, cols * cellW, cellH);
+              ctx.clip();
+              ctx.fillText(text, x, y + baseline);
+              ctx.restore();
+            } else {
+              ctx.fillText(text, x, y + baseline);
+            }
           }
-          const text =
-            cell.grapheme_len > 0
-              ? absRow < scrollback
-                ? term.getScrollbackGraphemeString(absRow, col)
-                : term.getGraphemeString(absRow - scrollback, col)
-              : String.fromCodePoint(cell.codepoint);
-          ctx.fillText(text, x, y + baseline);
         }
       }
 
       if (hasUnderline || isHoveredLink) {
-        const lineY = Math.round((y + baseline + 2) * this.dpr) / this.dpr;
-        ctx.fillStyle = isHoveredLink ? this.colors.link : `rgb(${fgR},${fgG},${fgB})`;
-        ctx.fillRect(x, lineY, w, Math.max(1, Math.round(this.dpr) / this.dpr));
+        const lineY = Math.round((y + baseline + 2) * dpr) / dpr;
+        if (isHoveredLink) {
+          ctx.fillStyle = this.colors.link;
+          paint = -1;
+        } else if (rgb !== paint) {
+          ctx.fillStyle = `rgb(${fgR},${fgG},${fgB})`;
+          paint = rgb;
+        }
+        ctx.fillRect(x, lineY, w, decoHeight);
       }
 
       if (hasStrike) {
-        const lineY = Math.round((y + cellH * 0.5) * this.dpr) / this.dpr;
-        ctx.fillRect(x, lineY, w, Math.max(1, Math.round(this.dpr) / this.dpr));
+        const lineY = Math.round((y + cellH * 0.5) * dpr) / dpr;
+        if (rgb !== paint) {
+          ctx.fillStyle = `rgb(${fgR},${fgG},${fgB})`;
+          paint = rgb;
+        }
+        ctx.fillRect(x, lineY, w, decoHeight);
       }
 
       if (faint) ctx.globalAlpha = 1;

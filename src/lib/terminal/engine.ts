@@ -18,7 +18,7 @@ import {
 } from "./buffer";
 import {
   cellAt, encodeKeyEvent, gridFor, MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT, mouseReport,
-  pastedImage, captureViewport, restoreViewport, WheelAccumulator, wheelReport,
+  Osc8Stripper, pastedImage, captureViewport, restoreViewport, WheelAccumulator, wheelReport,
   WHEEL_DOWN, WHEEL_UP, wrapBracketedPaste, type Grid,
 } from "./protocol";
 import { TerminalCanvasRenderer } from "./renderer";
@@ -30,6 +30,7 @@ import { IS_MAC } from "../platform";
 
 const RAW_HISTORY_LIMIT = 512 * 1024;
 const RAW_HISTORY_HEADROOM = 64 * 1024;
+const PASSIVE_SCROLL_EMIT_MS = 150;
 
 let ghosttyPromise: Promise<Ghostty> | undefined;
 
@@ -77,13 +78,51 @@ export interface TerminalEngineCallbacks {
   onContextMenu?: (request: ContextMenuRequest) => void;
 }
 
-function appendBoundedHistory(current: string, chunk: string): string {
-  const combined = current + chunk;
-  if (combined.length <= RAW_HISTORY_LIMIT) return combined;
-  let cut = combined.length - RAW_HISTORY_LIMIT + RAW_HISTORY_HEADROOM;
-  const nl = combined.indexOf("\n", cut);
-  if (nl !== -1 && nl < cut + 8192) cut = nl + 1;
-  return combined.slice(cut);
+/** O(1)-amortized bounded ring of raw VT chunks for in-place theme replays. */
+class HistoryRing {
+  private chunks: string[] = [];
+  private length = 0;
+
+  append(chunk: string) {
+    if (!chunk) return;
+    this.chunks.push(chunk);
+    this.length += chunk.length;
+    if (this.length <= RAW_HISTORY_LIMIT) return;
+
+    const target = RAW_HISTORY_LIMIT - RAW_HISTORY_HEADROOM;
+    let drop = 0;
+    while (drop < this.chunks.length && this.length - this.chunks[drop].length >= target) {
+      this.length -= this.chunks[drop].length;
+      drop += 1;
+    }
+    if (drop > 0) this.chunks.splice(0, drop);
+
+    if (this.length > RAW_HISTORY_LIMIT && this.chunks.length > 0) {
+      const head = this.chunks[0];
+      let cut = Math.min(head.length, this.length - target);
+      const nl = head.indexOf("\n", cut);
+      if (nl !== -1 && nl < cut + 8192) cut = nl + 1;
+      this.chunks[0] = head.slice(cut);
+      this.length -= cut;
+    }
+  }
+
+  clear() {
+    this.chunks.length = 0;
+    this.length = 0;
+  }
+
+  isEmpty(): boolean {
+    return this.length === 0;
+  }
+
+  toString(): string {
+    if (this.chunks.length === 0) return "";
+    if (this.chunks.length === 1) return this.chunks[0];
+    const joined = this.chunks.join("");
+    this.chunks = [joined];
+    return joined;
+  }
 }
 
 export class TerminalEngine {
@@ -105,7 +144,9 @@ export class TerminalEngine {
   private focused = false;
   private viewportY = 0;
   private hasUnreadBelow = false;
-  private rawHistory = "";
+  private readonly rawHistory = new HistoryRing();
+  private readonly osc8 = new Osc8Stripper();
+  private pendingWrites: string[] = [];
 
   // Rendering & observation
   private renderFrame = 0;
@@ -114,6 +155,11 @@ export class TerminalEngine {
   private fitFrame = 0;
   private dprMedia: MediaQueryList | null = null;
   private slot: HTMLElement | null = null;
+  private lastEmittedScroll: ScrollState | null = null;
+  private lastScrollEmitAt = 0;
+  private scrollEmitTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastImeKey = "";
+  private lastMeasureFont = "";
 
   // Selection & mouse state
   private selection: BufferRange | null = null;
@@ -218,6 +264,7 @@ export class TerminalEngine {
   }
 
   getScrollState(): ScrollState {
+    this.flushPendingWrites();
     return {
       viewportY: this.viewportY,
       scrollbackLength: this.wasmTerm.getScrollbackLength(),
@@ -233,6 +280,7 @@ export class TerminalEngine {
 
   getSelection(): string {
     if (!this.selection) return "";
+    this.flushPendingWrites();
     return extractSelectionText(this.wasmTerm, this.selection.start, this.selection.end);
   }
 
@@ -263,15 +311,19 @@ export class TerminalEngine {
     this.resizeObserver.observe(slot);
 
     this.watchDpr();
+    this.lastImeKey = "";
     this.positionIme();
     this.scheduleRender(true);
-    this.emitScroll();
+    this.emitScroll(true);
   }
 
   unmount() {
+    this.flushPendingWrites();
     this.mounted = false;
     this.slot = null;
     this.stopAutoScroll();
+    clearTimeout(this.scrollEmitTimer);
+    this.scrollEmitTimer = undefined;
     cancelAnimationFrame(this.renderFrame);
     this.renderFrame = 0;
     cancelAnimationFrame(this.fitFrame);
@@ -288,8 +340,11 @@ export class TerminalEngine {
     this.unmount();
     clearTimeout(this.commitTimer);
     clearTimeout(this.searchRefreshTimer);
+    clearTimeout(this.scrollEmitTimer);
     for (const off of this.cleanups) off();
     this.cleanups.length = 0;
+    this.pendingWrites.length = 0;
+    this.rawHistory.clear();
     this.wasmTerm.free();
   }
 
@@ -334,14 +389,16 @@ export class TerminalEngine {
     if (!next) return null;
 
     if (next.cols !== this.grid.cols || next.rows !== this.grid.rows) {
+      this.flushPendingWrites();
       this.grid = next;
       this.wasmTerm.resize(next.cols, next.rows);
       this.viewportY = Math.min(this.viewportY, this.wasmTerm.getScrollbackLength());
       this.selection = null;
       this.hoveredUrl = null;
+      this.lastImeKey = "";
       this.positionIme();
       this.scheduleRender(true);
-      this.emitScroll();
+      this.emitScroll(true);
       this.callbacks.onResize?.(next);
       if (this.searchQuery) this.scheduleSearchRefresh();
     } else if (immediate) {
@@ -357,6 +414,7 @@ export class TerminalEngine {
     this.renderer.setFont(size, TERMINAL_FONT);
     this.selection = null;
     this.hoveredUrl = null;
+    this.lastImeKey = "";
     if (this.mounted) {
       this.fit(true);
       this.positionIme();
@@ -367,6 +425,7 @@ export class TerminalEngine {
   /** Switch light/dark theme in place without dropping history or scroll position. */
   setTheme(scheme: ColorScheme) {
     if (this.disposed || scheme === this.scheme) return;
+    this.flushPendingWrites();
     this.scheme = scheme;
     this.colors = terminalColors(scheme);
     this.renderer.setColors(this.colors);
@@ -374,8 +433,8 @@ export class TerminalEngine {
     const prevOffset = this.viewportY;
     const prevTerm = this.wasmTerm;
     const nextTerm = this.createWasmTerminal(this.grid.cols, this.grid.rows);
-    if (this.rawHistory) {
-      nextTerm.write(this.rawHistory);
+    if (!this.rawHistory.isEmpty()) {
+      nextTerm.write(this.rawHistory.toString());
       while (nextTerm.readResponse() !== null) {
         // Suppress responses during local theme replay.
       }
@@ -386,7 +445,7 @@ export class TerminalEngine {
     this.viewportY = Math.min(prevOffset, this.wasmTerm.getScrollbackLength());
     this.selection = null;
     this.scheduleRender(true);
-    this.emitScroll();
+    this.emitScroll(true);
     if (this.searchQuery) this.runSearch();
   }
 
@@ -399,37 +458,78 @@ export class TerminalEngine {
     if (this.disposed) return;
     const { suppressResponses = false, reset = false, preserveViewport = true } = options;
 
+    // Coalesce burst live output chunks into one WASM write per animation frame.
+    if (this.mounted && !reset && !suppressResponses && preserveViewport) {
+      if (!data) return;
+      this.pendingWrites.push(data);
+      this.scheduleRender(false);
+      return;
+    }
+
+    if (reset) {
+      this.pendingWrites.length = 0;
+    } else {
+      this.flushPendingWrites();
+    }
+    this.applyWrite(data, suppressResponses, reset, preserveViewport);
+    this.scheduleRender(reset);
+  }
+
+  private flushPendingWrites() {
+    if (this.pendingWrites.length === 0 || this.disposed) return;
+    const merged = this.pendingWrites.length === 1
+      ? this.pendingWrites[0]
+      : this.pendingWrites.join("");
+    this.pendingWrites.length = 0;
+    this.applyWrite(merged, false, false, true);
+  }
+
+  private readScrollbackLineText(index: number): string | undefined {
+    const cells = this.wasmTerm.getScrollbackLine(index);
+    if (!cells) return undefined;
+    let text = "";
+    let lastNonSpace = 0;
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells[i];
+      if (!cell || cell.width === 0) continue;
+      const cp = cell.codepoint || 32;
+      text += String.fromCodePoint(cp);
+      if (cp !== 32) lastNonSpace = text.length;
+    }
+    return text.slice(0, lastNonSpace);
+  }
+
+  private applyWrite(
+    data: string,
+    suppressResponses: boolean,
+    reset: boolean,
+    preserveViewport: boolean,
+  ) {
     const beforeLen = this.wasmTerm.getScrollbackLength();
     const wasScrolledUp = this.viewportY > 0;
-    const lineReader = (index: number) => {
-      const cells = this.wasmTerm.getScrollbackLine(index);
-      if (!cells) return undefined;
-      return cells
-        .filter((cell) => cell.width !== 0)
-        .map((cell) => String.fromCodePoint(cell.codepoint || 32))
-        .join("")
-        .trimEnd();
-    };
+    const lineReader = (index: number) => this.readScrollbackLineText(index);
     const anchor =
       preserveViewport && !reset && wasScrolledUp && !this.wasmTerm.isAlternateScreen()
         ? captureViewport(beforeLen, this.viewportY, lineReader)
         : null;
 
     if (reset) {
+      this.osc8.reset();
       this.wasmTerm.write("\x1bc");
       while (this.wasmTerm.readResponse() !== null) {
         // Clear reset responses.
       }
-      this.rawHistory = "";
+      this.rawHistory.clear();
       this.selection = null;
       this.hoveredUrl = null;
       this.hasUnreadBelow = false;
       if (!preserveViewport) this.viewportY = 0;
     }
 
-    if (data) {
-      this.wasmTerm.write(data);
-      this.rawHistory = appendBoundedHistory(this.rawHistory, data);
+    const clean = data ? this.osc8.push(data) : "";
+    if (clean) {
+      this.wasmTerm.write(clean);
+      this.rawHistory.append(clean);
     }
 
     // Drain terminal responses (DSR cursor position, DA, etc.).
@@ -460,26 +560,25 @@ export class TerminalEngine {
       this.hasUnreadBelow = false;
     }
 
-    this.positionIme();
-    this.scheduleRender(reset || this.viewportY > 0);
-    this.emitScroll();
     if (this.searchQuery) this.scheduleSearchRefresh();
   }
 
   /** Clear screen and local scrollback (like Cmd+K in native terminals). */
   clearLocal() {
     if (this.disposed) return;
+    this.pendingWrites.length = 0;
+    this.osc8.reset();
     this.wasmTerm.write("\x1b[2J\x1b[3J\x1b[H");
     while (this.wasmTerm.readResponse() !== null) {
       // Ignore responses.
     }
-    this.rawHistory = "";
+    this.rawHistory.clear();
     this.viewportY = 0;
     this.hasUnreadBelow = false;
     this.selection = null;
     this.hoveredUrl = null;
     this.scheduleRender(true);
-    this.emitScroll();
+    this.emitScroll(true);
     if (this.searchQuery) this.runSearch();
   }
 
@@ -487,11 +586,12 @@ export class TerminalEngine {
 
   scrollTo(viewportY: number) {
     if (this.disposed) return;
+    this.flushPendingWrites();
     if (this.wasmTerm.isAlternateScreen()) {
       if (this.viewportY !== 0) {
         this.viewportY = 0;
         this.hasUnreadBelow = false;
-        this.emitScroll();
+        this.emitScroll(true);
         this.scheduleRender(true);
       }
       return;
@@ -502,9 +602,8 @@ export class TerminalEngine {
     this.viewportY = clamped;
     if (clamped === 0) this.hasUnreadBelow = false;
     this.hoveredUrl = null;
-    this.positionIme();
-    this.scheduleRender(true);
-    this.emitScroll();
+    this.scheduleRender();
+    this.emitScroll(true);
   }
 
   /** Scroll by signed lines (negative = older history, positive = toward bottom). */
@@ -517,17 +616,65 @@ export class TerminalEngine {
   }
 
   scrollToTop() {
+    this.flushPendingWrites();
     this.scrollTo(this.wasmTerm.getScrollbackLength());
   }
 
-  private emitScroll() {
-    this.callbacks.onScroll?.(this.getScrollState());
+  private emitScroll(immediate = false) {
+    const next: ScrollState = {
+      viewportY: this.viewportY,
+      scrollbackLength: this.wasmTerm.getScrollbackLength(),
+      rows: this.grid.rows,
+      isAltScreen: this.wasmTerm.isAlternateScreen(),
+      hasUnreadBelow: this.hasUnreadBelow,
+    };
+    const prev = this.lastEmittedScroll;
+    if (
+      prev &&
+      prev.viewportY === next.viewportY &&
+      prev.scrollbackLength === next.scrollbackLength &&
+      prev.rows === next.rows &&
+      prev.isAltScreen === next.isAltScreen &&
+      prev.hasUnreadBelow === next.hasUnreadBelow
+    ) {
+      return;
+    }
+
+    const passiveScrollbackGrowth =
+      !immediate &&
+      prev !== null &&
+      prev.viewportY === 0 &&
+      next.viewportY === 0 &&
+      prev.rows === next.rows &&
+      prev.isAltScreen === next.isAltScreen &&
+      prev.hasUnreadBelow === next.hasUnreadBelow &&
+      (prev.scrollbackLength > 0) === (next.scrollbackLength > 0);
+
+    if (passiveScrollbackGrowth) {
+      const elapsed = performance.now() - this.lastScrollEmitAt;
+      if (elapsed < PASSIVE_SCROLL_EMIT_MS) {
+        if (!this.scrollEmitTimer) {
+          this.scrollEmitTimer = setTimeout(() => {
+            this.scrollEmitTimer = undefined;
+            if (!this.disposed && this.mounted) this.emitScroll(true);
+          }, PASSIVE_SCROLL_EMIT_MS - elapsed);
+        }
+        return;
+      }
+    }
+
+    clearTimeout(this.scrollEmitTimer);
+    this.scrollEmitTimer = undefined;
+    this.lastEmittedScroll = next;
+    this.lastScrollEmitAt = performance.now();
+    this.callbacks.onScroll?.(next);
   }
 
   // ---------------------------------------------------------------- selection
 
   selectAll() {
     if (this.disposed) return;
+    this.flushPendingWrites();
     const total = this.wasmTerm.getScrollbackLength() + this.grid.rows;
     if (total <= 0) return;
     this.selection = {
@@ -597,6 +744,7 @@ export class TerminalEngine {
   }
 
   private runSearch(jumpToNearest = false) {
+    this.flushPendingWrites();
     if (!this.searchQuery) {
       this.searchMatches = [];
       this.activeMatchIndex = -1;
@@ -646,6 +794,7 @@ export class TerminalEngine {
     this.renderFrame = requestAnimationFrame(() => {
       this.renderFrame = 0;
       if (this.disposed || !this.mounted) return;
+      this.flushPendingWrites();
       const full = this.forceFullRender;
       this.forceFullRender = false;
       this.renderer.render(
@@ -660,6 +809,8 @@ export class TerminalEngine {
         },
         full,
       );
+      if (this.focused) this.positionIme();
+      this.emitScroll(false);
     });
   }
 
@@ -673,21 +824,31 @@ export class TerminalEngine {
     const visRow = cursor.y + this.viewportY;
     const row = Math.max(0, Math.min(this.grid.rows - 1, visRow));
     const font = `400 ${this.fontSize}px ${TERMINAL_FONT}`;
-    if (this.measureCtx) this.measureCtx.font = font;
-    const preeditWidth = this.composing
-      ? (this.measureCtx?.measureText(this.preedit).width ?? this.preedit.length * metrics.width)
-      : 0;
-    const width = Math.min(
-      Math.max(metrics.width, (this.grid.cols - col) * metrics.width),
-      Math.max(metrics.width, Math.ceil(preeditWidth + metrics.width)),
-    );
+    let width = metrics.width;
+    if (this.composing) {
+      if (this.measureCtx && this.lastMeasureFont !== font) {
+        this.measureCtx.font = font;
+        this.lastMeasureFont = font;
+      }
+      const preeditWidth =
+        this.measureCtx?.measureText(this.preedit).width ?? this.preedit.length * metrics.width;
+      width = Math.min(
+        Math.max(metrics.width, (this.grid.cols - col) * metrics.width),
+        Math.max(metrics.width, Math.ceil(preeditWidth + metrics.width)),
+      );
+    }
 
-    this.textarea.style.left = `${col * metrics.width}px`;
-    this.textarea.style.top = `${row * metrics.height}px`;
-    this.textarea.style.width = `${width}px`;
-    this.textarea.style.height = `${metrics.height}px`;
-    this.textarea.style.font = font;
-    this.textarea.style.lineHeight = `${metrics.height}px`;
+    const key = `${col}:${row}:${width}:${metrics.height}:${this.fontSize}:${this.composing ? 1 : 0}`;
+    if (key === this.lastImeKey) return;
+    this.lastImeKey = key;
+
+    const style = this.textarea.style;
+    style.left = `${col * metrics.width}px`;
+    style.top = `${row * metrics.height}px`;
+    style.width = `${width}px`;
+    style.height = `${metrics.height}px`;
+    style.font = font;
+    style.lineHeight = `${metrics.height}px`;
   }
 
   // ------------------------------------------------------------------- events
@@ -1088,8 +1249,13 @@ export class TerminalEngine {
 
       const linkModifier = IS_MAC ? event.metaKey : event.ctrlKey;
       this.modifierHeld = linkModifier;
-      const pos = this.pointerToBufferPos(event.clientX, event.clientY);
-      const nextUrl = linkModifier ? findUrlAt(this.wasmTerm, pos.absRow, pos.col) : null;
+      if (!linkModifier && !this.hoveredUrl) return;
+      const nextUrl = linkModifier
+        ? (() => {
+            const pos = this.pointerToBufferPos(event.clientX, event.clientY);
+            return findUrlAt(this.wasmTerm, pos.absRow, pos.col);
+          })()
+        : null;
       const changed =
         nextUrl?.url !== this.hoveredUrl?.url ||
         nextUrl?.absRow !== this.hoveredUrl?.absRow ||

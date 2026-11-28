@@ -30,7 +30,7 @@ function MatchPill({ matches }: { matches: boolean | null }) {
   );
 }
 
-/** One region setting: label and match state, then the exit's value and its fix, with the control on the right. */
+/** One region setting: label and match state on the left, its control aligned on the right. */
 function RegionRow({ label, matches, children, footer }: {
   label: string;
   matches: boolean | null;
@@ -39,11 +39,18 @@ function RegionRow({ label, matches, children, footer }: {
 }) {
   return (
     <div className="set-row">
-      <div className="grid min-w-0 flex-[1_1_240px] gap-1">
-        <span className="flex flex-wrap items-center gap-2 text-md font-medium">{label}<MatchPill matches={matches} /></span>
-        {footer && <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">{footer}</div>}
+      <div className="set-row-copy gap-1">
+        <span className="flex flex-wrap items-center gap-2 text-md font-medium">
+          {label}
+          <MatchPill matches={matches} />
+        </span>
+        {footer && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-relaxed text-muted">
+            {footer}
+          </div>
+        )}
       </div>
-      <div className="w-56 max-w-full">{children}</div>
+      <div className="set-row-control flex w-52 max-w-full items-center justify-end">{children}</div>
     </div>
   );
 }
@@ -55,6 +62,7 @@ function RegionRow({ label, matches, children, footer }: {
  * edits apply together, in one guest operation.
  */
 function Region() {
+  const { t } = useI18n();
   const env = useApp((state) => state.environment);
   const network = useApp((state) => state.network);
   const running = useApp((state) =>
@@ -101,7 +109,7 @@ function Region() {
 
   async function apply() {
     if (!next) return;
-    const record = await runOperation(environmentIpc.apply(next), "Region applied");
+    const record = await runOperation(environmentIpc.apply(next), t("network.regionApplied"));
     if (record?.state === "succeeded") {
       setEdits({});
       void syncClock(true);
@@ -110,95 +118,97 @@ function Region() {
     }
   }
 
-  const exitValue = (value: string) => <span className="mono text-fg">{value}</span>;
+  const exitValue = (value: string) => <code className="rounded bg-hover px-1.5 py-px font-mono text-[11.5px] text-fg">{value}</code>;
   return (
     <div className="net-section">
       <header className="net-section-head">
         <div>
-          <h3>VM region</h3>
-          <p>Keeps Ubuntu’s time zone and language aligned with your verified exit location.</p>
+          <h3>{t("network.vmRegion")}</h3>
+          <p>{t("network.vmRegionSubtitle")}</p>
         </div>
       </header>
       <SettingGroup>
-      <SettingRow label="Follow exit" hint="Set the machine's time zone to the verified exit's during each network check.">
-        <Switch
-          size="sm"
-          aria-label="Follow exit"
-          checked={follow}
-          disabled={toggling || !network.available}
-          onChange={(event) => void setFollow(event.currentTarget.checked)}
-        />
-      </SettingRow>
+        <SettingRow label={t("network.followExit")} hint={t("network.followExitHint")}>
+          <Switch
+            size="sm"
+            aria-label={t("network.followExit")}
+            checked={follow}
+            disabled={toggling || !network.available}
+            onChange={(event) => void setFollow(event.currentTarget.checked)}
+          />
+        </SettingRow>
         <RegionRow
-          label="Time zone"
+          label={t("network.timeZone")}
           matches={match.zoneMatches}
           footer={follow ? (
             match.zoneMatches === false && match.exitZone ? (
               <>
-                <span className="grow">Changes to {exitValue(match.exitZone)} at the next check</span>
-                <Button size="compact-xs" variant="light" onClick={() => void attempt(networkIpc.verify())}>Check now</Button>
+                <span>{t("network.changesAtNextCheck", { value: match.exitZone })}</span>
+                <Button size="compact-xs" variant="light" onClick={() => void attempt(networkIpc.verify())}>{t("network.checkNow")}</Button>
               </>
-            ) : <span>Follows the exit automatically</span>
+            ) : <span>{t("network.followsExitAuto")}</span>
           ) : match.zoneMatches === false && match.exitZone ? (
             <>
-              <span className="grow">Exit uses {exitValue(match.exitZone)}</span>
-              <Button size="compact-xs" variant="light" onClick={() => setEdits((old) => ({ ...old, timezone: match.exitZone ?? old.timezone }))}>Use</Button>
+              <span>{t("network.exitUses", { value: "" }).trimEnd()} {exitValue(match.exitZone)}</span>
+              <Button size="compact-xs" variant="light" onClick={() => setEdits((old) => ({ ...old, timezone: match.exitZone ?? old.timezone }))}>{t("network.useExitValue")}</Button>
             </>
           ) : null}
         >
           {follow ? (
-            <div className="flex h-[30px] items-center justify-end truncate text-md font-medium" title={current.timezone}>{current.timezone}</div>
+            <span className="truncate font-mono text-[12.5px] font-medium text-fg" title={current.timezone}>{current.timezone}</span>
           ) : (
             <Select
               size="xs"
+              className="w-full"
               searchable
               data={review?.timezones ?? [next.timezone]}
               value={next.timezone}
               onChange={(value) => value && setEdits((old) => ({ ...old, timezone: value }))}
               disabled={running}
               limit={200}
-              aria-label="Time zone"
+              aria-label={t("network.timeZone")}
             />
           )}
         </RegionRow>
         <RegionRow
-          label="Language"
+          label={t("network.language")}
           matches={match.localeMatches}
           footer={match.localeMatches === false && match.exitLocale ? (
             exitLanguage ? (
               <>
-                <span className="grow">Exit uses {exitValue(localeLabel(match.exitLocale))}</span>
-                <Button size="compact-xs" variant="light" onClick={() => setEdits((old) => ({ ...old, language: exitLanguage }))}>Use</Button>
+                <span>{t("network.exitUses", { value: "" }).trimEnd()} {exitValue(localeLabel(match.exitLocale))}</span>
+                <Button size="compact-xs" variant="light" onClick={() => setEdits((old) => ({ ...old, language: exitLanguage }))}>{t("network.useExitValue")}</Button>
               </>
             ) : (
-              <span>Exit uses {exitValue(localeLabel(match.exitLocale))} · {languageField?.reason ?? "language packs arrive with the base tools"}</span>
+              <span>{t("network.exitUses", { value: "" }).trimEnd()} {exitValue(localeLabel(match.exitLocale))} · {languageField?.reason ?? t("network.languagePackHint")}</span>
             )
           ) : dirty && languageField?.reason ? <span>{languageField.reason}</span> : null}
         >
           <Select
             size="xs"
+            className="w-full"
             searchable
             data={review?.languages.length ? review.languages : [next.language]}
             value={next.language}
             onChange={(value) => value && setEdits((old) => ({ ...old, language: value }))}
             disabled={running || languageField?.enabled === false}
             limit={200}
-            aria-label="Language"
+            aria-label={t("network.language")}
           />
         </RegionRow>
-      {(dirty || running) && (
-        <div className="flex flex-wrap items-center gap-2 rounded-b-[var(--card-radius)] border-t border-line bg-hover/60 px-4 py-2.5">
-          <span className={`grow text-sm ${blocked ? "text-bad" : "text-muted"}`}>
-            {blocked ?? [
-              next.timezone !== current.timezone ? `Time zone → ${next.timezone}` : null,
-              next.language !== current.language ? `Language → ${localeLabel(next.language)}` : null,
-            ].filter(Boolean).join(" · ")}
-          </span>
-          <Button size="xs" variant="default" disabled={running} onClick={() => setEdits({})}>Discard</Button>
-          <Button size="xs" loading={running} disabled={blocked != null || !dirty} onClick={() => void apply()}>Apply</Button>
-        </div>
-      )}
-    </SettingGroup>
+        {(dirty || running) && (
+          <div className="flex flex-wrap items-center gap-2 rounded-b-[var(--card-radius)] border-t border-line bg-hover/60 px-4 py-2.5">
+            <span className={`grow text-sm ${blocked ? "text-bad" : "text-muted"}`}>
+              {blocked ?? [
+                next.timezone !== current.timezone ? `${t("network.timeZone")} → ${next.timezone}` : null,
+                next.language !== current.language ? `${t("network.language")} → ${localeLabel(next.language)}` : null,
+              ].filter(Boolean).join(" · ")}
+            </span>
+            <Button size="xs" variant="default" disabled={running} onClick={() => setEdits({})}>{t("common.discard")}</Button>
+            <Button size="xs" loading={running} disabled={blocked != null || !dirty} onClick={() => void apply()}>{t("common.apply")}</Button>
+          </div>
+        )}
+      </SettingGroup>
     </div>
   );
 }

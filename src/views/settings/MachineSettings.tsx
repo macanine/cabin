@@ -131,9 +131,12 @@ export function MachineSettings() {
       </section>
 
       {machine.error && <RecoveryPanel compact message={machine.error} />}
-      <nav className="mb-4 flex gap-[18px] border-b border-line" aria-label={t("machine.title")}>
+      <nav className="mb-4 flex flex-wrap gap-x-[18px] border-b border-line" aria-label={t("machine.title")}>
         {PAGES.map(({ value, labelKey }) => (
-          <button key={value} type="button" className="agents-nav-button" aria-current={page === value ? "page" : undefined} onClick={() => setChosen(value)}>{t(labelKey)}</button>
+          <button key={value} type="button" aria-current={page === value ? "page" : undefined} onClick={() => setChosen(value)}
+            className="press -mb-px cursor-pointer appearance-none border-0 border-b-2 border-solid border-transparent bg-transparent px-0.5 py-[9px] text-md font-semibold text-muted hover:text-text aria-[current=page]:border-accent aria-[current=page]:text-text">
+            {t(labelKey)}
+          </button>
         ))}
       </nav>
       {page === "resources" && <>

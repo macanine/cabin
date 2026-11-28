@@ -18,6 +18,7 @@ import { formatDateTime } from "../lib/time";
 import { useNow } from "../lib/useNow";
 import { LogView } from "./LogView";
 import { BootDetails, BootStep, Elapsed, Ticker } from "./Boot";
+import { CabinWordmark } from "./CabinMark";
 import { MachineStage } from "./MachineStage";
 import { useAutoOpen } from "./motion";
 
@@ -123,6 +124,7 @@ export function StartStage({ report, card, recovery, actions }: {
   const subtitle = failed ? `Stopped at “${current?.title ?? "startup"}”.` : running ? current?.title ?? "Getting ready" : "Opening your workspace";
   return (
     <MachineStage
+      eyebrow={<CabinWordmark size={18} animated={running} />}
       title={title}
       lead={subtitle}
       lede={<Elapsed title={`Began ${formatDateTime(report.startedAt)}`}>{formatDuration(reportElapsed(report, now))}</Elapsed>}

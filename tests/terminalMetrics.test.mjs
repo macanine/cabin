@@ -3,9 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Ghostty } from "ghostty-web";
 import {
-  captureViewport, encodeKeyEvent, mouseReport, restoreViewport,
+  captureViewport, encodeKeyEvent, mouseReport, Osc8Stripper, restoreViewport,
 } from "../src/lib/terminal/protocol.ts";
-import { paintTerminalGlyph } from "../src/lib/terminal/renderer.ts";
+import { atlasSlotBounds, paintTerminalGlyph } from "../src/lib/terminal/renderer.ts";
 import {
   extractSelectionText, findLineBounds, findUrlAt, findWordBounds, searchTerminalBuffer,
 } from "../src/lib/terminal/buffer.ts";
@@ -38,6 +38,35 @@ test("TUI rules, rounded corners, and shades join cleanly at fractional scale", 
   assert.equal(paintTerminalGlyph(ctx, 0x2592, 0, 0, 9, 17, scale), true);
   assert.equal(ctx.globalAlpha, 1);
   assert.equal(paintTerminalGlyph(ctx, 0x4f60, 0, 0, 9, 17, scale), false);
+});
+
+test("atlasSlotBounds expands horizontally for wide fallback symbols and left overhang without changing row height", () => {
+  const metrics = { width: 8.5, height: 18, baseline: 14 };
+  const dpr = 2;
+
+  const ascii = atlasSlotBounds(metrics, 1, false, dpr);
+  assert.equal(ascii.padLeft, 0);
+  assert.equal(ascii.h, 36);
+
+  // A 1-cell fallback circle (e.g. ● / ○ from a CJK or symbol font) wider than 1.15 cells must not clip.
+  const wideCircle = atlasSlotBounds(metrics, 1, false, dpr, {
+    width: 14,
+    actualBoundingBoxLeft: -0.5,
+    actualBoundingBoxRight: 13.5,
+  });
+  assert.equal(wideCircle.padLeft, 0);
+  assert.equal(wideCircle.h, ascii.h);
+  assert.ok(wideCircle.w >= Math.ceil(14 * dpr) + 1, `expected slot width >= 29, got ${wideCircle.w}`);
+
+  // Glyphs with negative left sidebearing (actualBoundingBoxLeft > 0) reserve left padding as well.
+  const overhanging = atlasSlotBounds(metrics, 1, false, dpr, {
+    width: 9,
+    actualBoundingBoxLeft: 2.2,
+    actualBoundingBoxRight: 11.4,
+  });
+  assert.ok(overhanging.padLeft >= Math.ceil(2.2 * dpr) + 1);
+  assert.ok(overhanging.w - overhanging.padLeft >= Math.ceil(11.4 * dpr) + 1);
+  assert.equal(overhanging.h, ascii.h);
 });
 
 test("keyboard encoder handles Shift+Tab, DECCKM arrows, modifiers, Ctrl, and macOS shortcuts", () => {
@@ -130,6 +159,46 @@ test("buffer selection, word bounds, search, and URL detection work across scrol
     assert.equal(matches[0].absRow, 0);
     assert.ok(matches[1].absRow >= scrollback);
     assert.equal(searchTerminalBuffer(terminal, "TOKEN", { caseSensitive: true }).length, 0);
+  } finally {
+    terminal.free();
+  }
+});
+
+test("Osc8Stripper preserves visible text and other escapes across arbitrary splits and prevents Ghostty resize hangs", async () => {
+  const sample =
+    "\x1b]0;Window Title\x07" +
+    "\x1b[34;4m\x1b]8;id=1;file:///home/nic/README.md\x1b\\README.md\x1b]8;;\x1b\\\x1b[0m " +
+    "\x1b]8;;https://example.com\x07docs\x1b]8;;\x07 " +
+    "\x1b]80;keep-other-osc\x07";
+  const expected =
+    "\x1b]0;Window Title\x07" +
+    "\x1b[34;4mREADME.md\x1b[0m docs " +
+    "\x1b]80;keep-other-osc\x07";
+
+  const whole = new Osc8Stripper();
+  assert.equal(whole.push(sample), expected);
+
+  // Byte-by-byte streaming across every escape boundary produces identical output.
+  const byteWise = new Osc8Stripper();
+  let streamed = "";
+  for (const ch of sample) streamed += byteWise.push(ch);
+  assert.equal(streamed, expected);
+
+  // Feeding stripped OSC 8 wrapped output into Ghostty and shrinking columns never hangs.
+  const ghostty = await getGhostty();
+  const terminal = ghostty.createTerminal(100, 30, { scrollbackLimit: 10000 });
+  const stripper = new Osc8Stripper();
+  try {
+    terminal.write("\x1bc");
+    for (let i = 0; i < 40; i++) {
+      const line = `• Project ${i}: According to \x1b]8;;file:///home/nic/README.md\x1b\\README.md\x1b]8;;\x1b\\, it is a Cloudflare Worker with AES-256-GCM encryption.\r\n`;
+      terminal.write(stripper.push(line));
+    }
+    for (let cols = 100; cols >= 40; cols -= 1) {
+      terminal.resize(cols, 30);
+      terminal.getCursor();
+    }
+    assert.equal(terminal.getDimensions().cols, 40);
   } finally {
     terminal.free();
   }

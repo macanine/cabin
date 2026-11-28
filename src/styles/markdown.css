@@ -1,56 +1,352 @@
-/* Streamdown parts use the app's tokens. */
+/* Editorial Markdown surface (dsh-claude-style rhythm adapted to Cabin tokens). */
 
+[data-agent-markdown] {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: break-word;
+  font-variant-numeric: lining-nums;
+}
 .markdown > :first-child,
 [data-agent-markdown] > :first-child { margin-top: 0; }
 .markdown > :last-child,
 [data-agent-markdown] > :last-child { margin-bottom: 0; }
-.markdown p { margin: 0.55em 0; }
-.markdown :is(h1, h2, h3, h4) { margin: 1.15em 0 0.45em; font-weight: 650; line-height: 1.3; letter-spacing: -0.015em; color: var(--text); }
-.markdown h1 { font-size: 1.3em; }
-.markdown h2 { font-size: 1.15em; }
-.markdown h3 { font-size: 1.04em; }
-.markdown h4 { font-size: 0.96em; color: var(--muted); }
-.markdown code { font-family: var(--mono); font-size: 0.9em; }
-.markdown a, .markdown [data-streamdown="link"] { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
-.markdown [data-streamdown="link"][data-incomplete] { text-decoration-style: dotted; }
 
-/* Lists, quotes, rules. */
-.markdown :is([data-streamdown="unordered-list"], [data-streamdown="ordered-list"]) { padding-left: 1.4em; }
-.markdown [data-streamdown="list-item"] { margin: 0.2em 0; }
-.markdown [data-streamdown="list-item"] > :is(p, [data-streamdown="unordered-list"], [data-streamdown="ordered-list"]) { margin: 0.2em 0; }
-.markdown [data-streamdown="blockquote"] { margin: 0.8em 0; padding: 0 0 0 12px; border-left: 3px solid var(--border); color: var(--muted); }
-.markdown [data-streamdown="horizontal-rule"] { margin: 1.2em 0; border: 0; border-top: 1px solid var(--border); }
-.markdown [data-streamdown="strong"] { font-weight: 600; }
+/* Prose rhythm: 12px between paragraphs; compact thinking/activity rows sit 4px apart. */
+.markdown p { margin: 12px 0; }
+[data-agent-markdown][data-compact] p { margin: 4px 0; }
+[data-agent-markdown][data-compact] :is(ul, ol) { margin: 4px 0; }
 
-/* Inline code. */
-.markdown [data-streamdown="inline-code"] { padding: 1px 4px; border-radius: 5px; background: var(--hover); font-size: 0.88em; overflow-wrap: anywhere; }
-
-/* Fenced code: a header with the language, copy at the top right, Shiki
-   colours (light in --sdm-c, dark in --shiki-dark). */
-.markdown [data-streamdown="code-block"] { position: relative; min-width: 0; max-width: 100%; margin: 0.8em 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
-.markdown [data-streamdown="code-block-header"] { display: flex; align-items: center; min-height: 34px; padding: 0 40px 0 14px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); background: color-mix(in srgb, var(--bg) 55%, var(--surface)); color: var(--muted); font: var(--text-xs) var(--mono); }
-.markdown [data-streamdown="code-block-header"] > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.markdown [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) { position: absolute; top: 4px; right: 5px; z-index: 1; }
-.markdown [data-streamdown="code-block-copy-button"] { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease; }
-.markdown [data-streamdown="code-block-copy-button"] svg { width: 14px; height: 14px; }
-.markdown [data-streamdown="code-block-copy-button"]:hover { background: var(--hover); color: var(--text); }
-.markdown [data-streamdown="code-block-copy-button"]:disabled { opacity: 0.4; cursor: default; }
-.markdown [data-streamdown="code-block-body"] { overflow: auto; padding: 11px 14px; }
-.markdown [data-streamdown="code-block-body"] pre { margin: 0; font: var(--text-sm)/1.55 var(--mono); white-space: pre; tab-size: 2; }
-.markdown [data-streamdown="code-block-body"] code { font-size: inherit; }
-.markdown [data-streamdown="code-block-body"] code > span { display: block; min-height: 1.55em; }
-.markdown [data-streamdown="code-block-body"] code > span > span { color: var(--sdm-c, inherit); }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .markdown [data-streamdown="code-block-body"] code > span > span { color: var(--shiki-dark, var(--sdm-c, inherit)); }
+/* Headings: warm balanced hierarchy with tightened stacked rhythm. */
+.markdown :is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.014em;
+  color: var(--text);
 }
-:root[data-theme="dark"] .markdown [data-streamdown="code-block-body"] code > span > span { color: var(--shiki-dark, var(--sdm-c, inherit)); }
+.markdown :is(h1, h2, h3, h4, h5, h6):is(:lang(zh), :lang(ja), :lang(ko)) {
+  letter-spacing: normal;
+}
+.markdown :is(h1, h2, h3) { margin: 20px 0 9px; }
+.markdown :is(h1, h2, h3) + :is(h1, h2, h3) { margin-top: 7px; }
+.markdown :is(h4, h5, h6) { margin: 14px 0 7px; }
+.markdown h1 { font-size: 1.25em; }
+.markdown h2 { font-size: 1.13em; }
+.markdown h3 { font-size: 1.03em; }
+.markdown h4 { font-size: 0.96em; color: var(--muted); }
+.markdown :is(h5, h6) { font-size: 0.92em; color: var(--muted); }
 
-/* Tables. */
-.markdown [data-streamdown="table-wrapper"] { margin: 0.8em 0; max-width: 100%; overflow: auto; }
-.markdown [data-streamdown="table"] { border-collapse: collapse; font-size: 0.95em; }
-.markdown :is([data-streamdown="table-header-cell"], [data-streamdown="table-cell"]) { border: 0; border-bottom: 1px solid var(--border); padding: 7px 14px 7px 0; text-align: left; vertical-align: top; overflow-wrap: break-word; }
-.markdown [data-streamdown="table-header-cell"] { white-space: nowrap; }
-.markdown [data-streamdown="table-header-cell"] { color: var(--muted); font-size: 0.92em; font-weight: 600; }
+.markdown strong { font-weight: 600; color: var(--text); }
+.markdown em { font-style: italic; }
+.markdown del { color: var(--muted); text-decoration: line-through; }
+
+/* Links and workspace file references (Claude editorial blue). */
+.markdown a.md-link,
+.markdown a {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--link) 52%, transparent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2.5px;
+  overflow-wrap: anywhere;
+  transition: color var(--motion-fast) ease, text-decoration-color var(--motion-fast) ease;
+}
+.markdown a.md-link:hover,
+.markdown a:hover {
+  color: var(--link);
+  text-decoration-color: var(--link);
+}
+
+.markdown .md-file-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--link);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--link) 50%, transparent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2.5px;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: color var(--motion-fast) ease, text-decoration-color var(--motion-fast) ease;
+}
+.markdown .md-file-link:hover,
+.markdown .md-file-link:focus-visible {
+  color: var(--link);
+  text-decoration-color: var(--link);
+}
+.markdown .md-file-link-icon {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 3px;
+  opacity: 0.78;
+}
+.markdown .md-file-link.is-code {
+  text-decoration: none;
+}
+.markdown .md-file-link.is-code .md-inline-code {
+  color: var(--link);
+  border-color: color-mix(in srgb, var(--link) 28%, var(--border));
+  background: color-mix(in srgb, var(--link) 7%, var(--hover));
+  transition: border-color var(--motion-fast) ease, background-color var(--motion-fast) ease;
+}
+.markdown .md-file-link.is-code:hover .md-inline-code,
+.markdown .md-file-link.is-code:focus-visible .md-inline-code {
+  border-color: color-mix(in srgb, var(--link) 55%, var(--border));
+  background: color-mix(in srgb, var(--link) 13%, var(--hover));
+}
+
+/* Inline code: subtle compact pill tuned to prose line metrics so selection stays smooth. */
+.markdown code { font-family: var(--mono); }
+.markdown .md-inline-code,
+.markdown code:not(pre code) {
+  padding: 1px 2.5px;
+  border: 0;
+  border-radius: 3.5px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text);
+  font-family: "SF Mono", ui-monospace, Menlo, "JetBrains Mono", monospace;
+  font-size: 0.87em;
+  line-height: 1.34;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  overflow-wrap: anywhere;
+}
+.markdown .md-file-link.is-code .md-inline-code {
+  border: 1px solid color-mix(in srgb, var(--link) 28%, var(--border));
+}
+.markdown .md-inline-code::selection,
+.markdown code::selection,
+.markdown code *::selection {
+  background: var(--selection-bg);
+}
+.markdown a.md-link .md-inline-code {
+  color: var(--link);
+}
+
+/* Lists & GFM task lists: render unordered bullets as non-selectable ::before glyphs so WebKit
+   never paints detached selection squares over list markers. */
+.markdown :is(ul, ol) { margin: 10px 0; padding-left: 1.45em; }
+.markdown ul:not(.md-task-list) { list-style: none; }
+.markdown ul:not(.md-task-list) > li { position: relative; }
+.markdown ul:not(.md-task-list) > li::before {
+  content: "";
+  position: absolute;
+  left: -1.05em;
+  top: 0.72em;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--faint);
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.markdown ul:not(.md-task-list) ul:not(.md-task-list) > li::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.25px var(--faint);
+}
+.markdown ul:not(.md-task-list) ul:not(.md-task-list) ul:not(.md-task-list) > li::before {
+  border-radius: 1px;
+  background: var(--faint);
+  box-shadow: none;
+}
+.markdown ol { list-style-type: decimal; }
+.markdown ol > li::marker { color: var(--faint); }
+.markdown ol:not([start]) {
+  list-style: none;
+  counter-reset: md-ol;
+}
+.markdown ol:not([start]) > li {
+  position: relative;
+  counter-increment: md-ol;
+}
+.markdown ol:not([start]) > li::before {
+  content: counter(md-ol) ".";
+  position: absolute;
+  left: -1.45em;
+  width: 1.2em;
+  text-align: right;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.markdown li { margin: 0.25em 0; }
+.markdown li > :is(p, ul, ol) { margin: 0.25em 0; }
+.markdown li > p:first-child { margin-top: 0; }
+.markdown li > p:last-child { margin-bottom: 0; }
+
+.markdown ul.md-task-list { list-style: none; padding-left: 0.2em; }
+.markdown li.md-task-item { display: flex; align-items: flex-start; gap: 8px; }
+.markdown .md-task-checkbox {
+  flex: none;
+  margin-top: 0.35em;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  pointer-events: none;
+}
+.markdown .md-task-body { min-width: 0; flex: 1; }
+
+/* Blockquotes: upright prose on a quiet left bar with warm wash. */
+.markdown blockquote {
+  margin: 12px 0;
+  padding: 0.55em 1em;
+  border-left: 2.5px solid color-mix(in srgb, var(--faint) 65%, transparent);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+  color: var(--muted);
+  font-style: normal;
+}
+.markdown blockquote > :first-child { margin-top: 0; }
+.markdown blockquote > :last-child { margin-bottom: 0; }
+
+/* Horizontal rules: crisp hairline separator. */
+.markdown hr {
+  margin: 1.5em 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+/* Fenced code blocks: single rounded frame, tinted header, lazy Shiki colours. */
+.markdown .md-code-block {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  margin: 12px 0;
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.markdown .md-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  background: color-mix(in srgb, var(--bg) 62%, var(--surface));
+  color: var(--muted);
+  font: var(--text-xs) var(--mono);
+}
+.markdown .md-code-lang {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+}
+.markdown .md-code-copy {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.markdown .md-code-copy:hover { background: var(--hover); color: var(--text); }
+.markdown .md-code-body {
+  max-height: 520px;
+  overflow: auto;
+  padding: 12px 14px;
+}
+.markdown .md-code-body pre {
+  margin: 0;
+  padding: 0;
+  background: transparent !important;
+  font: var(--text-sm)/1.58 var(--mono);
+  white-space: pre;
+  tab-size: 2;
+}
+.markdown .md-code-body code {
+  display: block;
+  font-size: inherit;
+  font-family: var(--mono);
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+.markdown .md-code-shiki span { color: var(--shiki-light); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .markdown .md-code-shiki span { color: var(--shiki-dark); }
+}
+:root[data-theme="dark"] .markdown .md-code-shiki span { color: var(--shiki-dark); }
+
+/* GFM tables: rounded hairline frame (dsh-claude-style), tinted header, wraps prose cleanly
+   and scrolls horizontally inside the wrapper only when columns exceed the prose width. */
+.markdown .md-table-wrap {
+  box-sizing: border-box;
+  margin: 12px 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+  border-radius: 12px;
+  background: var(--surface);
+  background-clip: padding-box;
+}
+.markdown .md-table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+  font-size: 0.92em;
+  line-height: 1.55;
+}
+.markdown .md-table thead th {
+  background: color-mix(in srgb, var(--bg) 70%, var(--surface));
+  color: var(--muted);
+  font-size: 0.88em;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 9px 14px;
+  text-align: left;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+}
+.markdown .md-table tbody td {
+  padding: 9px 14px;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: break-word;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.markdown .md-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.markdown .md-table tr > :first-child { padding-left: 16px; }
+.markdown .md-table tr > :last-child { padding-right: 16px; }
 
 /* Images. */
-.markdown [data-streamdown="image"] { max-width: 100%; border-radius: 6px; }
+.markdown .md-image {
+  display: block;
+  max-width: 100%;
+  margin: 10px 0;
+  border-radius: 8px;
+}
+
+/* Streaming reveal (dsh-claude-style D107): 8 alpha steps over 240ms scoped strictly
+   to text-bearing elements inside an actively streaming markdown container. */
+[data-agent-markdown][data-streaming] [data-md-reveal-run]::highlight(cabin-reveal-0) { color: color-mix(in srgb, var(--md-reveal-color, var(--text)) 16%, transparent); }
+[data-agent-markdown][data-streaming] [data-md-reveal-run]::highlight(cabin-reveal-1) { color: color-mix(in srgb, var(--md-reveal-color, var(--text)) 28%, transparent); }
+[data-agent-markdown][data-streaming] [data-md-reveal-run]::highlight(cabin-reveal-2) { color: color-mix(in srgb, var(--md-reveal-color, var(--text)) 42%, transparent); }
+[data-agent-markdown][data-streaming] [data-md-reveal-run]::highlight(cabin-reveal-3) { color: color-mix(in srgb, var(--md-reveal-color, var(--text)) 56%, transparent); }
+[data-agent-markdown][data-streaming] [data-md-reveal-run]::highlight(cabin-reveal-4) { color: color-mix(in srgb, var(--md-reveal-color, var(--text)) 70%, transparent); }
+[data-agent-markdown][data-streaming] [data-md-reveal-run]::highlight(cabin-reveal-5) { color: color-mix(in srgb, var(--md-reveal-color, var(--text)) 82%, transparent); }
+[data-agent-markdown][data-streaming] [data-md-reveal-run]::highlight(cabin-reveal-6) { color: color-mix(in srgb, var(--md-reveal-color, var(--text)) 91%, transparent); }
+[data-agent-markdown][data-streaming] [data-md-reveal-run]::highlight(cabin-reveal-7) { color: color-mix(in srgb, var(--md-reveal-color, var(--text)) 97%, transparent); }
+
+/* Subtle structural fade when a whole code block or table first appears during streaming. */
+[data-agent-markdown][data-streaming] > :is(.md-code-block, .md-table-wrap, blockquote) {
+  animation: chat-block-in var(--motion-stream-fade) var(--ease-out) both;
+}

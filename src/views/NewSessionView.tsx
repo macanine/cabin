@@ -10,7 +10,6 @@ import { networkGuidance, selectNetworkSummary } from "../lib/networkSummary";
 import { AGENT_KINDS } from "../components/AgentPicker";
 import { CabinMark } from "../components/CabinMark";
 import { Composer } from "../components/Composer";
-import { RecentTasks } from "../components/RecentTasks";
 import { useI18n } from "../i18n";
 
 type Tone = "ok" | "warn" | "bad" | "off";
@@ -53,8 +52,8 @@ export function NewSessionView({ workspaceId }: { workspaceId?: string }) {
   return (
     <div className="home-scroll">
       <div className="home-stage">
-        <div className={`mb-5 flex flex-col items-center gap-2.5 transition-opacity duration-200 ${submitting ? "opacity-35" : ""}`}>
-          <CabinMark variant="color" size={34} className="text-fg" />
+        <div className={`mb-5 flex flex-col items-center gap-3 transition-opacity duration-200 ${submitting ? "opacity-35" : ""}`}>
+          <CabinMark variant="color" size={48} className="text-fg" />
           <h1 className="m-0 text-center text-[28px] font-semibold tracking-[-0.025em] text-fg">
             {t("home.title")}
           </h1>
@@ -109,9 +108,6 @@ export function NewSessionView({ workspaceId }: { workspaceId?: string }) {
             <Button size="xs" variant={holding ? "default" : "filled"} onClick={uiActions.openNetworkCheck}>{holding ? t("common.inspect") : t("common.resolve")}</Button>
           </div>
         )}
-        <div className={`transition-opacity duration-200 ${submitting ? "opacity-30" : ""}`}>
-          <RecentTasks />
-        </div>
       </div>
     </div>
   );

@@ -1,14 +1,12 @@
 import { Menu, Textarea, Tooltip } from "@mantine/core";
-import { IconArrowUp, IconCheck, IconChevronDown, IconFolder, IconFolderPlus, IconGitBranch } from "@tabler/icons-react";
+import { IconArrowUp, IconCheck, IconChevronDown, IconFolder, IconFolderPlus } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentKind, ChatPermissionMode, Workspace, WorktreeRefs } from "../services/ipc/generated/core";
-import { toIpcError } from "../services/ipc/common";
+import type { AgentKind, ChatPermissionMode, Workspace } from "../services/ipc/generated/core";
 import { libraryIpc } from "../services/ipc/library";
 import { useApp } from "../state/store";
 import { lastStart, rememberStart, setComposerHandoff, uiActions } from "../state/ui";
 import { attempt } from "../lib/operations";
 import { AGENT_NAMES, CircleButton } from "./common";
-import { CHIP } from "./ComposerChip";
 import { AgentMark } from "./AgentMarks";
 import { AGENT_KINDS } from "./AgentPicker";
 import { NewWorkspaceModal } from "./NewWorkspaceModal";
@@ -47,7 +45,7 @@ function WorkspacePicker({ workspaces, value, fixed, onSelect, onCreate }: {
     );
   }
   return (
-    <Menu position="bottom-start" withinPortal shadow="md" width={240}>
+    <Menu position="bottom-start" withinPortal shadow="md" width={280}>
       <Menu.Target>
         <button className="press inline-flex h-7 max-w-60 min-w-0 cursor-pointer items-center gap-1.5 rounded-lg border-0 bg-transparent px-2 text-[13px] font-medium text-fg hover:bg-hover data-expanded:bg-hover [&>svg]:shrink-0 [&>svg]:text-muted" aria-label={t("composer.workspace")} title={current?.path}>
           <IconFolder size={14} />
@@ -61,10 +59,12 @@ function WorkspacePicker({ workspaces, value, fixed, onSelect, onCreate }: {
             key={w.id}
             onClick={() => onSelect(w.id)}
             leftSection={<IconFolder size={14} />}
-            rightSection={w.id === value ? <IconCheck size={14} /> : null}
+            rightSection={w.id === value ? <IconCheck size={14} className="text-accent" /> : null}
           >
-            <div className="truncate">{w.name}</div>
-            <div className="truncate font-mono text-xs text-faint">{w.path}</div>
+            <div className="min-w-0">
+              <div className="truncate">{w.name}</div>
+              <div className="truncate font-mono text-xs text-faint" title={w.path}>{w.path}</div>
+            </div>
           </Menu.Item>
         ))}
         <Menu.Divider />
@@ -128,11 +128,6 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true, onSubm
   const [permission, setPermission] = useState<ChatPermissionMode>(DEFAULT_CHAT_PERMISSION);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [isolated, setIsolated] = useState(false);
-  const [base, setBase] = useState("HEAD");
-  const [refs, setRefs] = useState<WorktreeRefs | null>(null);
-  const [refsError, setRefsError] = useState<string | null>(null);
-  const [refsLoading, setRefsLoading] = useState(false);
   const attachments = useChatAttachments();
   const input = useRef<HTMLTextAreaElement>(null);
   const box = useRef<HTMLDivElement>(null);
@@ -140,7 +135,7 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true, onSubm
 
   const installed = (kind: AgentKind) => agents.find((a) => a.kind === kind)?.installed ?? false;
   const complete = !!workspaceId && installed(agent) && !busy;
-  const menu = useComposerMenu({ text: prompt, caret, workspaceId, agent, enabled: complete, newWorktree: isolated,
+  const menu = useComposerMenu({ text: prompt, caret, workspaceId, agent, enabled: complete,
     onApply: (next, at) => {
       setPrompt(next);
       setCaret(at);
@@ -167,20 +162,6 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true, onSubm
     if (autoFocus) input.current?.focus();
   }, [autoFocus]);
 
-  useEffect(() => {
-    setBase("HEAD");
-    setRefs(null);
-    setRefsError(null);
-    if (!isolated || !workspaceId) { setRefsLoading(false); return; }
-    let cancelled = false;
-    setRefsLoading(true);
-    libraryIpc.worktreeRefs(workspaceId).then(
-      (value) => { if (!cancelled) setRefs(value); },
-      (error) => { if (!cancelled) setRefsError(toIpcError(error).message); },
-    ).finally(() => { if (!cancelled) setRefsLoading(false); });
-    return () => { cancelled = true; };
-  }, [workspaceId, isolated]);
-
   function chooseAgent(kind: AgentKind) {
     setAgent(kind);
     setModel(lastModel(kind));
@@ -190,8 +171,7 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true, onSubm
   const anyInstalled = AGENT_KINDS.some(installed);
   // A chat always runs on a model the user picked.
   const needsModel = model == null;
-  const ready = workspaceId != null && installed(agent) && !busy && !attachments.loading && !needsModel
-    && !(isolated && (refsLoading || !refs));
+  const ready = workspaceId != null && installed(agent) && !busy && !attachments.loading && !needsModel;
 
   async function start() {
     if (workspaceId == null && !fixedWorkspace) {
@@ -204,7 +184,7 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true, onSubm
     setBusy(true);
     onSubmittingChange?.(true);
     const session = await attempt(
-      libraryIpc.createChat(workspaceId, agent, prompt.trim() || null, model, attachments.files, permission, isolated ? base : null),
+      libraryIpc.createChat(workspaceId, agent, prompt.trim() || null, model, attachments.files, permission, null),
     );
     if (!session) {
       setBusy(false);
@@ -259,34 +239,10 @@ export function Composer({ workspaceId: fixedWorkspace, autoFocus = true, onSubm
           aria-label="First task"
         />
         <AttachmentList state={attachments} />
-        {isolated && (
-          <div className="worktree-choice">
-            <IconGitBranch size={14} />
-            {refsLoading ? <span>Loading branches…</span> : refsError ? <span role="alert">{refsError}</span> : refs && (
-              <label>Starting point <select aria-label="Worktree starting point" value={base} onChange={(event) => setBase(event.currentTarget.value)} disabled={busy}>
-                <option value="HEAD">Current HEAD · {refs.head}</option>
-                {refs.branches.map((branch) => <option key={branch} value={branch}>{branch.replace(/^refs\/(heads|remotes)\//, "")}</option>)}
-              </select></label>
-            )}
-          </div>
-        )}
-        {busy && isolated && <div className="worktree-choice" role="status">Creating worktree and starting session…</div>}
         <div className="composer-bar">
           <AttachmentPicker state={attachments} disabled={busy} />
           <ModelPicker workspaceId={workspaceId} agent={agent} value={model} disabled={!installed(agent) || busy} onSelect={setModel} />
           <PermissionPicker agent={agent} value={permission} disabled={busy} onChange={setPermission} />
-          <Tooltip label={t("composer.worktreeTip")} openDelay={350}>
-            <button
-              type="button"
-              className={`${CHIP} ${isolated ? "!bg-accent-soft !text-accent" : ""}`}
-              aria-pressed={isolated}
-              disabled={busy || !workspaceId}
-              onClick={() => setIsolated((value) => !value)}
-            >
-              <IconGitBranch size={14} className="shrink-0" />
-              <span>{t("composer.worktree")}</span>
-            </button>
-          </Tooltip>
           <span className="min-w-0 flex-1" />
           <CircleButton
             label={

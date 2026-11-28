@@ -3,6 +3,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import type { ChatItem } from "../../services/ipc/generated/core";
 import { clipboard } from "../../services/ipc/dialogs";
 import { Reveal } from "../motion";
+import { SweepText } from "./LiveLine";
 
 /** Monospace text inside a detail box: wrapped, quiet, selectable. */
 export const PRE = "m-0 whitespace-pre-wrap font-mono text-xs leading-relaxed text-muted [overflow-wrap:anywhere]";
@@ -94,7 +95,7 @@ export function ActivityRow({
       {trailing && <span className="shrink-0 self-center text-xs tabular-nums">{trailing}</span>}
     </>
   );
-  const headClass = "flex min-h-7 w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1 text-left text-[13px] text-fg";
+  const headClass = "flex min-h-7 w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1 text-left text-[12.5px] text-fg";
   return (
     <li
       className={`group/row relative min-w-0 pl-8 before:absolute before:top-[26px] before:bottom-[-4px] before:left-[9.5px] before:w-px before:bg-line last:before:hidden ${markerKind === "dot" ? "before:top-4" : ""} ${className}`}
@@ -118,7 +119,7 @@ export function ActivityRow({
       )}
       {addon}
       {expandable && !onActivate && (
-        <Reveal open={open}>{seen && <div className="pt-1 pb-2">{children}</div>}</Reveal>
+        <Reveal open={open}>{seen && <div className="chat-fold-body pt-1 pb-2">{children}</div>}</Reveal>
       )}
     </li>
   );
@@ -134,7 +135,7 @@ export function DetailBox({ footer, actions, tone = "neutral", children, classNa
   className?: string;
 }) {
   return (
-    <div className={`overflow-hidden rounded-xl border bg-surface/60 selectable ${tone === "danger" ? "border-bad/35" : "border-line"} ${className}`}>
+    <div className={`overflow-hidden rounded-xl border bg-hover/40 selectable ${tone === "danger" ? "border-bad/35" : "border-line/75"} ${className}`}>
       <div className="grid max-h-72 gap-1.5 overflow-auto px-3 py-2.5">{children}</div>
       {(footer || actions) && (
         <div className="flex items-center justify-between gap-3 border-t border-line/60 px-3 py-1 text-xs text-faint">
@@ -170,16 +171,29 @@ export function CopyAction({ text, label }: { text: string; label: string }) {
 }
 
 /** A disclosure for a turn's steps and failures. */
-export function TurnHeader({ meta, open, working, onToggle }: { meta: ReactNode[]; open: boolean; working: boolean; onToggle: () => void }) {
+export function TurnHeader({
+  title,
+  meta,
+  open,
+  working,
+  onToggle,
+}: {
+  title?: string;
+  meta: ReactNode[];
+  open: boolean;
+  working: boolean;
+  onToggle: () => void;
+}) {
+  const label = title ?? (working ? "Working" : "Activity");
   return (
-    <button type="button" className="press -ml-1 inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent px-1 py-0.5 text-xs text-muted hover:bg-hover hover:text-fg" aria-expanded={open} onClick={onToggle}>
-      <IconChevronRight size={12} className={`text-faint transition-transform duration-[var(--motion-fast)] ease-out ${open ? "rotate-90" : ""}`} aria-hidden />
-      <span>{working ? "Working" : "Activity"}</span>
+    <button type="button" className="press -ml-1.5 inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-lg border-0 bg-transparent px-1.5 py-1 text-xs text-muted hover:bg-hover hover:text-fg" aria-expanded={open} onClick={onToggle}>
+      <SweepText text={label} active={working} className="font-medium" />
       {meta.length > 0 && (
         <span className="text-faint tabular-nums">
           {meta.map((piece, index) => <Fragment key={index}> · {piece}</Fragment>)}
         </span>
       )}
+      <IconChevronRight size={13} className={`text-faint transition-transform duration-[var(--motion-reveal)] ease-[var(--ease-out)] ${open ? "rotate-90" : ""}`} aria-hidden />
     </button>
   );
 }

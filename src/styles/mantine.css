@@ -13,7 +13,13 @@
   --mantine-color-anchor: var(--accent);
 }
 
-:is(.mantine-Menu-dropdown, .mantine-Popover-dropdown, .mantine-Combobox-dropdown) {
+:is(
+  .mantine-Menu-dropdown,
+  .mantine-Popover-dropdown,
+  .mantine-Combobox-dropdown,
+  .mantine-Select-dropdown,
+  .mantine-Autocomplete-dropdown
+) {
   --popover-border-color: var(--glass-edge);
   background-color: var(--glass-strong);
   backdrop-filter: blur(14px);
@@ -24,6 +30,8 @@
   &[data-position^="right"] { --floating-x: -4px; transform-origin: left; }
 }
 .mantine-Menu-dropdown { padding: var(--space-1); }
+.mantine-Menu-itemLabel { min-width: 0; overflow: hidden; }
+.mantine-Menu-itemSection { flex-shrink: 0; }
 
 /* Mantine ScrollArea hides native scrollbars on its viewport and renders its own
    overlay thumb only on overflow; ensure native tracks never leak through. */
@@ -39,30 +47,36 @@
   height: 0;
 }
 
-/* Select / Combobox dropdown: balanced padding, aligned right-side check, clean surface. */
-.mantine-Combobox-dropdown,
-.mantine-Combobox-dropdown[data-composed] {
-  --combobox-padding: 5px;
-  padding: 5px;
+/* Select / Autocomplete / Combobox dropdowns: symmetric 4px frame, full-width options,
+   text aligned cleanly with the trigger, and accent check icon. */
+:is(.mantine-Combobox-dropdown, .mantine-Select-dropdown, .mantine-Autocomplete-dropdown),
+:is(.mantine-Combobox-dropdown, .mantine-Select-dropdown, .mantine-Autocomplete-dropdown)[data-composed] {
+  --combobox-padding: 4px;
+  padding: 4px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 11px;
   box-shadow: var(--shadow-float);
 }
-.mantine-Combobox-option {
+:is(.mantine-Combobox-dropdown, .mantine-Select-dropdown, .mantine-Autocomplete-dropdown) .mantine-ScrollArea-viewport > div {
+  display: block;
+  width: 100%;
+}
+[data-combobox-option] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  min-height: 32px;
-  padding: 6px 10px;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 8px;
   border-radius: 7px;
   font-size: var(--text-sm);
   line-height: 1.35;
 }
-.mantine-Combobox-option svg {
+[data-combobox-option] svg {
   flex: none;
   color: var(--accent);
-  opacity: 0.92;
+  opacity: 0.95;
 }
 
 .mantine-Drawer-content {
@@ -94,10 +108,14 @@
 }
 .mantine-Menu-item[data-hovered],
 [data-combobox-option]:hover:not([data-combobox-disabled]) { background-color: var(--hover); }
-[data-combobox-option][data-combobox-selected]:not([data-combobox-disabled]) {
-  background-color: var(--selected);
+[data-combobox-option][data-checked]:not([data-combobox-disabled]) {
+  background-color: var(--accent-soft);
   color: var(--text);
   font-weight: 500;
+}
+[data-combobox-option][data-combobox-selected]:not([data-checked], [data-combobox-disabled]) {
+  background-color: var(--hover);
+  color: var(--text);
 }
 
 /* Mantine keeps validation colors and lets unstyled fields delegate focus to their wrapper. */
@@ -136,6 +154,7 @@
 
 :root[data-perf="lite"] :is(
   .mantine-Menu-dropdown, .mantine-Popover-dropdown, .mantine-Combobox-dropdown,
+  .mantine-Select-dropdown, .mantine-Autocomplete-dropdown,
   .mantine-Modal-content, .mantine-Drawer-content, .mantine-Tooltip-tooltip
 ) { box-shadow: none; }
 

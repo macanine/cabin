@@ -48,6 +48,7 @@ export interface AttachCallbacks {
 const POOL_LIMIT = 8;
 const PENDING_LIMIT = 1024;
 const PENDING_BYTES_LIMIT = 512 * 1024;
+const INPUT_QUEUE_LIMIT = 64 * 1024;
 
 type SyncMode = "entry" | "reconnect" | "recover" | "retry" | "stream";
 
@@ -75,13 +76,15 @@ export class TerminalSessionController {
   private resizing = false;
   private readonly ptyResize: ReturnType<typeof settledSender>;
 
-  private writes = Promise.resolve();
+  private inputQueue = "";
+  private inputInFlight = false;
   private writeGeneration: number | undefined;
 
   private pending: Extract<TerminalStreamEvent, { type: "sessionOutput" | "terminalStatus" }>[] = [];
   private pendingBytes = 0;
 
   private callbacks: AttachCallbacks | null = null;
+  private published: TerminalViewState | undefined;
   private readonly unsubscribeEvents: () => void;
   private readonly unsubscribeFont: () => void;
 
@@ -108,7 +111,7 @@ export class TerminalSessionController {
         this.ptyResize.push(grid);
         this.publish();
       },
-      onScroll: () => this.publish(),
+      onScroll: (scroll) => this.publish(scroll),
       onZoom: (delta) => { stepTerminalFontSize(delta); },
       onSearchOpen: () => this.callbacks?.onSearchOpen(),
       onSearchUpdate: (state) => this.callbacks?.onSearchUpdate(state),
@@ -153,6 +156,7 @@ export class TerminalSessionController {
       this.ptyResize.flush();
       this.attached = false;
       this.callbacks = null;
+      this.published = undefined;
       this.engine.unmount();
     };
   }
@@ -161,19 +165,30 @@ export class TerminalSessionController {
     this.engine.setTheme(scheme);
   }
 
-  getViewState(): TerminalViewState {
+  getViewState(scroll = this.engine.getScrollState()): TerminalViewState {
     return {
       phase: this.phase,
       status: this.replay.status,
       busy: this.busy,
       error: this.error,
       grid: this.grid,
-      scroll: this.engine.getScrollState(),
+      scroll,
     };
   }
 
-  private publish() {
-    this.callbacks?.onState(this.getViewState());
+  private publish(scroll?: ScrollState) {
+    if (!this.callbacks) return;
+    const next = this.getViewState(scroll);
+    const previous = this.published;
+    if (previous && previous.phase === next.phase && previous.status === next.status
+      && previous.busy === next.busy && previous.error === next.error && previous.grid === next.grid
+      && previous.scroll.viewportY === next.scroll.viewportY
+      && previous.scroll.scrollbackLength === next.scroll.scrollbackLength
+      && previous.scroll.rows === next.scroll.rows
+      && previous.scroll.isAltScreen === next.scroll.isAltScreen
+      && previous.scroll.hasUnreadBelow === next.scroll.hasUnreadBelow) return;
+    this.published = next;
+    this.callbacks.onState(next);
   }
 
   // --------------------------------------------------------------- connection
@@ -213,6 +228,8 @@ export class TerminalSessionController {
     this.resizing = false;
     this.sentSize = "";
     this.ptyResize.reset();
+    this.inputQueue = "";
+    this.inputInFlight = false;
     this.writeGeneration = undefined;
     this.phase = currentOfflinePhase();
     this.publish();
@@ -231,6 +248,9 @@ export class TerminalSessionController {
       this.resizing = false;
       this.sentSize = "";
       this.ptyResize.reset();
+      this.inputQueue = "";
+      this.inputInFlight = false;
+      this.writeGeneration = undefined;
       this.connected = true;
       this.phase = "reconnecting";
       this.error = undefined;
@@ -374,6 +394,7 @@ export class TerminalSessionController {
         this.publish();
         if (!this.error) {
           this.pushResize(this.grid);
+          this.drainInput();
         }
         if (nextMode && this.attached && !this.error) {
           void this.sync(nextMode);
@@ -420,30 +441,60 @@ export class TerminalSessionController {
 
   private sendInput(data: string, generation = this.replay.generation, epoch = this.connectionEpoch) {
     if (
-      generation == null ||
-      !this.isRunning() ||
-      this.busy ||
+      !data ||
+      this.disposed ||
+      !this.connected ||
       this.error ||
-      epoch !== this.connectionEpoch ||
-      generation !== this.replay.generation
+      epoch !== this.connectionEpoch
     ) {
+      return;
+    }
+    // During a transient snapshot sync on a running generation, keep typed keys
+    // buffered instead of silently dropping them.
+    if (this.busy) {
+      if (this.replay.status?.state === "running" && this.inputQueue.length + data.length <= INPUT_QUEUE_LIMIT) {
+        this.inputQueue += data;
+      }
+      return;
+    }
+    if (generation == null || !this.isRunning() || generation !== this.replay.generation) {
       return;
     }
     if (this.writeGeneration !== generation) {
       this.writeGeneration = generation;
-      this.writes = Promise.resolve();
+      this.inputQueue = "";
     }
-    this.writes = this.writes
-      .then(async () => {
-        if (this.isRunning() && epoch === this.connectionEpoch && generation === this.replay.generation) {
-          await libraryIpc.writeSession(this.sessionId, generation, data);
-        }
-      })
+    if (this.inputQueue.length + data.length <= INPUT_QUEUE_LIMIT) {
+      this.inputQueue += data;
+    }
+    this.drainInput();
+  }
+
+  private drainInput() {
+    if (this.inputInFlight || !this.inputQueue || this.busy || this.error || !this.isRunning()) {
+      return;
+    }
+    const generation = this.replay.generation;
+    if (generation == null) return;
+    if (this.writeGeneration !== undefined && this.writeGeneration !== generation) {
+      this.inputQueue = "";
+      this.writeGeneration = generation;
+      return;
+    }
+    this.writeGeneration = generation;
+    const epoch = this.connectionEpoch;
+    const batch = this.inputQueue;
+    this.inputQueue = "";
+    this.inputInFlight = true;
+
+    void libraryIpc
+      .writeSession(this.sessionId, generation, batch)
       .catch((cause: unknown) => {
         if (this.disposed || epoch !== this.connectionEpoch) return;
         const ipc = toIpcError(cause);
         // If the generation ended or connection dropped mid-write, reconcile right away.
         if (ipc.code === "conflict" || ipc.code === "unavailable") {
+          this.inputQueue = "";
           this.replay.markDisconnected();
           this.sentSize = "";
           this.ptyResize.reset();
@@ -453,6 +504,13 @@ export class TerminalSessionController {
             this.phase = currentOfflinePhase();
             this.publish();
           }
+        }
+      })
+      .finally(() => {
+        if (epoch !== this.connectionEpoch) return;
+        this.inputInFlight = false;
+        if (!this.disposed && this.inputQueue) {
+          this.drainInput();
         }
       });
   }

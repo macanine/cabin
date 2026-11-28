@@ -4,15 +4,21 @@
 
 @layer base {
 :root {
-  --font: Inter, "Ubuntu", system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
-    "PingFang SC", "Noto Sans CJK JP", "Noto Sans CJK SC", "Yu Gothic UI", "Microsoft YaHei", sans-serif;
+  --font: Inter, "Ubuntu", system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "Hiragino Sans", "Noto Sans CJK JP", "Yu Gothic UI", sans-serif;
+  /* Editorial prose stack: Anthropic/New York serif falling cleanly through to Simplified Chinese PingFang,
+     with Georgia at the end so its old-style numerals don't drop below CJK baselines or break selection height. */
+  --font-prose: "Anthropic Serif", "New York", "PingFang SC", "Hiragino Sans GB",
+    "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", Georgia, "Hiragino Sans", sans-serif;
   --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Monaco, "Ubuntu Mono", "DejaVu Sans Mono", monospace;
 
   --bg: #f7f6f3; --surface: #ffffff; --sidebar: #efede8;
   --hover: rgba(20, 20, 18, 0.05); --selected: rgba(20, 20, 18, 0.085);
   --border: #e2dfd9; --text: #1d1c1a; --muted: #6d6a64; --faint: #8c877f;
-  /* Warm terracotta (Claude style). --accent is for text, marks and lines; --accent-fill sits under white text. */
-  --accent: #c2622d; --accent-fill: #c2622d; --accent-soft: rgba(194, 98, 45, 0.12);
+  /* Authentic Claude warm clay-orange accent & editorial link blue (dsh-claude-style). */
+  --accent: #d97757; --accent-fill: #c96442; --accent-soft: rgba(217, 119, 87, 0.12);
+  --selection-bg: rgba(59, 130, 246, 0.18);
+  --link: #184f95;
   --ok: #2f8a4c; --warn: #b7791f; --bad: #c0392b; --info: #3b6ea8;
   --terminal-bg: #fbfbfa; --terminal-fg: #1d1c1a;
   /* Glass: translucent surface, bright rim, soft depth. */
@@ -37,6 +43,8 @@
   --motion-enter: 180ms;
   --motion-reveal: 200ms;
   --motion-progress: 460ms;
+  --motion-stream-fade: 240ms;
+  --motion-msg-enter: 280ms;
   color-scheme: light;
 }
 
@@ -45,7 +53,9 @@
     --bg: #181715; --surface: #222120; --sidebar: #141311;
     --hover: rgba(255, 255, 255, 0.055); --selected: rgba(255, 255, 255, 0.095);
     --border: #33312d; --text: #ecebe8; --muted: #a19d95; --faint: #7a766f;
-    --accent: #e0814b; --accent-fill: #c2622d; --accent-soft: rgba(224, 129, 75, 0.16);
+    --accent: #e28b6d; --accent-fill: #c96442; --accent-soft: rgba(226, 139, 109, 0.16);
+    --selection-bg: rgba(104, 168, 255, 0.28);
+    --link: #8ab4f8;
     --ok: #5cbf7a; --warn: #e0a84b; --bad: #e2675a; --info: #79a6dc;
     --terminal-bg: #181715; --terminal-fg: #ecebe8;
     --glass: rgba(40, 38, 35, 0.58); --glass-strong: rgba(36, 34, 32, 0.93);
@@ -60,7 +70,9 @@
   --bg: #181715; --surface: #222120; --sidebar: #141311;
   --hover: rgba(255, 255, 255, 0.055); --selected: rgba(255, 255, 255, 0.095);
   --border: #33312d; --text: #ecebe8; --muted: #a19d95; --faint: #7a766f;
-  --accent: #e0814b; --accent-fill: #c2622d; --accent-soft: rgba(224, 129, 75, 0.16);
+  --accent: #e28b6d; --accent-fill: #c96442; --accent-soft: rgba(226, 139, 109, 0.16);
+  --selection-bg: rgba(104, 168, 255, 0.28);
+  --link: #8ab4f8;
   --ok: #5cbf7a; --warn: #e0a84b; --bad: #e2675a; --info: #79a6dc;
   --terminal-bg: #181715; --terminal-fg: #ecebe8;
   --glass: rgba(40, 38, 35, 0.58); --glass-strong: rgba(36, 34, 32, 0.93);
@@ -135,6 +147,47 @@
 @keyframes boot-orbit { to { transform: rotate(360deg); } }
 @keyframes breathe { 50% { opacity: 0.55; } }
 @keyframes motion-spin { to { transform: rotate(360deg); } }
+@keyframes cabin-track-main {
+  0% { stroke-dashoffset: 14; opacity: 0; }
+  8% { opacity: 1; }
+  50% { opacity: 1; }
+  60%, 100% { stroke-dashoffset: -24; opacity: 0; }
+}
+@keyframes cabin-track-slash {
+  0%, 20% { stroke-dashoffset: 8; opacity: 0; }
+  28% { opacity: 1; }
+  54% { opacity: 1; }
+  64%, 100% { stroke-dashoffset: -11; opacity: 0; }
+}
+@keyframes cabin-track-floor {
+  0%, 42% { stroke-dashoffset: 9; opacity: 0; }
+  50% { opacity: 1; }
+  78% { opacity: 1; }
+  88%, 100% { stroke-dashoffset: -14; opacity: 0; }
+}
+@keyframes cabin-brand-in {
+  from { opacity: 0; translate: -4px 0; }
+}
+@keyframes chat-msg-enter {
+  from { opacity: 0; transform: scale(0.94) translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes chat-block-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes chat-wait-dot {
+  0%, 100% { translate: 0 -4px; opacity: 1; }
+  50% { translate: 0 2px; opacity: 0.48; }
+}
+@keyframes chat-sweep-window {
+  0% { transform: translateX(-100%); }
+  66.6667%, 100% { transform: translateX(100%); }
+}
+@keyframes chat-sweep-glyphs {
+  0% { transform: translateX(100%); }
+  66.6667%, 100% { transform: translateX(-100%); }
+}
 
 /* Translucent surfaces share one flat fill and a subtle edge. */
 @utility glass {
@@ -183,7 +236,7 @@ input, textarea, [contenteditable="true"], pre, code, .markdown, [data-agent-mar
 button { font: inherit; }
 input, textarea { caret-color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-::selection { background: var(--accent-soft); }
+::selection { background: var(--selection-bg); }
 
 /* A view rises into place when it mounts. */
 .view-enter { animation: page-in var(--motion-page) var(--ease-out) backwards; }
@@ -204,7 +257,29 @@ input, textarea { caret-color: var(--accent); }
 /* A running task: a slow ring that says "working" without drawing the eye. */
 .live-dot { animation: live-pulse 2s var(--ease-out) infinite; }
 
+/* Cabin logo racetrack loop animation during boot and startup. */
+.cabin-track-main {
+  stroke-dasharray: 12 36;
+  stroke-dashoffset: 14;
+  animation: cabin-track-main 1.85s cubic-bezier(0.45, 0.05, 0.25, 1) infinite;
+}
+.cabin-track-slash {
+  stroke-dasharray: 6.5 22;
+  stroke-dashoffset: 8;
+  animation: cabin-track-slash 1.85s cubic-bezier(0.45, 0.05, 0.25, 1) infinite;
+}
+.cabin-track-floor {
+  stroke-dasharray: 7.5 26;
+  stroke-dashoffset: 9;
+  animation: cabin-track-floor 1.85s cubic-bezier(0.45, 0.05, 0.25, 1) infinite;
+}
+.cabin-brand-enter {
+  animation: cabin-brand-in 320ms var(--ease-out) backwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .cabin-track-base { opacity: 1 !important; }
+  .cabin-track-run { display: none; }
   *, ::before, ::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
@@ -254,6 +329,8 @@ input, textarea { caret-color: var(--accent); }
   :root[data-perf="lite"] :not(.animate-spin, .mantine-Loader-root, .toast-spinner),
   :root[data-perf="lite"] ::before,
   :root[data-perf="lite"] :not(.mantine-Loader-root)::after { animation: none !important; }
+  :root[data-perf="lite"] .cabin-track-base { opacity: 1 !important; }
+  :root[data-perf="lite"] .cabin-track-run { display: none; }
   :root[data-perf="lite"] .glass,
   :root[data-perf="lite"] .glass-strong { background: var(--surface); box-shadow: none; }
 }

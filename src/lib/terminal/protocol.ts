@@ -8,6 +8,156 @@ import type { AppEvent, SessionStatus, TerminalSnapshot } from "../../services/i
 export type TerminalEvent = Extract<AppEvent, { type: "sessionOutput" | "terminalStatus" }>;
 export type TerminalStreamEvent = TerminalEvent | { type: "reconnect" };
 
+// ------------------------------------------------------------- OSC 8 sanitizer
+
+const OSC8_MAX_BODY = 4096;
+const OSC8_TEXT = 0;
+const OSC8_ESC = 1;
+const OSC8_OSC = 2;
+const OSC8_EIGHT = 3;
+const OSC8_DROP = 4;
+const OSC8_DROP_ESC = 5;
+
+/**
+ * Streaming filter that strips OSC 8 hyperlink metadata (`ESC ] 8 ; ... BEL/ST`)
+ * while preserving visible link text, SGR styling, and all other OSC sequences.
+ *
+ * `ghostty-web@0.4.0`'s compiled `libghostty` WASM corrupts its internal
+ * `PageList` linked list when `ghostty_terminal_resize` reflows wrapped rows
+ * carrying OSC 8 hyperlink metadata, causing subsequent render/resize calls to
+ * spin at 100% CPU. Cabin detects clickable URLs directly from cell text and
+ * does not read `hyperlink_id`, so stripping OSC 8 at the WASM boundary avoids
+ * the upstream WASM bug cleanly across arbitrary chunk splits.
+ */
+export class Osc8Stripper {
+  private state = OSC8_TEXT;
+  private pending = "";
+  private dropped = 0;
+
+  reset() {
+    this.state = OSC8_TEXT;
+    this.pending = "";
+    this.dropped = 0;
+  }
+
+  push(chunk: string): string {
+    if (!chunk) return "";
+    if (
+      this.state === OSC8_TEXT &&
+      chunk.indexOf("\x1b") === -1 &&
+      chunk.indexOf("\x9d") === -1
+    ) {
+      return chunk;
+    }
+
+    let out = "";
+    let copyStart = this.state === OSC8_TEXT ? 0 : -1;
+
+    for (let i = 0; i < chunk.length; i++) {
+      const code = chunk.charCodeAt(i);
+
+      if (this.state === OSC8_TEXT) {
+        if (code === 0x1b || code === 0x9d) {
+          if (copyStart >= 0 && i > copyStart) out += chunk.slice(copyStart, i);
+          copyStart = -1;
+          this.pending = chunk[i];
+          this.state = code === 0x1b ? OSC8_ESC : OSC8_OSC;
+        }
+        continue;
+      }
+
+      if (this.state === OSC8_ESC) {
+        if (code === 0x5d) {
+          this.pending += "]";
+          this.state = OSC8_OSC;
+        } else {
+          out += this.pending;
+          this.pending = "";
+          if (code === 0x1b || code === 0x9d) {
+            this.pending = chunk[i];
+            this.state = code === 0x1b ? OSC8_ESC : OSC8_OSC;
+          } else {
+            this.state = OSC8_TEXT;
+            copyStart = i;
+          }
+        }
+        continue;
+      }
+
+      if (this.state === OSC8_OSC) {
+        if (code === 0x38) {
+          this.pending += "8";
+          this.state = OSC8_EIGHT;
+        } else {
+          out += this.pending;
+          this.pending = "";
+          if (code === 0x1b || code === 0x9d) {
+            this.pending = chunk[i];
+            this.state = code === 0x1b ? OSC8_ESC : OSC8_OSC;
+          } else {
+            this.state = OSC8_TEXT;
+            copyStart = i;
+          }
+        }
+        continue;
+      }
+
+      if (this.state === OSC8_EIGHT) {
+        if (code === 0x3b) {
+          this.pending = "";
+          this.dropped = 0;
+          this.state = OSC8_DROP;
+        } else {
+          out += this.pending;
+          this.pending = "";
+          if (code === 0x1b || code === 0x9d) {
+            this.pending = chunk[i];
+            this.state = code === 0x1b ? OSC8_ESC : OSC8_OSC;
+          } else {
+            this.state = OSC8_TEXT;
+            copyStart = i;
+          }
+        }
+        continue;
+      }
+
+      if (this.state === OSC8_DROP) {
+        if (code === 0x07 || code === 0x9c) {
+          this.state = OSC8_TEXT;
+          copyStart = i + 1;
+        } else if (code === 0x1b) {
+          this.state = OSC8_DROP_ESC;
+        } else if (++this.dropped >= OSC8_MAX_BODY) {
+          this.state = OSC8_TEXT;
+          copyStart = i + 1;
+        }
+        continue;
+      }
+
+      // OSC8_DROP_ESC
+      if (code === 0x5c || code === 0x07 || code === 0x9c) {
+        this.state = OSC8_TEXT;
+        copyStart = i + 1;
+      } else if (code === 0x1b) {
+        if (++this.dropped >= OSC8_MAX_BODY) {
+          this.state = OSC8_TEXT;
+          copyStart = i + 1;
+        }
+      } else if (++this.dropped >= OSC8_MAX_BODY) {
+        this.state = OSC8_TEXT;
+        copyStart = i + 1;
+      } else {
+        this.state = OSC8_DROP;
+      }
+    }
+
+    if (copyStart >= 0 && copyStart < chunk.length) {
+      out += chunk.slice(copyStart);
+    }
+    return out;
+  }
+}
+
 // --------------------------------------------------------------- stream replay
 
 const encoder = new TextEncoder();
