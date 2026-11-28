@@ -131,6 +131,10 @@ Pi use adapters that drive the CLI from Setup. OpenCode and Antigravity run thei
 commands. The desktop displays normalized chat state through typed IPC.
 [Supported runtimes and account flows](README.md#agents-and-usage)
 
+- **Dialects.** Generic ACP transport and projection stay isolated from provider quirks
+  behind `AcpDialect` (`core/src/agent_runtime/acp/dialect.rs`), which owns per-provider
+  capabilities, notification translation (such as OpenCode child updates), child routing,
+  and out-of-band subagent log hydration (such as Antigravity brain logs).
 - **Lifecycle.** Initialize the client and try `session/resume`, then `session/load`, then
   `session/new`. The app keeps its own stored transcript and drops load replay. If the
   saved session cannot reopen, the timeline explains the new session. The native session ID

@@ -90,16 +90,18 @@ credentials, sessions and CLI paths remain in the VM.
 
 **Agents** lists each CLI with its sign-in state and available plan limits. Select one to
 install or update it, open **Account** for its provider, accounts and limits, or open **Setup**
-to manage its chat runtime and extensions. Sign-in uses the native CLI. All chats use the
-[Agent Client Protocol](https://agentclientprotocol.com).
+to manage its chat runtime and extensions. **Sign in via CLI** opens a dedicated terminal and
+shows the next step for the provider. Cabin creates and reuses `~/workspace` under the guest
+user's home for terminals opened from Agents. Return to **Account** to check the sign-in.
+All chats use the [Agent Client Protocol](https://agentclientprotocol.com).
 
 | Agent | Chat runtime | Sign-in and limits |
 |---|---|---|
 | Claude Code | `@agentclientprotocol/claude-agent-acp` runs the Setup CLI | Sign in through Claude Code. Account shows the current email, organization, plan, and `/usage` windows. |
-| Codex | `@agentclientprotocol/codex-acp` runs the Setup CLI | Account supports `auth.json`, CLIProxyAPI, and Sub2API import and export. Switch accounts while Codex is idle. Exports use private files on the Mac. |
+| Codex | `@agentclientprotocol/codex-acp` runs the Setup CLI | The CLI shows a device code for browser authorization. Account supports `auth.json`, CLIProxyAPI, and Sub2API import and export. Switch accounts while Codex is idle. Exports use private files on the Mac. |
 | OpenCode v2 | `opencode2 acp` from `@opencode/cli` | Uses OpenCode's native account and configuration. |
-| Pi | `pi-acp` runs the Setup CLI | Uses Pi's native account and configuration. |
-| Google Antigravity | `agy acp` from the managed Linux ARM64 release | Select **Open terminal** in Account to sign in. The live session supplies model and thinking choices. |
+| Pi | `pi-acp` runs the Setup CLI | Enter `/login` in Pi to choose a provider. |
+| Google Antigravity | `agy acp` from the managed Linux ARM64 release | `agy acp --login` handles sign-in. The live session supplies model and thinking choices. |
 
 **Agents → Setup → Chat runtime** manages versions of the npm-based runtimes. The first chat
 installs the selected runtime if needed. See

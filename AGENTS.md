@@ -22,7 +22,7 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 | Network checks and exit | [network_gate/](src-tauri/src/network_gate/), [network_health.rs](src-tauri/src/network_health.rs), [network_probe.rs](core/src/network_probe.rs) | `src-tauri/src/network_gate/{report,exit,browser}.rs`, `vm/src/network_probe_targets.rs`, `src/components/network/{NetworkGatePanel,NetworkCheckModal}.tsx`, `src/state/networkMonitor.ts`, `src/lib/networkSummary.ts`, `ip-detection/` |
 | Desktop and browser | [ChromeView.tsx](src/views/ChromeView.tsx), [chrome_feature.rs](vm/src/chrome_feature.rs) | `src/components/{BrowserEnvironmentPanel,ChromeViewer}.tsx`, `src/lib/browserEnvironment.ts`, `core/src/{browser,native_display}/`, `core/src/{guest_desktop,device_probe,guest_dns}.rs` |
 | App shell and window | [App.tsx](src/App.tsx), [TitleBar.tsx](src/components/TitleBar.tsx), [window_chrome.rs](src-tauri/src/window_chrome.rs) | `src/components/Sidebar.tsx`, `src/lib/windowChrome.ts`, `src/styles/shell.css`, `src-tauri/tauri.macos.conf.json` |
-| Chat runtime and rendering | [agent_runtime/](core/src/agent_runtime/), [Chat.tsx](src/components/Chat.tsx) | `core/src/{chat_view,workspace_diff}.rs`, `src/components/chat/`, `src/lib/{chatTimeline,chatTasks}.ts`, `tests/chat-timeline.test.mjs` |
+| Chat runtime and rendering | [agent_runtime/](core/src/agent_runtime/), [Chat.tsx](src/components/Chat.tsx) | `core/src/agent_runtime/acp/{mod,dialect,view,antigravity_subagents}.rs`, `core/src/{chat_view,workspace_diff}.rs`, `src/components/chat/`, `src/lib/{chatTimeline,chatTasks}.ts`, `tests/chat-timeline.test.mjs` |
 | Agent setup and accounts | [AgentsView.tsx](src/views/AgentsView.tsx), [agents/](core/src/agents/) | `src/lib/{agentsHub,agentLimits}.ts`, `src/components/{PaceMeter,AccountLimits}.tsx`, `core/src/agents/claude/account.rs`, `core/src/agent_runtime/{acp/launch,runtimes}.rs` |
 | MCP, skills, and mentions | [McpView.tsx](src/views/McpView.tsx), [SkillsView.tsx](src/views/SkillsView.tsx) | `core/src/agents/{mcp_library,skill_library,skill_sources}.rs`, `agent_catalog`, `workspace_files`, `src/components/chat/useComposerMenu.ts` |
 | Usage and performance | [UsageView.tsx](src/views/UsageView.tsx), [usage/](usage/), [MonitorPanel.tsx](src/components/MonitorPanel.tsx) | `src/components/usage/{UsageMonitor,usageParts}.tsx`, `src/lib/{usageView,perfGauges}.ts` |
@@ -120,11 +120,17 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
 
 ## Chats, agents, and usage
 
-- Guest Rust owns ACP. `acp/view.rs` translates agent updates into `ChatItem`,
-  `ChatControls`, and subagent snapshots. `ChatContext` is the write path, `session.rs`
-  owns one live chat, and `Store` assigns `revision`, `ordinal`, and timestamps.
-  `ChatControls` is live state delivered in `chatControls` events and `chat_snapshot`. The
-  UI uses `agent_chat_capabilities` and renders the supplied options, excluding options
+- Guest Rust owns ACP. `acp/mod.rs` and `acp/view.rs` keep generic ACP protocol
+  mechanics and translate updates into `ChatItem`, `ChatControls`, and subagent
+  snapshots; keep all provider-specific ACP quirks (capabilities, custom
+  notifications, child routing hints, tool-call plan extraction, effort suffix
+  splitting, permission auto-allow, and out-of-band subagent hydration) behind
+  `AcpDialect` in `acp/dialect.rs` (`antigravity_subagents.rs` owns Antigravity
+  brain log parsing and `dialect::enrich_stored` backfills stored snapshots).
+  `ChatContext` is the write path, `session.rs` owns one live chat, and `Store`
+  assigns `revision`, `ordinal`, and timestamps. `ChatControls` is live state
+  delivered in `chatControls` events and `chat_snapshot`. The UI uses
+  `agent_chat_capabilities` and renders the supplied options, excluding options
   marked `hidden` for the permission picker.
 - Keep provider launch arguments, environment variables, and mode mappings in
   `acp/launch.rs`. `runtimes.rs` owns npm packages, pins, and side-by-side versions under
@@ -141,10 +147,13 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   `collaboration_mode` and Antigravity uses native `plan` mode. Keep `chat_plans` readable
   for chats recorded before ACP. `/goal` is a separate product decision from ACP planning.
 - Persist child snapshots and items through `chat_subagents`. Sources include ACP
-  `subagent_update`, OpenCode's `_meta["opencode/child-session"]`, and the child ID from a
-  subagent tool. Map ACP `async_task_*` to `ChatAsyncTask` and set its `itemId` to the
-  initiating tool so the strip can jump to it. Keep finished tasks and their summaries
-  visible.
+  `subagent_update`, `dialect.child_scope_hint` (Claude `parentToolUseId`,
+  OpenCode `_meta["opencode/child-session"]`, and Antigravity `<uuid>:<call_id>`
+  prefix resolution), subagent tool launches, and out-of-band brain logs
+  (`antigravity_subagents.rs`). Map ACP `async_task_*` to `ChatAsyncTask` and
+  set its `itemId` to the initiating tool so the strip can jump to it. Keep
+  finished tasks and their summaries visible; `SubagentStrip` opens subagents
+  in `SubagentConversation` within the chat pane.
 - Render agent diffs and `workspace_diff` in `FileChanges` with an explicit origin. The
   workspace diff snapshots Git trees through a temporary index and contributes paths missing
   from structured agent output. The guest supplies `action`, `subject`, and `files`
@@ -215,6 +224,9 @@ its existing README, such as [ip-detection/README.md](ip-detection/README.md).
   during history replay, switch light/dark schemes in place, and retain scrollback across
   guest disconnects until the session is deleted. `terminal_paste_image` saves attachments
   in the guest and pastes the quoted path with bracketed-paste markers when requested.
+- Agent terminals opened from Agents use the guest user's `~/workspace`. Sign-in has a
+  `login` session mode and uses each adapter's native login arguments. Reuse a live login
+  for that agent. The Account page refreshes native auth status when the user returns.
 
 ## UI conventions
 
