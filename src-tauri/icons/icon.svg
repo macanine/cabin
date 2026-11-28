@@ -1,35 +1,67 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <!-- Warm cream-stone squircle aligned with Cabin's light theme (#f7f6f3) -->
-    <linearGradient id="bg" x1="0.2" y1="0" x2="0.8" y2="1">
-      <stop offset="0%" stop-color="#f9f7f2"/>
-      <stop offset="100%" stop-color="#ebe4d8"/>
+    <!-- Warm matte ivory-porcelain squircle aligned with Cabin's light theme (#f7f6f3) -->
+    <linearGradient id="bg" x1="0.18" y1="0" x2="0.82" y2="1">
+      <stop offset="0%" stop-color="#fcfaf6"/>
+      <stop offset="54%" stop-color="#f3eee5"/>
+      <stop offset="100%" stop-color="#e6dfd2"/>
     </linearGradient>
 
-    <!-- Warm terracotta folded roof plane (Cabin's signature #c2622d / #e0814b accent) -->
-    <linearGradient id="roof" x1="0.1" y1="0" x2="0.9" y2="1">
-      <stop offset="0%" stop-color="#e58044"/>
-      <stop offset="100%" stop-color="#b85422"/>
+    <!-- Soft top-left studio lighting sheen -->
+    <radialGradient id="sheen" cx="26%" cy="16%" r="74%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.72"/>
+      <stop offset="52%" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Subtle warm terracotta light bounce onto the matte tile beneath the roof plane -->
+    <radialGradient id="bounce" cx="66%" cy="46%" r="36%">
+      <stop offset="0%" stop-color="#e58044" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#e58044" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Delicate inner bottom ceramic bevel -->
+    <linearGradient id="bevel" x1="0.5" y1="0.82" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#1d1c1a" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#1d1c1a" stop-opacity="0.055"/>
     </linearGradient>
 
-    <!-- Deep warm charcoal-ink front gable (#1d1c1a) -->
-    <linearGradient id="gable" x1="0.2" y1="0" x2="0.8" y2="1">
-      <stop offset="0%" stop-color="#2a2724"/>
-      <stop offset="100%" stop-color="#171614"/>
+    <!-- Layer 1: Deep matte obsidian-charcoal gable -->
+    <linearGradient id="ink" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#332f2b"/>
+      <stop offset="44%" stop-color="#201e1c"/>
+      <stop offset="100%" stop-color="#131210"/>
     </linearGradient>
 
-    <!-- Warm stone shaded side wall grounding the silhouette -->
-    <linearGradient id="side" x1="0.2" y1="0" x2="0.8" y2="1">
-      <stop offset="0%" stop-color="#cfc7bb"/>
-      <stop offset="100%" stop-color="#bab1a4"/>
+    <!-- Layer 2: Luminous kiln-fired warm terracotta roof (#c2622d / #e0814b) -->
+    <linearGradient id="terra" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0%" stop-color="#f29356"/>
+      <stop offset="48%" stop-color="#d56b2f"/>
+      <stop offset="100%" stop-color="#b04d1b"/>
     </linearGradient>
 
-    <!-- Subtle continuous squircle rim highlight -->
+    <!-- Layer 3: Subtly lifted warm graphite-umber foundation beam (tonal hierarchy below the panoramic cut) -->
+    <linearGradient id="plinth" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#453f39"/>
+      <stop offset="100%" stop-color="#272421"/>
+    </linearGradient>
+
+    <!-- Physical tile rim highlight -->
     <linearGradient id="rim" x1="0.5" y1="0" x2="0.5" y2="1">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
-      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.2"/>
-      <stop offset="100%" stop-color="#1d1c1a" stop-opacity="0.12"/>
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="45%" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#1d1c1a" stop-opacity="0.16"/>
     </linearGradient>
+
+    <!-- Soft grounded contact shadows -->
+    <filter id="inkSh" x="-18%" y="-18%" width="140%" height="145%">
+      <feDropShadow dx="0" dy="6" stdDeviation="5.5" flood-color="#1a1510" flood-opacity="0.14"/>
+      <feDropShadow dx="0" dy="2" stdDeviation="1.6" flood-color="#1a1510" flood-opacity="0.11"/>
+    </filter>
+    <filter id="terraSh" x="-22%" y="-18%" width="148%" height="145%">
+      <feDropShadow dx="0" dy="6" stdDeviation="5.5" flood-color="#8a3810" flood-opacity="0.20"/>
+      <feDropShadow dx="0" dy="2" stdDeviation="1.6" flood-color="#6b2908" flood-opacity="0.14"/>
+    </filter>
 
     <clipPath id="squircle">
       <path d="M 168,44 L 344,44 C 426,44 468,86 468,168 L 468,344 C 468,426 426,468 344,468 L 168,468 C 86,468 44,426 44,344 L 44,168 C 44,86 86,44 168,44 Z"/>
@@ -38,22 +70,27 @@
 
   <g clip-path="url(#squircle)">
     <rect x="44" y="44" width="424" height="424" fill="url(#bg)"/>
+    <rect x="44" y="44" width="424" height="424" fill="url(#sheen)"/>
+    <rect x="44" y="44" width="424" height="424" fill="url(#bounce)"/>
+    <rect x="44" y="44" width="424" height="424" fill="url(#bevel)"/>
 
-    <!--
-      Minimalist 3-plane architectural cabin:
-      - Coplanar top ridge along y=148
-      - Exact 3:4 roof pitch with uniform 14px perpendicular diagonal seam,
-        14px under-eave horizontal gap, and 14px vertical wall seam
-    -->
+    <!-- Piece 1: Charcoal gable roof -->
+    <g filter="url(#inkSh)">
+      <path d="M 193.31,154.06 Q 194.08,152.00 196.28,152.00 L 239.72,152.00 Q 241.92,152.00 242.69,154.06 L 289.51,278.90 Q 290.28,280.96 288.08,280.96 L 246.48,280.96 Q 244.28,280.96 243.51,278.90 L 218.77,212.94 Q 218.00,210.88 217.23,212.94 L 162.85,357.94 Q 162.08,360.00 159.88,360.00 L 118.28,360.00 Q 116.08,360.00 116.85,357.94 Z" fill="url(#ink)"/>
+      <line x1="196.58" y1="153.20" x2="239.42" y2="153.20" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" opacity="0.22"/>
+    </g>
 
-    <!-- Plane 1: Folded terracotta pitched roof -->
-    <path d="M 227.5,148 L 302,148 Q 312,148 318,156 L 393,256 Q 399,264 389,264 L 314.5,264 Q 304.5,264 298.5,256 L 223.5,156 Q 217.5,148 227.5,148 Z" fill="url(#roof)"/>
+    <!-- Piece 2: Warm terracotta folded roof slope -->
+    <g filter="url(#terraSh)">
+      <path d="M 276.69,154.06 Q 275.92,152.00 278.12,152.00 L 319.72,152.00 Q 321.92,152.00 322.69,154.06 L 369.51,278.90 Q 370.28,280.96 368.08,280.96 L 326.48,280.96 Q 324.28,280.96 323.51,278.90 Z" fill="url(#terra)"/>
+      <line x1="278.42" y1="153.20" x2="319.42" y2="153.20" stroke="#fff3e6" stroke-width="1.5" stroke-linecap="round" opacity="0.46"/>
+    </g>
 
-    <!-- Plane 2: Deep charcoal-ink front gable with arched portal cutout -->
-    <path d="M 194,156 Q 200,148 206,156 L 281,256 Q 284,260 284,265 L 284,354 C 284,362 278,368 270,368 L 233,368 C 230,368 228,366 228,363 L 228,312 A 28,28 0 0 0 172,312 L 172,363 C 172,366 170,368 167,368 L 130,368 C 122,368 116,362 116,354 L 116,265 Q 116,260 119,256 Z" fill="url(#gable)"/>
-
-    <!-- Plane 3: Grounded warm-stone side wall -->
-    <path d="M 298,278 L 372,278 C 375.5,278 378,280.5 378,284 L 378,354 C 378,362 372,368 364,368 L 304,368 C 300.5,368 298,365.5 298,362 Z" fill="url(#side)"/>
+    <!-- Piece 3: Grounded foundation plinth below the panoramic negative-space cut -->
+    <g filter="url(#inkSh)">
+      <path d="M 209.05,322.68 Q 209.05,320.48 211.25,320.48 L 382.90,320.48 Q 385.10,320.48 385.87,322.54 L 399.15,357.94 Q 399.92,360.00 397.72,360.00 L 211.25,360.00 Q 209.05,360.00 209.05,357.80 Z" fill="url(#plinth)"/>
+      <line x1="211.55" y1="321.68" x2="382.60" y2="321.68" stroke="#ffffff" stroke-width="1.2" stroke-linecap="round" opacity="0.16"/>
+    </g>
   </g>
 
   <path d="M 168,45 L 344,45 C 425.4,45 467,86.6 467,168 L 467,344 C 467,425.4 425.4,467 344,467 L 168,467 C 86.6,467 45,425.4 45,344 L 45,168 C 45,86.6 86.6,45 168,45 Z" fill="none" stroke="url(#rim)" stroke-width="2"/>

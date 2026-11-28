@@ -32,21 +32,29 @@ export function BootHero({ tone, progress, title, subtitle, aside }: {
   aside?: ReactNode;
 }) {
   const fraction = progress === null || !Number.isFinite(progress) ? null : Math.max(0, Math.min(1, progress));
-  const orbiting = tone === "running" && fraction === null;
+  const showRing = tone !== "running" || fraction !== null;
   return (
     <div className={`grid min-w-0 animate-enter justify-items-center gap-1.5 text-center ${TONE_TEXT[tone]}`}>
       <div className="relative mb-2 grid size-[84px] place-items-center">
-        <svg viewBox="0 0 72 72" className="absolute inset-0" aria-hidden>
-          <circle cx="36" cy="36" r={R} fill="none" strokeWidth="3" className="stroke-line" />
-          <circle
-            cx="36" cy="36" r={R} fill="none" strokeWidth="3" strokeLinecap="round"
-            className={`origin-center -rotate-90 [transform-box:view-box] stroke-current transition-[stroke-dashoffset,stroke] duration-[var(--motion-progress)] ease-[var(--ease-out)] ${orbiting ? "animate-orbit" : ""}`}
-            strokeDasharray={C}
-            strokeDashoffset={C * (1 - (fraction ?? (orbiting ? 0.28 : tone === "ok" ? 1 : 0)))}
-          />
-        </svg>
+        {showRing && (
+          <svg viewBox="0 0 72 72" className="absolute inset-0" aria-hidden>
+            <circle cx="36" cy="36" r={R} fill="none" strokeWidth="3" className="stroke-line" />
+            <circle
+              cx="36" cy="36" r={R} fill="none" strokeWidth="3" strokeLinecap="round"
+              className="origin-center -rotate-90 [transform-box:view-box] stroke-current transition-[stroke-dashoffset,stroke] duration-[var(--motion-progress)] ease-[var(--ease-out)]"
+              strokeDasharray={C}
+              strokeDashoffset={C * (1 - (fraction ?? (tone === "ok" ? 1 : 0)))}
+            />
+          </svg>
+        )}
         <span key={tone} className="grid animate-settle place-items-center" aria-hidden>
-          {tone === "ok" ? <IconCheck size={28} stroke={2.4} /> : tone === "bad" ? <IconAlertTriangle size={26} stroke={2} /> : <CabinMark variant="mono" size={24} className="animate-breathe" />}
+          {tone === "ok" ? (
+            <IconCheck size={28} stroke={2.4} />
+          ) : tone === "bad" ? (
+            <IconAlertTriangle size={26} stroke={2} />
+          ) : (
+            <CabinMark variant="color" size={showRing ? 30 : 56} animated className="text-fg" />
+          )}
         </span>
       </div>
       <h1 role="status" className="m-0 text-xl font-semibold tracking-tight text-fg">{title}</h1>
