@@ -616,40 +616,45 @@ impl Host {
             }
         };
 
+        #[derive(serde::Deserialize)]
+        struct WireMessage {
+            event: Option<AppEvent>,
+            id: Option<u64>,
+            result: Option<Value>,
+            error: Option<Value>,
+        }
+
         for line in lines {
             if generation != self.generation.load(Ordering::SeqCst) {
                 break;
             }
             let Ok(line) = line else { break };
-            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            let Ok(message) = serde_json::from_str::<WireMessage>(&line) else {
                 continue;
             };
-            if let Some(event) = value.get("event") {
-                if let Ok(mut event) = serde_json::from_value::<AppEvent>(event.clone()) {
-                    match &mut event {
-                        AppEvent::Snapshot { snapshot } => self.overlay_snapshot(snapshot),
-                        AppEvent::Agents { agents } => {
-                            if let Some(snapshot) = self.guest_snapshot.write_lock().as_mut() {
-                                snapshot.agents.clone_from(agents);
-                            }
+            if let Some(mut event) = message.event {
+                match &mut event {
+                    AppEvent::Snapshot { snapshot } => self.overlay_snapshot(snapshot),
+                    AppEvent::Agents { agents } => {
+                        if let Some(snapshot) = self.guest_snapshot.write_lock().as_mut() {
+                            snapshot.agents.clone_from(agents);
                         }
-                        AppEvent::Environment { .. } => {
-                            self.network.invalidate_gate(
-                                "Environment settings changed and need a full check",
-                            );
-                            let _ = self.emit_network();
-                        }
-                        _ => {}
                     }
-                    self.emit(event);
+                    AppEvent::Environment { .. } => {
+                        self.network
+                            .invalidate_gate("Environment settings changed and need a full check");
+                        let _ = self.emit_network();
+                    }
+                    _ => {}
                 }
-            } else if let Some(id) = value.get("id").and_then(Value::as_u64) {
+                self.emit(event);
+            } else if let Some(id) = message.id {
                 let reply = self.pending.locked().remove(&id);
                 if let Some(reply) = reply {
-                    let result = match value.get("error") {
-                        Some(error) => Err(serde_json::from_value(error.clone())
+                    let result = match message.error {
+                        Some(error) => Err(serde_json::from_value(error)
                             .unwrap_or_else(|_| unavailable("Malformed error from the machine"))),
-                        None => Ok(value.get("result").cloned().unwrap_or(Value::Null)),
+                        None => Ok(message.result.unwrap_or(Value::Null)),
                     };
                     let _ = reply.send(result);
                 }

@@ -387,6 +387,7 @@ impl ProvisionStep {
         let script = r#"#!/bin/sh
 set -eu
 export DEBIAN_FRONTEND=noninteractive
+dpkg --configure -a --force-confdef --force-confold || true
 apt-get install -y --no-install-recommends iptables
 cat > /usr/local/sbin/vmctl-proxy-lock <<'LOCK'
 #!/bin/sh

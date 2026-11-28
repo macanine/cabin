@@ -173,7 +173,7 @@ pub fn install_script(cfg: &Config) -> Result<String> {
     let autologin = autologin_service(cfg);
     let chrome_install = if cfg.desktop_chrome {
         format!(
-            "\nsay 'installing Google Chrome ARM64'\ncurl --retry 5 --retry-delay 3 --connect-timeout 20 -fsSL -o /tmp/google-chrome.deb {}\nsize=$(stat -c %s /tmp/google-chrome.deb 2>/dev/null || echo 0)\n[ \"$size\" -gt 50000000 ] || {{ echo \"Chrome deb is too small: $size\"; exit 31; }}\napt-get install -y --no-install-recommends /tmp/google-chrome.deb\ngoogle-chrome-stable --version\nrm -f /tmp/google-chrome.deb\n",
+            "\nsay 'installing Google Chrome ARM64'\ncurl --retry 5 --retry-delay 3 --connect-timeout 20 -fsSL -o /tmp/google-chrome.deb {}\nsize=$(stat -c %s /tmp/google-chrome.deb 2>/dev/null || echo 0)\n[ \"$size\" -gt 50000000 ] || {{ echo \"Chrome deb is too small: $size\"; exit 31; }}\nfor i in 1 2 3; do\n  if apt-get install -y --no-install-recommends /tmp/google-chrome.deb; then break; fi\n  [ \"$i\" = 3 ] && exit 32\n  heal_dpkg\n  sleep 5\ndone\ngoogle-chrome-stable --version\nrm -f /tmp/google-chrome.deb\n",
             q(&cfg.desktop_chrome_url)
         )
     } else {
@@ -186,7 +186,7 @@ pub fn install_script(cfg: &Config) -> Result<String> {
         .extra_modules_package()
         .map(|package| {
             format!(
-                "say 'installing kernel graphics modules'\napt-get install -y --no-install-recommends {package}\n"
+                "say 'installing kernel graphics modules'\nfor i in 1 2 3; do\n  if apt-get install -y --no-install-recommends {package}; then break; fi\n  [ \"$i\" = 3 ] && exit 23\n  heal_dpkg\n  sleep 5\ndone\n"
             )
         })
         .unwrap_or_default();
@@ -208,7 +208,7 @@ pub fn install_script(cfg: &Config) -> Result<String> {
         user = q(&user),
     );
     Ok(format!(
-        "set -euo pipefail\nexport DEBIAN_FRONTEND=noninteractive\nsay() {{ printf '\\n[desktop] %s\\n' \"$*\"; }}\nUSER_NAME={user}\nHOME_DIR={home_dir}\nsay 'waiting for apt/dpkg locks'\nfor i in $(seq 1 60); do\n  if ! fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then break; fi\n  sleep 2\ndone\nsay 'updating apt indexes (retry)'\nfor i in 1 2 3; do\n  if apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -qq; then break; fi\n  [ \"$i\" = 3 ] && exit 21\n  sleep 5\ndone\nsay 'installing desktop packages'\nfor i in 1 2 3; do\n  if apt-get install -y --no-install-recommends {}; then break; fi\n  [ \"$i\" = 3 ] && exit 22\n  sleep 5\ndone\n{kernel_modules}modprobe virtio_gpu 2>/dev/null || true\n{chrome_install}\nusermod -aG audio,video,render,netdev \"$USER_NAME\" 2>/dev/null || true\n{supervisor}{user_start}\n{extra}\nsay 'desktop stack ready'\n",
+        "set -euo pipefail\nexport DEBIAN_FRONTEND=noninteractive\nsay() {{ printf '\\n[desktop] %s\\n' \"$*\"; }}\nUSER_NAME={user}\nHOME_DIR={home_dir}\nwait_apt_locks() {{\n  for i in $(seq 1 60); do\n    if ! fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then break; fi\n    sleep 2\n  done\n}}\nheal_dpkg() {{\n  wait_apt_locks\n  dpkg --configure -a --force-confdef --force-confold || true\n  apt-get install -f -y --no-install-recommends || true\n}}\nsay 'waiting for apt/dpkg locks and checking package state'\nheal_dpkg\nsay 'updating apt indexes (retry)'\nfor i in 1 2 3; do\n  if apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -qq; then break; fi\n  [ \"$i\" = 3 ] && exit 21\n  sleep 5\ndone\nsay 'installing desktop packages'\nfor i in 1 2 3; do\n  if apt-get install -y --no-install-recommends {}; then break; fi\n  [ \"$i\" = 3 ] && exit 22\n  heal_dpkg\n  apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -qq || true\n  sleep 5\ndone\n{kernel_modules}modprobe virtio_gpu 2>/dev/null || true\n{chrome_install}\nusermod -aG audio,video,render,netdev \"$USER_NAME\" 2>/dev/null || true\n{supervisor}{user_start}\n{extra}\nsay 'desktop stack ready'\n",
         pkgs.join(" "),
         user = q(&user),
         home_dir = q(&home),
@@ -521,6 +521,7 @@ mod app_tests {
             .unwrap();
             let script = install_script(&cfg).unwrap();
             assert!(script.contains("wayvnc"), "{}", os.id);
+            assert!(script.contains("dpkg --configure -a"), "{}", os.id);
             assert!(!script.contains("qxl") && !script.contains("policykit-1-gnome"));
             assert_eq!(
                 script.contains("linux-modules-extra"),

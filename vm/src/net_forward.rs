@@ -16,6 +16,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use polling::{AsSource, Event, Events, PollMode, Poller};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::tcp;
@@ -24,13 +25,14 @@ use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
 
 use crate::Result;
 use crate::netgw::{GATEWAY_IP, GATEWAY_MAC, GUEST_IP, MTU};
-use crate::transport::{Readiness, wake_pair};
+use crate::transport::wake_pair;
 
 const GUEST_SSH: u16 = 22;
 const BUFFER: usize = 256 * 1024;
 const CHUNK: usize = 16 * 1024;
 const MAX_RELAYS: usize = 128;
-const MAX_QUEUED_FRAMES: usize = 256;
+const MAX_QUEUED_FRAMES: usize = 2048;
+const FRAME_BATCH: usize = 256;
 const CONNECT_TIMEOUT: smoltcp::time::Duration = smoltcp::time::Duration::from_secs(30);
 
 /// Frames in from the guest, frames out to the guest.
@@ -80,6 +82,8 @@ impl Device for Link {
 
 /// One relayed connection: a Mac-side TCP stream and a stack socket.
 struct Relay {
+    key: usize,
+    interest: (bool, bool),
     handle: SocketHandle,
     connect_deadline: Instant,
     host: TcpStream,
@@ -97,6 +101,7 @@ pub struct SshForward {
     local: SocketAddr,
     frames: SyncSender<Vec<u8>>,
     wake: UdpSocket,
+    wake_pending: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -128,17 +133,20 @@ impl SshForward {
         wake.set_nonblocking(true)?;
         wake_rx.set_nonblocking(true)?;
         let (frames, inbox) = mpsc::sync_channel(MAX_QUEUED_FRAMES);
+        let wake_pending = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let stop = stop.clone();
+            let wake_pending = wake_pending.clone();
             std::thread::Builder::new()
                 .name("vm-ssh-forward".into())
-                .spawn(move || run(listener, inbox, wake_rx, stop, send))?
+                .spawn(move || run(listener, inbox, wake_rx, wake_pending, stop, send))?
         };
         Ok(Self {
             local,
             frames,
             wake,
+            wake_pending,
             stop,
             thread: Some(thread),
         })
@@ -151,7 +159,7 @@ impl SshForward {
 
     /// A frame from the guest for the gateway's own TCP endpoint.
     pub fn deliver(&self, frame: Vec<u8>) {
-        if self.frames.try_send(frame).is_ok() {
+        if self.frames.try_send(frame).is_ok() && !self.wake_pending.swap(true, Ordering::AcqRel) {
             let _ = self.wake.send(&[1]);
         }
     }
@@ -175,6 +183,7 @@ fn run(
     listener: TcpListener,
     inbox: Receiver<Vec<u8>>,
     wake: UdpSocket,
+    wake_pending: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     send: impl Fn(&[u8]),
 ) {
@@ -194,17 +203,34 @@ fn run(
     let mut sockets = SocketSet::new(Vec::new());
     let mut relays: Vec<Relay> = Vec::new();
     let mut next_port: u16 = 49152;
+    let mut next_key: usize = 2;
     let mut chunk = vec![0u8; CHUNK];
+    let poller = Poller::new().ok();
+    let mut events = Events::new();
+    if let Some(poller) = &poller {
+        // SAFETY: `listener` and `wake` outlive the poller and are deleted on exit.
+        unsafe {
+            let _ = poller.add_with_mode(
+                &listener.source(),
+                Event::new(0, true, false),
+                PollMode::Level,
+            );
+            let _ =
+                poller.add_with_mode(&wake.source(), Event::new(1, true, false), PollMode::Level);
+        }
+    }
 
     while !stop.load(Ordering::Relaxed) {
-        // Drain wake-ups and queued frames from the guest.
+        // Clear the coalesced wake flag before draining inbox so any concurrent
+        // `deliver()` either lands in this batch or posts a fresh wake byte.
+        wake_pending.store(false, Ordering::Release);
         let mut byte = [0u8; 64];
-        for _ in 0..MAX_QUEUED_FRAMES {
-            if wake.recv(&mut byte).is_err() {
-                break;
-            }
+        while wake.recv(&mut byte).is_ok() {}
+        let mut drained = 0usize;
+        for frame in inbox.try_iter().take(FRAME_BATCH) {
+            link.rx.push_back(frame);
+            drained += 1;
         }
-        link.rx.extend(inbox.try_iter().take(MAX_QUEUED_FRAMES));
 
         // New Mac-side connections.
         for _ in 0..MAX_RELAYS {
@@ -234,7 +260,25 @@ fn run(
             {
                 continue;
             }
+            let key = next_key;
+            next_key = next_key.wrapping_add(1).max(2);
+            let interest = (false, false);
+            if let Some(poller) = &poller {
+                // SAFETY: `relay.host` is deleted from `poller` before being dropped.
+                let added = unsafe {
+                    poller.add_with_mode(
+                        &host.source(),
+                        Event::new(key, false, false),
+                        PollMode::Level,
+                    )
+                };
+                if added.is_err() {
+                    continue;
+                }
+            }
             relays.push(Relay {
+                key,
+                interest,
                 handle: sockets.add(socket),
                 connect_deadline: now() + CONNECT_TIMEOUT,
                 host,
@@ -271,19 +315,35 @@ fn run(
                 || (!socket.is_open() && relay.to_host.is_empty())
                 || (relay.host_shut && relay.host_eof && !socket.is_active());
             if done {
+                if let Some(poller) = &poller {
+                    let _ = poller.delete(relay.host.source());
+                }
                 let _ = relay.host.shutdown(Shutdown::Both);
                 sockets.remove(relay.handle);
             }
             !done
         });
 
+        if drained == FRAME_BATCH {
+            // More guest frames may still be queued; keep pumping without sleeping.
+            continue;
+        }
+
         wait(
-            &listener,
-            &wake,
-            &relays,
+            poller.as_ref(),
+            &mut events,
+            &mut relays,
             &sockets,
             iface.poll_delay(now(), &sockets),
         );
+    }
+
+    if let Some(poller) = &poller {
+        for relay in &relays {
+            let _ = poller.delete(relay.host.source());
+        }
+        let _ = poller.delete(listener.source());
+        let _ = poller.delete(wake.source());
     }
 }
 
@@ -346,9 +406,9 @@ fn pump(relay: &mut Relay, socket: &mut tcp::Socket, chunk: &mut [u8]) {
 /// Sleep until a socket is ready, a guest frame arrives or the stack has a
 /// timer due (capped so a stop request is noticed).
 fn wait(
-    listener: &TcpListener,
-    wake: &UdpSocket,
-    relays: &[Relay],
+    poller: Option<&Poller>,
+    events: &mut Events,
+    relays: &mut [Relay],
     sockets: &SocketSet<'_>,
     delay: Option<smoltcp::time::Duration>,
 ) {
@@ -356,20 +416,31 @@ fn wait(
     let timeout = delay
         .map(|d| Duration::from_micros(d.total_micros()).min(cap))
         .unwrap_or(cap);
-    let result = Readiness::scope(|ready| {
-        ready.watch(0, listener, true, false)?;
-        ready.watch(1, wake, true, false)?;
-        for (index, relay) in relays.iter().enumerate() {
-            let socket = sockets.get::<tcp::Socket>(relay.handle);
-            let read = !relay.host_eof && relay.to_guest.is_empty() && socket.may_send();
-            let write = !relay.to_host.is_empty();
-            ready.watch(index + 2, &relay.host, read, write)?;
-        }
-        ready.wait(Some(timeout))?;
-        Ok(())
-    });
-    if result.is_err() {
+    let Some(poller) = poller else {
         std::thread::sleep(Duration::from_millis(5));
+        return;
+    };
+    for relay in relays.iter_mut() {
+        let socket = sockets.get::<tcp::Socket>(relay.handle);
+        let read = !relay.host_eof && relay.to_guest.is_empty() && socket.may_send();
+        let write = !relay.to_host.is_empty();
+        if (read, write) != relay.interest
+            && poller
+                .modify_with_mode(
+                    relay.host.source(),
+                    Event::new(relay.key, read, write),
+                    PollMode::Level,
+                )
+                .is_ok()
+        {
+            relay.interest = (read, write);
+        }
+    }
+    events.clear();
+    match poller.wait(events, Some(timeout)) {
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::Interrupted => {}
+        Err(_) => std::thread::sleep(Duration::from_millis(5)),
     }
 }
 
